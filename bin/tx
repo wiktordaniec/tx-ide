@@ -2,7 +2,8 @@
 # tx — tmux + Claude Code session controller.
 #
 # Usage:
-#   tx start                   Spawn the leader Claude Code session (runs in the tx-ide repo).
+#   tx start                   Spawn the leader Claude Code session (runs in the tx-ide repo),
+#                              ensure the Views home-base session exists, and attach Views.
 #   tx attach                  Open the session picker.
 #   tx mailbox                 Open the mailbox TUI (live + archived inbox).
 #   tx help                    Show this message (also what `tx` shows with no args).
@@ -329,7 +330,7 @@ cmd_pick() {
 }
 
 cmd_help() {
-  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # tx start — spawn the leader Claude Code session in tmux. The leader's home
@@ -344,28 +345,48 @@ cmd_start() {
     esac
   done
 
-  if tmux has-session -t "=$session_name" 2>/dev/null; then
-    echo "Leader session '$session_name' already running."
-    echo "Attach with: tmux attach -t $session_name  (or: tx)"
-    return 0
-  fi
-
   local repo_dir
   repo_dir=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 
-  # Single line, no quotes or special chars — long/complex prompts crash tmux.
-  local priming_prompt='Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/LEADER.md as your first actions. Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/COMMON.md, ~/.tx-ide/user-agents/LEADER.local.md, and ~/.tx-ide/user-agents/LEADER.md (any user-agents/X.md replaces the shipped one; any user-agents/X.local.md extends it). Follow all of these for the duration of this session.'
+  if tmux has-session -t "=$session_name" 2>/dev/null; then
+    echo "Leader session '$session_name' already running."
+  else
+    # Single line, no quotes or special chars — long/complex prompts crash tmux.
+    local priming_prompt='Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/LEADER.md as your first actions. Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/COMMON.md, ~/.tx-ide/user-agents/LEADER.local.md, and ~/.tx-ide/user-agents/LEADER.md (any user-agents/X.md replaces the shipped one; any user-agents/X.local.md extends it). Follow all of these for the duration of this session.'
 
-  # Try resume first; on fresh start, pass the priming prompt. Passed via env
-  # var to avoid quoting nightmares in tmux's command argument.
-  tmux new-session -d -s "$session_name" -c "$repo_dir" \
-    -e COLORTERM=truecolor -e TERM=xterm-256color \
-    -e TX_LEADER_PROMPT="$priming_prompt" \
-    'claude --continue || claude "$TX_LEADER_PROMPT"'
-  tmux set -t "$session_name" @tag "leader,llm"
+    # Try resume first; on fresh start, pass the priming prompt. Passed via env
+    # var to avoid quoting nightmares in tmux's command argument.
+    tmux new-session -d -s "$session_name" -c "$repo_dir" \
+      -e COLORTERM=truecolor -e TERM=xterm-256color \
+      -e TX_LEADER_PROMPT="$priming_prompt" \
+      'claude --continue || claude "$TX_LEADER_PROMPT"'
+    tmux set -t "$session_name" @tag "leader,llm"
+    echo "Leader started in tmux session '$session_name' (cwd: $repo_dir)."
+  fi
 
-  echo "Leader started in tmux session '$session_name' (cwd: $repo_dir)."
-  echo "Attach with: tmux attach -t $session_name  (or: tx)"
+  # Ensure the Views home-base session exists. Views is the outer session
+  # the user lives in and uses `tx attach` to nest inner sessions into. It
+  # is intentionally filtered out of the tx picker (see list_raw / sessions_with_meta).
+  # When freshly created, its first pane nest-attaches the leader so the user
+  # lands looking at it. If Views already exists, we don't touch its panes.
+  local session_q
+  session_q=$(printf '%q' "$session_name")
+  if ! tmux has-session -t "=Views" 2>/dev/null; then
+    tmux new-session -d -s "Views" -c "$repo_dir" \
+      -e COLORTERM=truecolor -e TERM=xterm-256color \
+      "TMUX= tmux attach -t $session_q; exec \${SHELL:-zsh}"
+    tmux set -t Views @tag "views"
+    echo "Views session created with leader attached."
+  fi
+
+  # Attach Views — switch-client if we're already inside tmux, otherwise
+  # plain attach. switch-client only works for the calling client; running
+  # from a non-tmux shell falls through to attach.
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux switch-client -t Views
+  else
+    tmux attach -t Views
+  fi
 }
 
 # tx mailbox — exec the Python curses TUI in lib/.
