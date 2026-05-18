@@ -53,66 +53,98 @@ else
   check "$statusline_link" fail "not linked to repo"
 fi
 
-# === Claude settings (main + local) ===
-# Hooks concatenate across settings.json and settings.local.json, so we check
-# both — wired in either is sufficient.
-printf '\n%sClaude settings (hooks + statusLine)%s\n' "$B" "$X"
-SETTINGS_LOCAL="$CLAUDE_DIR/settings.local.json"
+# === Claude settings.json — drift check via _tx_ide_managed marker ===
+# install.sh stamps a `_tx_ide_managed` key listing what it added. We compare
+# that declaration against the live file to detect drift in either direction
+# (entries missing, or entries present without the marker).
+printf '\n%sClaude settings.json%s\n' "$B" "$X"
 SETTINGS_MAIN="$CLAUDE_DIR/settings.json"
-result_lines=$(SETTINGS_LOCAL="$SETTINGS_LOCAL" SETTINGS_MAIN="$SETTINGS_MAIN" python3 - <<'PY'
+result_lines=$(SETTINGS_MAIN="$SETTINGS_MAIN" python3 - <<'PY'
 import json, os
 
-def load(path):
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path) as fh:
-            return json.load(fh)
-    except Exception:
-        return {}
-
-local = load(os.environ["SETTINGS_LOCAL"])
-main = load(os.environ["SETTINGS_MAIN"])
-
-wanted = {
+# Expected values — must match install.sh's managed_hook_commands + STATUS.
+EXPECT_HOOKS = {
     "Stop":              "$HOME/.claude/hooks/mailbox/post.sh",
     "PermissionRequest": "$HOME/.claude/hooks/mailbox/post.sh",
     "UserPromptSubmit":  "$HOME/.claude/hooks/mailbox/pre.sh",
     "SessionEnd":        "$HOME/.claude/hooks/mailbox/end.sh",
 }
+EXPECT_STATUS = "bash $HOME/.claude/statusline.sh"
 
-def has_command(data, event, command):
+path = os.environ["SETTINGS_MAIN"]
+if not os.path.exists(path):
+    print("SETTINGS_MISSING")
+    raise SystemExit
+try:
+    with open(path) as fh:
+        data = json.load(fh)
+except Exception as e:
+    print(f"SETTINGS_INVALID:{e}")
+    raise SystemExit
+
+managed = data.get("_tx_ide_managed")
+if managed is None:
+    print("MARKER_MISSING")
+
+def has_command(event, command):
     return any(
         h.get("command") == command
         for block in data.get("hooks", {}).get(event, [])
         for h in block.get("hooks", [])
     )
 
-missing = [
-    event for event, cmd in wanted.items()
-    if not (has_command(local, event, cmd) or has_command(main, event, cmd))
-]
-print("HOOKS_MISSING:" + ",".join(missing) if missing else "HOOKS_OK")
-
-if "statusLine" in local:
-    print("STATUS_LOCAL")
-elif "statusLine" in main:
-    print("STATUS_MAIN")
+drift_hooks = [event for event, cmd in EXPECT_HOOKS.items() if not has_command(event, cmd)]
+if drift_hooks:
+    print("HOOKS_DRIFT:" + ",".join(drift_hooks))
 else:
-    print("STATUS_MISSING")
+    print("HOOKS_OK")
+
+status_actual = data.get("statusLine", {}).get("command")
+if status_actual == EXPECT_STATUS:
+    print("STATUS_OK")
+elif status_actual is None:
+    print("STATUS_ABSENT")
+else:
+    print(f"STATUS_FOREIGN:{status_actual}")
+
+# Marker drift: does it still declare what we expect?
+if managed:
+    declared_hooks = managed.get("hook_commands", {})
+    if declared_hooks != EXPECT_HOOKS:
+        print("MARKER_DRIFT_HOOKS")
+    if managed.get("statusLine_command") not in (EXPECT_STATUS, None):
+        print("MARKER_DRIFT_STATUS")
 PY
 )
-if grep -q "^HOOKS_OK" <<<"$result_lines"; then
-  check "mailbox hooks (Stop/Pre/End/PR)" ok "in settings.json or settings.local.json"
+if grep -q "^SETTINGS_MISSING" <<<"$result_lines"; then
+  check "settings.json" fail "missing (run install.sh)"
+elif grep -q "^SETTINGS_INVALID" <<<"$result_lines"; then
+  check "settings.json" fail "JSON parse failed — fix by hand"
 else
-  missing=$(grep "^HOOKS_MISSING" <<<"$result_lines" | cut -d: -f2)
-  check "mailbox hooks (Stop/Pre/End/PR)" fail "missing: $missing"
+  # Marker
+  if grep -q "^MARKER_MISSING" <<<"$result_lines"; then
+    check "_tx_ide_managed marker" warn "absent — re-run install.sh to stamp it"
+  else
+    check "_tx_ide_managed marker" ok ""
+  fi
+  # Hooks
+  if grep -q "^HOOKS_OK" <<<"$result_lines"; then
+    check "mailbox hooks (Stop/Pre/End/PR)" ok "all 4 commands present"
+  else
+    drift=$(grep "^HOOKS_DRIFT" <<<"$result_lines" | cut -d: -f2)
+    check "mailbox hooks (Stop/Pre/End/PR)" fail "drift: $drift — re-run install.sh"
+  fi
+  # statusLine
+  case "$(grep "^STATUS_" <<<"$result_lines" | head -1)" in
+    STATUS_OK)        check "statusLine" ok "tx-ide's" ;;
+    STATUS_ABSENT)    check "statusLine" warn "absent — re-run install.sh" ;;
+    STATUS_FOREIGN:*) check "statusLine" warn "user has their own (tx-ide skipped to avoid shadowing)" ;;
+  esac
+  # Marker self-consistency (tx-ide repo updated, marker stale)
+  if grep -q "^MARKER_DRIFT" <<<"$result_lines"; then
+    check "_tx_ide_managed contents" warn "marker is stale (repo expects different values) — re-run install.sh"
+  fi
 fi
-case "$(grep "^STATUS_" <<<"$result_lines")" in
-  STATUS_LOCAL)   check "statusLine" ok "in settings.local.json" ;;
-  STATUS_MAIN)    check "statusLine" ok "in settings.json (your own)" ;;
-  STATUS_MISSING) check "statusLine" warn "absent in both files" ;;
-esac
 
 # === ~/.tx-ide and ~/.tmux.conf ===
 printf '\n%sTmux config wiring%s\n' "$B" "$X"

@@ -80,13 +80,15 @@ I will:
   - symlink statusline: ~/.claude/statusline.sh → repo
   - write ~/.tx-ide/tmux.conf (a one-line file I own)
   - add one source-file block to ~/.tmux.conf (with markers + backup)
-  - merge hooks + statusLine into ~/.claude/settings.local.json
-      (Claude Code concatenates this with your settings.json — main file untouched)
+  - add hooks + statusLine to ~/.claude/settings.json (with backup)
+      (4 mailbox hook entries + statusLine, tracked via a _tx_ide_managed
+       marker so uninstall removes only ours and doctor detects drift.
+       Your existing hooks, permissions, plugins, theme are untouched.)
   - configure iTerm keyboard map (only if iTerm + not currently running)
   - start the mx-speaker background daemon
 
 I will NOT touch:
-  - ~/.claude/settings.json
+  - any settings.json entry I didn't add (permissions, theme, plugins, other hooks)
   - ~/.claude/CLAUDE.md
   - any tmux config outside the marked source-file block
   - any iTerm preference if iTerm is currently running (you'll get a hint)
@@ -160,120 +162,103 @@ EOF
   info "$note"
 fi
 
-# === 6: ~/.claude/settings.local.json merge ===
-header "Claude settings.local.json"
-SETTINGS_LOCAL="$CLAUDE_DIR/settings.local.json"
+# === 6: ~/.claude/settings.json merge ===
+# We write hooks + statusLine directly into ~/.claude/settings.json (not
+# settings.local.json — Claude Code doesn't read settings.local.json at user
+# scope, only at project scope). A top-level `_tx_ide_managed` key tracks
+# exactly what we added so uninstall removes only those entries and doctor
+# detects drift. Claude Code ignores unknown top-level keys.
+header "Claude settings.json"
 SETTINGS_MAIN="$CLAUDE_DIR/settings.json"
-SETTINGS_LOCAL="$SETTINGS_LOCAL" \
-SETTINGS_MAIN="$SETTINGS_MAIN" \
-STAMP="$STAMP" \
-python3 - <<'PY'
-import json, os
+SETTINGS_MAIN="$SETTINGS_MAIN" STAMP="$STAMP" python3 - <<'PY'
+import json, os, sys
 
-local_path = os.environ["SETTINGS_LOCAL"]
 main_path = os.environ["SETTINGS_MAIN"]
 stamp = os.environ["STAMP"]
-
-# Hooks we want to register. Each lands in its own matcher="" block so
-# concatenation with the user's existing matcher blocks in settings.json
-# remains additive (Claude Code merges hook arrays across scopes).
-def make_entry(cmd):
-    return {"type": "command", "command": cmd, "timeout": 10, "async": True}
 
 POST = "$HOME/.claude/hooks/mailbox/post.sh"
 PRE  = "$HOME/.claude/hooks/mailbox/pre.sh"
 END  = "$HOME/.claude/hooks/mailbox/end.sh"
+STATUS = "bash $HOME/.claude/statusline.sh"
 
-want = {
-    "Stop":              [make_entry(POST)],
-    "PermissionRequest": [make_entry(POST)],
-    "UserPromptSubmit":  [make_entry(PRE)],
-    "SessionEnd":        [make_entry(END)],
+# Single source of truth for what tx-ide manages.
+managed_hook_commands = {
+    "Stop":              POST,
+    "PermissionRequest": POST,
+    "UserPromptSubmit":  PRE,
+    "SessionEnd":        END,
 }
 
-if os.path.exists(local_path):
-    with open(local_path) as fh:
-        local = json.load(fh)
-    backup_path = f"{local_path}.bak.{stamp}"
+def make_entry(cmd):
+    return {"type": "command", "command": cmd, "timeout": 10, "async": True}
+
+# Load (or initialize) settings.json.
+if os.path.exists(main_path):
+    real_path = os.path.realpath(main_path)
+    with open(real_path) as fh:
+        data = json.load(fh)
+    backup_path = f"{real_path}.bak.{stamp}"
     with open(backup_path, "w") as fh:
-        json.dump(local, fh, indent=2)
+        json.dump(data, fh, indent=2)
         fh.write("\n")
 else:
-    local = {}
+    real_path = main_path
+    data = {}
     backup_path = None
 
-# Read main settings.json (if present) to avoid duplicating commands already
-# wired there — hooks concatenate across scopes, so writing the same command
-# in both files would fire it twice per event.
-main_hooks = {}
-if os.path.exists(main_path):
-    try:
-        with open(main_path) as fh:
-            main_data = json.load(fh)
-        main_hooks = main_data.get("hooks", {})
-    except Exception:
-        main_hooks = {}
-
-def existing_commands(hooks_dict, event):
-    return {
-        h.get("command")
-        for block in hooks_dict.get(event, [])
+# Append a hook entry for each event if our command isn't already wired.
+def event_has_command(hooks_for_event, command):
+    return any(
+        h.get("command") == command
+        for block in hooks_for_event
         for h in block.get("hooks", [])
-    }
+    )
 
-hooks = local.setdefault("hooks", {})
+hooks = data.setdefault("hooks", {})
 appended = []
-skipped_dup = []
-for event, entries in want.items():
-    already = existing_commands(hooks, event) | existing_commands(main_hooks, event)
-    new_entries = [e for e in entries if e["command"] not in already]
-    if not new_entries:
-        skipped_dup.append(event)
-        continue
+already_present = []
+for event, command in managed_hook_commands.items():
     bucket = hooks.setdefault(event, [])
-    bucket.append({"matcher": "", "hooks": new_entries})
-    appended.append(event)
-
-# statusLine: write only if absent in local AND main (override semantics —
-# we never silently shadow the user's statusLine in settings.json).
-status_msg = ""
-if "statusLine" in local:
-    status_msg = "already set in settings.local.json"
-else:
-    main_status = False
-    if os.path.exists(main_path):
-        try:
-            with open(main_path) as fh:
-                main = json.load(fh)
-            main_status = "statusLine" in main
-        except Exception:
-            main_status = False
-    if main_status:
-        status_msg = "skipped (your settings.json already has one)"
+    if event_has_command(bucket, command):
+        already_present.append(event)
     else:
-        local["statusLine"] = {
-            "type": "command",
-            "command": "bash $HOME/.claude/statusline.sh",
-        }
-        status_msg = "added"
+        bucket.append({"matcher": "", "hooks": [make_entry(command)]})
+        appended.append(event)
 
-with open(local_path, "w") as fh:
-    json.dump(local, fh, indent=2)
+# statusLine: add ours if absent. If present and matches ours, leave it
+# (idempotent). If present and different, leave the user's untouched and
+# print a warning — they have their own; we don't shadow.
+status_msg = ""
+status_existing = data.get("statusLine", {}).get("command")
+if status_existing is None:
+    data["statusLine"] = {"type": "command", "command": STATUS}
+    status_msg = "added"
+elif status_existing == STATUS:
+    status_msg = "already current"
+else:
+    status_msg = f"skipped — user has their own ({status_existing!r}). Move it aside if you want tx-ide's."
+
+# Write the marker. Always overwrite — declares current intent.
+data["_tx_ide_managed"] = {
+    "version": 1,
+    "hook_commands": managed_hook_commands,
+    "statusLine_command": STATUS if data.get("statusLine", {}).get("command") == STATUS else None,
+}
+
+with open(real_path, "w") as fh:
+    json.dump(data, fh, indent=2)
     fh.write("\n")
 
-if appended or status_msg == "added":
-    state = "merged"
-else:
-    state = "already current"
-
-print(f"  \033[32m→\033[0m {local_path}    \033[32m{state}\033[0m")
+state = "merged" if appended or status_msg == "added" else "already current"
+print(f"  \033[32m→\033[0m {main_path}    \033[32m{state}\033[0m")
 if backup_path:
     print(f"  \033[2mbackup: {backup_path}\033[0m")
 if appended:
     print(f"  \033[2mhooks added: {', '.join(appended)}\033[0m")
-if skipped_dup:
-    print(f"  \033[2mhooks skipped (already in settings.json): {', '.join(skipped_dup)}\033[0m")
+if already_present:
+    print(f"  \033[2mhooks already present: {', '.join(already_present)}\033[0m")
 print(f"  \033[2mstatusLine: {status_msg}\033[0m")
+print(f"  \033[2m_tx_ide_managed marker written (uninstall + doctor use this)\033[0m")
 PY
 
 # === 7: iTerm ===

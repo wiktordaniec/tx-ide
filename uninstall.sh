@@ -24,12 +24,14 @@ I will remove:
   - ~/.claude/statusline.sh (symlink)
   - the tx-ide block from ~/.tmux.conf (matched by markers)
   - ~/.tx-ide/tmux.conf and the empty ~/.tx-ide/ directory
-  - mailbox + statusLine entries from ~/.claude/settings.local.json
+  - from ~/.claude/settings.json: only the entries listed in the
+    _tx_ide_managed marker key (with backup; your other hooks,
+    permissions, plugins, theme are untouched)
   - the mx-speaker daemon (if running) + its PID file
 
 I will NOT touch:
   - ~/.claude/mailbox/ (your inbox + running state)
-  - ~/.claude/settings.json
+  - any settings.json entry not in _tx_ide_managed
   - ~/.claude/CLAUDE.md
   - any leader directories scaffolded by init-leader.sh
   - the iTerm GlobalKeyMap (run setup/iterm.sh with iTerm quit to clean up)
@@ -105,61 +107,77 @@ if [[ -d "$TX_IDE_DIR" ]]; then
   rmdir "$TX_IDE_DIR" 2>/dev/null && ok "$TX_IDE_DIR" "removed (empty)" || skip "$TX_IDE_DIR" "not empty, left alone"
 fi
 
-# === settings.local.json ===
-printf '\n%sClaude settings.local.json%s\n' "$B" "$X"
-SETTINGS_LOCAL="$CLAUDE_DIR/settings.local.json"
-if [[ -f "$SETTINGS_LOCAL" ]]; then
+# === settings.json — remove only what _tx_ide_managed declares ===
+printf '\n%sClaude settings.json%s\n' "$B" "$X"
+SETTINGS_MAIN="$CLAUDE_DIR/settings.json"
+if [[ -f "$SETTINGS_MAIN" ]]; then
   STAMP=$(date +%Y%m%d%H%M%S)
-  cp "$SETTINGS_LOCAL" "$SETTINGS_LOCAL.bak.$STAMP"
-  SETTINGS_LOCAL="$SETTINGS_LOCAL" python3 - <<'PY'
+  REAL=$(readlink -f "$SETTINGS_MAIN")
+  cp "$REAL" "$REAL.bak.$STAMP"
+  SETTINGS_MAIN="$SETTINGS_MAIN" python3 - <<'PY'
 import json, os
 
-path = os.environ["SETTINGS_LOCAL"]
-with open(path) as fh:
+path = os.environ["SETTINGS_MAIN"]
+real = os.path.realpath(path)
+with open(real) as fh:
     data = json.load(fh)
 
-POST = "$HOME/.claude/hooks/mailbox/post.sh"
-PRE  = "$HOME/.claude/hooks/mailbox/pre.sh"
-END  = "$HOME/.claude/hooks/mailbox/end.sh"
-ours = {POST, PRE, END}
+managed = data.get("_tx_ide_managed")
+if not managed:
+    print(f"  \033[33m!\033[0m no _tx_ide_managed marker — leaving settings.json alone")
+    print(f"  \033[2m(install.sh was either never run, or pre-marker — check by hand)\033[0m")
+    raise SystemExit
 
 removed_hooks = []
+hook_commands = managed.get("hook_commands", {})  # {event: command}
+ours_per_event = {}
+for event, command in hook_commands.items():
+    ours_per_event.setdefault(event, set()).add(command)
+
 hooks = data.get("hooks", {})
 for event, blocks in list(hooks.items()):
+    ours = ours_per_event.get(event, set())
+    if not ours:
+        continue
     new_blocks = []
     for block in blocks:
         kept = [h for h in block.get("hooks", []) if h.get("command") not in ours]
         if kept:
             block["hooks"] = kept
             new_blocks.append(block)
-        else:
+        elif block.get("hooks"):
+            # All entries were ours — drop the whole block
             removed_hooks.append(event)
     if new_blocks:
         hooks[event] = new_blocks
     else:
+        # Last hook block removed
+        if event not in removed_hooks:
+            removed_hooks.append(event)
         del hooks[event]
 if not hooks:
     data.pop("hooks", None)
 
 removed_status = False
-if data.get("statusLine", {}).get("command") == "bash $HOME/.claude/statusline.sh":
+status_command = managed.get("statusLine_command")
+if status_command and data.get("statusLine", {}).get("command") == status_command:
     del data["statusLine"]
     removed_status = True
 
-if data:
-    with open(path, "w") as fh:
-        json.dump(data, fh, indent=2)
-        fh.write("\n")
-    print(f"  \033[32m→\033[0m {path} cleaned")
-else:
-    os.remove(path)
-    print(f"  \033[32m→\033[0m {path} removed (empty)")
-print(f"  \033[2mremoved hooks: {','.join(removed_hooks) if removed_hooks else 'none'}\033[0m")
+# Remove the marker itself.
+del data["_tx_ide_managed"]
+
+with open(real, "w") as fh:
+    json.dump(data, fh, indent=2)
+    fh.write("\n")
+print(f"  \033[32m→\033[0m {path} cleaned")
+print(f"  \033[2mremoved hook entries: {', '.join(removed_hooks) if removed_hooks else 'none'}\033[0m")
 print(f"  \033[2mremoved statusLine: {'yes' if removed_status else 'no'}\033[0m")
+print(f"  \033[2m_tx_ide_managed marker removed\033[0m")
 PY
-  printf '  %sbackup: %s.bak.%s%s\n' "$D" "$SETTINGS_LOCAL" "$STAMP" "$X"
+  printf '  %sbackup: %s.bak.%s%s\n' "$D" "$REAL" "$STAMP" "$X"
 else
-  skip "$SETTINGS_LOCAL" "not present"
+  skip "$SETTINGS_MAIN" "not present"
 fi
 
 # === mx-speaker daemon ===
