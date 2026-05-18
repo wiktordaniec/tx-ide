@@ -410,10 +410,21 @@ cmd_start() {
 }
 
 # tx mailbox — exec the Python curses TUI in lib/.
+# Prefer /usr/bin/python3 over PATH lookup because the latter usually lands
+# on pyenv's shim, which adds ~60ms per launch — the dominant cost of
+# prefix+m. Fall back to PATH only if system python is missing.
 cmd_mailbox() {
-  local self_dir
+  local self_dir py
   self_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
-  exec "$self_dir/../lib/tx-mailbox" "$@"
+  if [[ -x /usr/bin/python3 ]]; then
+    py=/usr/bin/python3
+  else
+    py=$(command -v python3) || {
+      printf 'tx: python3 not found\n' >&2
+      exit 1
+    }
+  fi
+  exec "$py" "$self_dir/../lib/tx-mailbox" "$@"
 }
 
 while [[ $# -gt 0 ]]; do
