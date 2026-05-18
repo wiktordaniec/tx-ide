@@ -24,7 +24,7 @@ check() {
 
 # === CLIs on PATH ===
 printf '\n%sCLIs%s\n' "$B" "$X"
-for tool in tx mx tmux-pane-for-session tmux-pane-session-name; do
+for tool in tx mx tx-leader tmux-pane-for-session tmux-pane-session-name; do
   if path=$(command -v "$tool" 2>/dev/null); then
     real=$(readlink -f "$path" 2>/dev/null || printf '%s' "$path")
     if [[ "$real" == "$REPO/bin/$tool" ]]; then
@@ -144,6 +144,26 @@ else
   if grep -q "^MARKER_DRIFT" <<<"$result_lines"; then
     check "_tx_ide_managed contents" warn "marker is stale (repo expects different values) — re-run install.sh"
   fi
+fi
+
+# === Agents (shipped + user overrides) ===
+printf '\n%sAgents%s\n' "$B" "$X"
+agents_link="$TX_IDE_DIR/agents"
+if [[ -L "$agents_link" ]] && [[ "$(readlink "$agents_link")" == "$REPO/agents" ]]; then
+  check "$agents_link" ok "→ $REPO/agents"
+else
+  check "$agents_link" fail "not linked to repo (re-run install.sh)"
+fi
+if [[ -d "$TX_IDE_DIR/user-agents" ]]; then
+  overrides=$(find "$TX_IDE_DIR/user-agents" -maxdepth 1 -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$overrides" == "0" ]]; then
+    check "$TX_IDE_DIR/user-agents" ok "present (no overrides)"
+  else
+    files=$(find "$TX_IDE_DIR/user-agents" -maxdepth 1 -type f -name '*.md' -exec basename {} \; 2>/dev/null | tr '\n' ' ')
+    check "$TX_IDE_DIR/user-agents" ok "active overrides: $files"
+  fi
+else
+  check "$TX_IDE_DIR/user-agents" warn "missing (re-run install.sh)"
 fi
 
 # === ~/.tx-ide and ~/.tmux.conf ===

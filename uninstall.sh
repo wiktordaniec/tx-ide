@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Reverse everything install.sh did. Leaves user data alone:
-#   ~/.claude/mailbox/   (inbox.jsonl, running.d/, mx-speaker.log)
-#   any leader directory you scaffolded with init-leader.sh
+#   ~/.claude/mailbox/        (inbox.jsonl, running.d/, mx-speaker.log)
+#   ~/.tx-ide/user-agents/    (any role overrides you wrote)
 #   the tx-ide-private repo itself
 set -u
 
@@ -19,11 +19,12 @@ cat <<EOF
 ${B}=== tx-ide uninstall ===${X}
 
 I will remove:
-  - the four CLI symlinks in ~/.local/bin/ (only if they still point at this repo)
+  - the five CLI symlinks in ~/.local/bin/ (only if they still point at this repo)
   - ~/.claude/hooks/mailbox/ (symlink)
   - ~/.claude/statusline.sh (symlink)
+  - ~/.tx-ide/agents (symlink) and ~/.tx-ide/tmux.conf
+  - the empty ~/.tx-ide/ directory (only if nothing user-owned remains)
   - the tx-ide block from ~/.tmux.conf (matched by markers)
-  - ~/.tx-ide/tmux.conf and the empty ~/.tx-ide/ directory
   - from ~/.claude/settings.json: only the entries listed in the
     _tx_ide_managed marker key (with backup; your other hooks,
     permissions, plugins, theme are untouched)
@@ -31,9 +32,9 @@ I will remove:
 
 I will NOT touch:
   - ~/.claude/mailbox/ (your inbox + running state)
+  - ~/.tx-ide/user-agents/ (your role overrides)
   - any settings.json entry not in _tx_ide_managed
   - ~/.claude/CLAUDE.md
-  - any leader directories scaffolded by init-leader.sh
   - the iTerm GlobalKeyMap (run setup/iterm.sh with iTerm quit to clean up)
 
 EOF
@@ -42,7 +43,7 @@ read -r -p "Proceed? [y/N] " reply
 
 # === Symlinks ===
 printf '\n%sCLI symlinks%s\n' "$B" "$X"
-for tool in tx mx tmux-pane-for-session tmux-pane-session-name; do
+for tool in tx mx tx-leader tmux-pane-for-session tmux-pane-session-name; do
   target="$LOCAL_BIN/$tool"
   if [[ -L "$target" ]] && [[ "$(readlink "$target")" == "$REPO/bin/$tool" ]]; then
     rm "$target"
@@ -99,9 +100,21 @@ fi
 
 # === ~/.tx-ide/ ===
 printf '\n%s~/.tx-ide/%s\n' "$B" "$X"
+agents_link="$TX_IDE_DIR/agents"
+if [[ -L "$agents_link" ]] && [[ "$(readlink "$agents_link")" == "$REPO/agents" ]]; then
+  rm "$agents_link"
+  ok "$agents_link"
+elif [[ -L "$agents_link" ]]; then
+  skip "$agents_link" "points elsewhere, left alone"
+elif [[ -e "$agents_link" ]]; then
+  skip "$agents_link" "not a symlink, left alone"
+fi
 if [[ -f "$TX_IDE_DIR/tmux.conf" ]]; then
   rm "$TX_IDE_DIR/tmux.conf"
   ok "$TX_IDE_DIR/tmux.conf"
+fi
+if [[ -d "$TX_IDE_DIR/user-agents" ]]; then
+  skip "$TX_IDE_DIR/user-agents" "user data, left alone"
 fi
 if [[ -d "$TX_IDE_DIR" ]]; then
   rmdir "$TX_IDE_DIR" 2>/dev/null && ok "$TX_IDE_DIR" "removed (empty)" || skip "$TX_IDE_DIR" "not empty, left alone"
@@ -200,8 +213,8 @@ cat <<EOF
 ${B}=== Done ===${X}
 
 ${B}Remaining user data (left in place):${X}
-  ${D}~/.claude/mailbox/${X}    inbox, running state, speaker log
-  ${D}leader dirs${X}          any directory you scaffolded with init-leader.sh
+  ${D}~/.claude/mailbox/${X}        inbox, running state, speaker log
+  ${D}~/.tx-ide/user-agents/${X}    your role overrides (if any)
 
 ${B}Tmux:${X} reload to drop the bindings:
   ${D}tmux source-file ~/.tmux.conf${X}

@@ -14,7 +14,7 @@ Layered as an additive install: nothing you've configured in tmux, Claude Code, 
 | Pane border integration | Pane borders show inner attached session name + `@tag` chips. Remote ssh-attached panes are prefixed `(r)`. |
 | Claude scroll intercept | `C-u` / `C-d` scroll Claude Code's TUI (PageUp / PageDown). Pass through everywhere else. |
 | `M-1..9` / `User0..8` | Pane and window quick-switch. Requires your terminal to emit the matching escape sequences (`setup/iterm.sh` configures iTerm2). |
-| `leader-template/` | A drop-in orchestration repo skeleton. Scaffold with `init-leader.sh <path>`. |
+| `tx-leader` | Spawn a leader Claude Code session in tmux, primed with the shipped orchestration role files (`agents/COMMON.md`, `agents/LEADER.md`) plus any user overrides in `~/.tx-ide/user-agents/`. Works from any project directory. |
 
 ## Install
 
@@ -43,9 +43,11 @@ Reverses every change install.sh made. Leaves your inbox data (`~/.claude/mailbo
 ## What install.sh actually changes
 
 **Creates / symlinks** (tx-ide owns these — safe to delete by hand):
-- `~/.local/bin/{tx,mx,tmux-pane-for-session,tmux-pane-session-name}` — symlinks to `bin/`
+- `~/.local/bin/{tx,mx,tx-leader,tmux-pane-for-session,tmux-pane-session-name}` — symlinks to `bin/`
 - `~/.claude/hooks/mailbox/` — symlink to `claude/hooks/`
 - `~/.claude/statusline.sh` — symlink to `claude/statusline.sh`
+- `~/.tx-ide/agents/` — symlink to `agents/` (shipped role files; updates with `git pull`)
+- `~/.tx-ide/user-agents/` — empty directory for your role overrides + `.local.md` companions
 - `~/.tx-ide/tmux.conf` — one-line shim that `run-shell`s the view
 - `~/.claude/settings.local.json` — Claude Code merges this with your `settings.json`
 
@@ -83,21 +85,25 @@ Hex literals in `shared/palette.sh` (tokyonight-night). Switching palettes is a 
 
 ## Leader / worker orchestration
 
-Optional. `init-leader.sh <path>` scaffolds an orchestration directory:
+Run `tx-leader` from any project directory. It spawns a tmux session named `leader`, tagged `leader,llm`, running Claude Code primed with the shipped role files (`agents/COMMON.md`, `agents/LEADER.md`). Attach via `prefix+t` (or `tmux attach -t leader`). Tell the leader "spawn a developer worker for X" and it'll launch a worker session that follows `agents/DEVELOPER.md`.
 
-```
-<path>/
-├── CLAUDE.md
-├── agents/
-│   ├── COMMON.md      # conventions every session must follow
-│   ├── LEADER.md      # orchestration role
-│   └── DEVELOPER.md   # coding worker role
-└── start-leader.sh
-```
+### Role files
 
-The leader session reads `agents/COMMON.md` + `agents/LEADER.md`. Workers spawned from the leader read `agents/COMMON.md` + their role file (`DEVELOPER.md`, etc.).
+The shipped roles live in this repo under `agents/` and are exposed at `~/.tx-ide/agents/` via symlink, so `git pull` updates them for every install.
 
-`init-leader.sh` refuses to overwrite existing files — safe to re-run on an existing directory to add the bits you don't have.
+- `agents/COMMON.md` — conventions every session must follow
+- `agents/LEADER.md` — orchestration role (how/when to spawn workers)
+- `agents/DEVELOPER.md` — coding worker role (worktree-first, atomic commits, draft PR)
+
+### Customizing
+
+Drop files in `~/.tx-ide/user-agents/`:
+
+- `~/.tx-ide/user-agents/<ROLE>.local.md` — **extends** the shipped role. Read alongside it; both win.
+- `~/.tx-ide/user-agents/<ROLE>.md` — **replaces** the shipped role outright (same filename shadows it).
+- `~/.tx-ide/user-agents/<NEW-ROLE>.md` — adds a brand new role you can spawn workers for.
+
+Every prompt template (in `tx-leader` and `agents/LEADER.md`'s worker-spawn recipe) reads `~/.tx-ide/agents/<ROLE>.md` followed by both `~/.tx-ide/user-agents/<ROLE>.md` and `~/.tx-ide/user-agents/<ROLE>.local.md` if they exist.
 
 ## Requirements
 

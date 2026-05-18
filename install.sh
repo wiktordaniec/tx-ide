@@ -75,9 +75,11 @@ Repo:  $REPO
 
 I will:
   - symlink CLIs into ~/.local/bin/
-      tx, mx, tmux-pane-for-session, tmux-pane-session-name
+      tx, mx, tx-leader, tmux-pane-for-session, tmux-pane-session-name
   - symlink Claude mailbox hooks dir: ~/.claude/hooks/mailbox/ → repo
   - symlink statusline: ~/.claude/statusline.sh → repo
+  - symlink agents dir: ~/.tx-ide/agents/ → repo (orchestration role files)
+  - create ~/.tx-ide/user-agents/ (empty; drop overrides + .local.md here)
   - write ~/.tx-ide/tmux.conf (a one-line file I own)
   - add one source-file block to ~/.tmux.conf (with markers + backup)
   - add hooks + statusLine to ~/.claude/settings.json (with backup)
@@ -92,9 +94,10 @@ I will NOT touch:
   - ~/.claude/CLAUDE.md
   - any tmux config outside the marked source-file block
   - any iTerm preference if iTerm is currently running (you'll get a hint)
+  - ~/.tx-ide/user-agents/ contents (your overrides survive re-runs)
 
-Optional after install:
-  - scaffold a leader/orchestration directory via init-leader.sh
+After install:
+  - run tx-leader from any project to start a leader Claude Code session
   - run tx-ide-doctor to verify
 
 EOF
@@ -106,6 +109,7 @@ header "CLIs into ~/.local/bin"
 mkdir -p "$LOCAL_BIN"
 link "$REPO/bin/tx"                      "$LOCAL_BIN/tx"
 link "$REPO/bin/mx"                      "$LOCAL_BIN/mx"
+link "$REPO/bin/tx-leader"               "$LOCAL_BIN/tx-leader"
 link "$REPO/bin/tmux-pane-for-session"   "$LOCAL_BIN/tmux-pane-for-session"
 link "$REPO/bin/tmux-pane-session-name"  "$LOCAL_BIN/tmux-pane-session-name"
 
@@ -118,7 +122,18 @@ link_dir "$REPO/claude/hooks" "$CLAUDE_DIR/hooks/mailbox"
 header "Statusline"
 link "$REPO/claude/statusline.sh" "$CLAUDE_DIR/statusline.sh"
 
-# === 4: ~/.tx-ide/tmux.conf shim ===
+# === 4: Agents (shipped + user override dir) ===
+header "Agents"
+mkdir -p "$TX_IDE_DIR"
+link_dir "$REPO/agents" "$TX_IDE_DIR/agents"
+if [[ -d "$TX_IDE_DIR/user-agents" ]]; then
+  ok "$TX_IDE_DIR/user-agents" "already present"
+else
+  mkdir -p "$TX_IDE_DIR/user-agents"
+  ok "$TX_IDE_DIR/user-agents" "created (empty)"
+fi
+
+# === 5: ~/.tx-ide/tmux.conf shim ===
 header "Tmux config shim"
 mkdir -p "$TX_IDE_DIR"
 TX_IDE_CONF="$TX_IDE_DIR/tmux.conf"
@@ -136,7 +151,7 @@ else
   ok "$TX_IDE_CONF" "written"
 fi
 
-# === 5: ~/.tmux.conf source-file block ===
+# === 6: ~/.tmux.conf source-file block ===
 header "~/.tmux.conf source-file"
 USER_TMUX_CONF="$HOME_DIR/.tmux.conf"
 BEGIN_MARKER="# === BEGIN tx-ide ==="
@@ -162,7 +177,7 @@ EOF
   info "$note"
 fi
 
-# === 6: ~/.claude/settings.json merge ===
+# === 7: ~/.claude/settings.json merge ===
 # We write hooks + statusLine directly into ~/.claude/settings.json (not
 # settings.local.json — Claude Code doesn't read settings.local.json at user
 # scope, only at project scope). A top-level `_tx_ide_managed` key tracks
@@ -261,7 +276,7 @@ print(f"  \033[2mstatusLine: {status_msg}\033[0m")
 print(f"  \033[2m_tx_ide_managed marker written (uninstall + doctor use this)\033[0m")
 PY
 
-# === 7: iTerm ===
+# === 8: iTerm ===
 header "iTerm keyboard map"
 if [[ "${TERM_PROGRAM:-}" == "iTerm.app" ]]; then
   if pgrep -x iTerm2 >/dev/null 2>&1; then
@@ -277,23 +292,9 @@ else
   warn "GlobalKeyMap" "TERM_PROGRAM='${TERM_PROGRAM:-unknown}' — skipping (iTerm only)"
 fi
 
-# === 8: mx-speaker daemon ===
+# === 9: mx-speaker daemon ===
 header "mx-speaker daemon"
 "$REPO/claude/hooks/start-speaker.sh" 2>&1 | sed 's/^/  → /'
-
-# === 9: leader scaffold (optional) ===
-header "Leader directory (optional)"
-if confirm "Scaffold a leader/orchestration directory now?" N; then
-  printf '  Path: '
-  read -r leader_path
-  if [[ -n "$leader_path" ]]; then
-    "$REPO/init-leader.sh" "$leader_path"
-  else
-    info "(empty path — skipped)"
-  fi
-else
-  info "Skipped. Run later: $REPO/init-leader.sh <path>"
-fi
 
 # === Final ===
 cat <<EOF
@@ -302,6 +303,12 @@ ${B}=== Done ===${X}
 
 ${B}Reload tmux to pick up the new bindings:${X}
   ${D}tmux source-file ~/.tmux.conf${X}
+
+${B}Start a leader Claude Code session in any project:${X}
+  ${D}cd ~/Code/your-project && tx-leader${X}
+
+${B}Customize roles (optional):${X}
+  ${D}drop overrides in ~/.tx-ide/user-agents/ (e.g. LEADER.local.md)${X}
 
 ${B}Verify everything:${X}
   ${D}tx-ide-doctor${X}

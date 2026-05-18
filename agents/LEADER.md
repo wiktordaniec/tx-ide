@@ -45,10 +45,10 @@ tmux new-session -d -s <name> -c <working-directory> \
 **For coding workers, the `<prompt>` MUST begin with:**
 
 ```
-Read agents/COMMON.md and agents/DEVELOPER.md as your first actions and follow them for the duration of this session.
+Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/DEVELOPER.md as your first actions. Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.md, ~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/DEVELOPER.md, and ~/.tx-ide/user-agents/DEVELOPER.local.md (any user-agents/X.md replaces the shipped one; any user-agents/X.local.md extends it). Follow all of these for the duration of this session.
 ```
 
-Replace `agents/DEVELOPER.md` with the appropriate role file for other worker types (only `DEVELOPER.md` ships with tx-ide by default; add more role files as your workflows diverge).
+Replace `DEVELOPER` with the appropriate role for other worker types. Only `DEVELOPER.md` ships with tx-ide today; users add new roles by dropping `~/.tx-ide/user-agents/<ROLE>.md` and you reference them the same way.
 
 **Tag every spawned session** per the COMMON.md convention. Suggested baseline:
 
