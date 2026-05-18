@@ -10,7 +10,7 @@ Layered as an additive install: nothing you've configured in tmux, Claude Code, 
 |---|---|
 | `tx` (or `tx attach`) | Fuzzy-pick a tmux session and nest-attach in the current pane. Filters by `@tag` user-options rendered as chips. Supports local + remote (`tx --all`, `tx --host`). Bound to `prefix + t` as a centered popup. |
 | `tx mailbox` | Curses TUI mailbox. Shows unread Claude Code Stop events + active sessions, grouped by tmux session and tagged. `Enter` jumps to the hosting pane. Bound to `prefix + m`. |
-| `tx start` | Spawn a leader Claude Code session in tmux, primed with the shipped orchestration role files (`agents/COMMON.md`, `agents/LEADER.md`) plus any user overrides in `~/.tx-ide/user-agents/`. Works from any project directory. |
+| `tx start` | Spawn the leader Claude Code session in tmux. Runs in the tx-ide repo itself (the orchestration home), primed with the shipped role files (`agents/COMMON.md`, `agents/LEADER.md`) plus any user overrides in `~/.tx-ide/user-agents/`. |
 | `tx help` | Show the command summary. |
 | Statusline | Two-line Claude Code statusline: repo / worktree / branch · model · tokens · 5h-rate-limit · 7d-rate-limit. |
 | Pane border integration | Pane borders show inner attached session name + `@tag` chips. Remote ssh-attached panes are prefixed `(r)`. |
@@ -86,7 +86,7 @@ Hex literals in `shared/palette.sh` (tokyonight-night). Switching palettes is a 
 
 ## Leader / worker orchestration
 
-Run `tx start` from any project directory. It spawns a tmux session named `leader`, tagged `leader,llm`, running Claude Code primed with the shipped role files (`agents/COMMON.md`, `agents/LEADER.md`). Attach via `prefix+t` (or `tmux attach -t leader`). Tell the leader "spawn a developer worker for X" and it'll launch a worker session that follows `agents/DEVELOPER.md`.
+Run `tx start`. It spawns a tmux session named `leader`, tagged `leader,llm`, with cwd set to the tx-ide repo (the leader's home), running Claude Code primed with the shipped role files (`agents/COMMON.md`, `agents/LEADER.md`). Attach via `prefix+t` (or `tmux attach -t leader`). Tell the leader "spawn a developer worker for ~/Code/my-project on ticket X" and it'll launch a worker session with `-c ~/Code/my-project` that follows `agents/DEVELOPER.md`.
 
 ### Role files
 

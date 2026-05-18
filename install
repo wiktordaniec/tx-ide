@@ -98,7 +98,7 @@ I will NOT touch:
 
 After install:
   - run `tx` from any tmux pane to pick a session
-  - run `tx start` from any project to spawn a leader Claude Code session
+  - run `tx start` to spawn the leader (runs in this repo, the orchestration home)
   - run `tx mailbox` (or prefix+m) to open the inbox
 
 EOF
@@ -303,8 +303,8 @@ ${B}=== Done ===${X}
 ${B}Reload tmux to pick up the new bindings:${X}
   ${D}tmux source-file ~/.tmux.conf${X}
 
-${B}Start a leader Claude Code session in any project:${X}
-  ${D}cd ~/Code/your-project && tx start${X}
+${B}Start the leader Claude Code session:${X}
+  ${D}tx start${X}  (runs in the tx-ide repo, the orchestration home)
 
 ${B}Customize roles (optional):${X}
   ${D}drop overrides in ~/.tx-ide/user-agents/ (e.g. LEADER.local.md)${X}

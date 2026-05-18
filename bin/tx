@@ -4,7 +4,7 @@
 # Usage:
 #   tx [attach]                Open the session picker (default).
 #   tx mailbox                 Open the mailbox TUI (live + archived inbox).
-#   tx start [--project DIR]   Spawn a leader Claude Code session in tmux.
+#   tx start                   Spawn the leader Claude Code session (runs in the tx-ide repo).
 #   tx help                    Show this message.
 #
 # Picker flags (apply to `tx` / `tx attach`):
@@ -332,15 +332,14 @@ cmd_help() {
   sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
 }
 
-# tx start — spawn a leader Claude Code session in tmux.
+# tx start — spawn the leader Claude Code session in tmux. The leader's home
+# is the tx-ide repo itself (resolved from this script's path), not $PWD —
+# the leader orchestrates from there and spawns workers with their own -c.
 cmd_start() {
   local session_name="${LEADER_SESSION_NAME:-leader}"
-  local project_dir="$PWD"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --project)        project_dir="$2"; shift 2 ;;
-      --session-name)   session_name="$2"; shift 2 ;;
-      -h|--help)        cmd_help; exit 0 ;;
+      -h|--help) cmd_help; exit 0 ;;
       *) printf 'tx start: unknown argument: %s\n' "$1" >&2; exit 2 ;;
     esac
   done
@@ -351,18 +350,21 @@ cmd_start() {
     return 0
   fi
 
+  local repo_dir
+  repo_dir=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+
   # Single line, no quotes or special chars — long/complex prompts crash tmux.
   local priming_prompt='Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/LEADER.md as your first actions. Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/COMMON.md, ~/.tx-ide/user-agents/LEADER.local.md, and ~/.tx-ide/user-agents/LEADER.md (any user-agents/X.md replaces the shipped one; any user-agents/X.local.md extends it). Follow all of these for the duration of this session.'
 
   # Try resume first; on fresh start, pass the priming prompt. Passed via env
   # var to avoid quoting nightmares in tmux's command argument.
-  tmux new-session -d -s "$session_name" -c "$project_dir" \
+  tmux new-session -d -s "$session_name" -c "$repo_dir" \
     -e COLORTERM=truecolor -e TERM=xterm-256color \
     -e TX_LEADER_PROMPT="$priming_prompt" \
     'claude --continue || claude "$TX_LEADER_PROMPT"'
   tmux set -t "$session_name" @tag "leader,llm"
 
-  echo "Leader started in tmux session '$session_name' (cwd: $project_dir)."
+  echo "Leader started in tmux session '$session_name' (cwd: $repo_dir)."
   echo "Attach with: tmux attach -t $session_name  (or: tx)"
 }
 
