@@ -408,4 +408,18 @@ ${B}Customize roles (optional):${X}
 
 ${B}Undo:${X}
   ${D}$REPO/uninstall${X}
+
 EOF
+
+# If the current shell doesn't have ~/.local/bin on PATH, re-exec it so `tx`
+# is immediately callable. Skipped when PATH is already correct (most common
+# on re-runs) so we don't surprise the user with a "fresh shell" needlessly.
+case ":${PATH:-}:" in
+  *":$LOCAL_BIN:"*) : ;;
+  *)
+    if [[ -n "${SHELL:-}" && -x "$SHELL" ]]; then
+      printf '%sReloading shell so `tx` is on PATH... (exit to return to your previous shell)%s\n' "$D" "$X"
+      exec "$SHELL" -l
+    fi
+    ;;
+esac
