@@ -74,8 +74,11 @@ ${B}=== tx-ide install ===${X}
 Repo:  $REPO
 
 I will:
+  - check dependencies and brew-install tmux + fzf if missing
+      (also warn if python3 / claude / gh are not on PATH)
   - symlink CLIs into ~/.local/bin/
       tx, tmux-pane-for-session, tmux-pane-session-name
+  - add ~/.local/bin to your shell PATH (zsh/bash; marker-tracked)
   - symlink Claude mailbox hooks dir: ~/.claude/hooks/mailbox/ → repo
   - symlink statusline: ~/.claude/statusline.sh → repo
   - symlink agents dir: ~/.tx-ide/agents/ → repo (orchestration role files)
@@ -107,12 +110,90 @@ EOF
 
 confirm "Proceed?" Y || { echo "Aborted."; exit 0; }
 
+# === 0: Dependencies ===
+# Hard requirements (auto-installed via brew): tmux, fzf.
+# Soft requirements (warn only): python3, claude, gh.
+header "Dependencies"
+
+if ! command -v brew >/dev/null 2>&1; then
+  fail "homebrew" "not installed — install from https://brew.sh, then re-run"
+  exit 1
+fi
+
+for pkg in tmux fzf; do
+  if command -v "$pkg" >/dev/null 2>&1; then
+    ok "$pkg" "already installed"
+  else
+    info "installing $pkg via brew..."
+    if brew install "$pkg" 2>&1 | sed 's/^/    /'; then
+      ok "$pkg" "installed"
+    else
+      fail "$pkg" "brew install failed"
+      exit 1
+    fi
+  fi
+done
+
+# Soft checks — warn but do not block.
+if command -v python3 >/dev/null 2>&1; then
+  ok "python3" "found"
+else
+  warn "python3" "missing — mailbox + hooks need it; install: brew install python"
+fi
+if command -v claude >/dev/null 2>&1; then
+  ok "claude" "found"
+else
+  warn "claude" "missing — \`tx start\` needs Claude Code; see https://docs.claude.com/claude-code"
+fi
+if command -v gh >/dev/null 2>&1; then
+  ok "gh" "found"
+else
+  warn "gh" "missing — coding workers need it to open draft PRs; install: brew install gh"
+fi
+
 # === 1: CLIs ===
 header "CLIs into ~/.local/bin"
 mkdir -p "$LOCAL_BIN"
 link "$REPO/bin/tx"                      "$LOCAL_BIN/tx"
 link "$REPO/bin/tmux-pane-for-session"   "$LOCAL_BIN/tmux-pane-for-session"
 link "$REPO/bin/tmux-pane-session-name"  "$LOCAL_BIN/tmux-pane-session-name"
+
+# === 1b: ~/.local/bin on PATH ===
+# Add a marked block to the user's shell rc so `tx` is callable from a fresh
+# shell. Idempotent: detected via begin/end markers. Skipped if the rc already
+# references the dir some other way (we don't want to duplicate the user's setup).
+header "PATH"
+PATH_BEGIN="# === BEGIN tx-ide PATH ==="
+PATH_END="# === END tx-ide PATH ==="
+case ":${PATH:-}:" in
+  *":$LOCAL_BIN:"*) ok "$LOCAL_BIN" "already on PATH in this session" ;;
+  *) info "$LOCAL_BIN is not on \$PATH in this shell (new shells will pick it up)" ;;
+esac
+case "${SHELL:-}" in
+  */zsh)  rc_file="$HOME_DIR/.zshrc" ;;
+  */bash) rc_file="$HOME_DIR/.bash_profile" ;;
+  *)      rc_file="" ;;
+esac
+if [[ -z "$rc_file" ]]; then
+  warn "shell rc" "SHELL='${SHELL:-unknown}' — add $LOCAL_BIN to PATH yourself"
+elif [[ -f "$rc_file" ]] && grep -qF "$PATH_BEGIN" "$rc_file"; then
+  ok "$rc_file" "tx-ide PATH block already present"
+elif grep -qsF "$LOCAL_BIN" "$rc_file" 2>/dev/null; then
+  ok "$rc_file" "already references $LOCAL_BIN (left as-is)"
+else
+  if [[ -f "$rc_file" ]]; then
+    cp "$rc_file" "$rc_file.bak.$STAMP"
+  else
+    : > "$rc_file"
+  fi
+  cat >> "$rc_file" <<HEREDOC
+
+$PATH_BEGIN
+case ":\$PATH:" in *":\$HOME/.local/bin:"*) ;; *) export PATH="\$HOME/.local/bin:\$PATH" ;; esac
+$PATH_END
+HEREDOC
+  ok "$rc_file" "PATH block added (open a new shell, or: source $rc_file)"
+fi
 
 # === 2: Claude hooks dir ===
 header "Claude mailbox hooks"

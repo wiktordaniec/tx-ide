@@ -25,6 +25,7 @@ I will remove:
   - ~/.tx-ide/agents (symlink) and ~/.tx-ide/tmux.conf
   - the empty ~/.tx-ide/ directory (only if nothing user-owned remains)
   - the tx-ide block from ~/.tmux.conf (matched by markers)
+  - the tx-ide PATH block from ~/.zshrc / ~/.bash_profile (matched by markers)
   - from ~/.claude/settings.json: only the entries listed in the
     _tx_ide_managed marker key (with backup; your other hooks,
     permissions, plugins, theme are untouched)
@@ -78,27 +79,35 @@ else
   skip "$statusline_link" "not present"
 fi
 
-# === ~/.tmux.conf block ===
+# === Strip marker-bounded blocks from rc files ===
+# Generic helper: removes the block delimited by BEGIN/END markers from $file,
+# with a backup. Cleans trailing blank lines we may have introduced.
+strip_block() {
+  local file="$1" begin="$2" end="$3" label="$4"
+  if [[ -f "$file" ]] && grep -qF "$begin" "$file"; then
+    local stamp
+    stamp=$(date +%Y%m%d%H%M%S)
+    cp "$file" "$file.bak.$stamp"
+    awk -v b="$begin" -v e="$end" '
+      $0==b { skip=1; next }
+      $0==e { skip=0; next }
+      !skip
+    ' "$file" > "$file.tmp"
+    sed -e :a -e '/^$/{$d;N;ba' -e '}' "$file.tmp" > "$file"
+    rm "$file.tmp"
+    ok "$file" "$label removed (backup: $file.bak.$stamp)"
+  else
+    skip "$file" "no $label block found"
+  fi
+}
+
 printf '\n%s~/.tmux.conf block%s\n' "$B" "$X"
-USER_TMUX_CONF="$HOME_DIR/.tmux.conf"
-BEGIN_MARKER="# === BEGIN tx-ide ==="
-END_MARKER="# === END tx-ide ==="
-if [[ -f "$USER_TMUX_CONF" ]] && grep -qF "$BEGIN_MARKER" "$USER_TMUX_CONF"; then
-  STAMP=$(date +%Y%m%d%H%M%S)
-  cp "$USER_TMUX_CONF" "$USER_TMUX_CONF.bak.$STAMP"
-  awk -v b="$BEGIN_MARKER" -v e="$END_MARKER" '
-    $0==b { skip=1; next }
-    $0==e { skip=0; next }
-    !skip
-  ' "$USER_TMUX_CONF" > "$USER_TMUX_CONF.tmp"
-  # Strip trailing blank lines we may have introduced
-  awk 'NR==FNR{n=NR} NR<=n{print}' "$USER_TMUX_CONF.tmp" "$USER_TMUX_CONF.tmp" \
-    | sed -e :a -e '/^$/{$d;N;ba' -e '}' > "$USER_TMUX_CONF"
-  rm "$USER_TMUX_CONF.tmp"
-  ok "$USER_TMUX_CONF" "block removed (backup: $USER_TMUX_CONF.bak.$STAMP)"
-else
-  skip "$USER_TMUX_CONF" "no tx-ide block found"
-fi
+strip_block "$HOME_DIR/.tmux.conf" "# === BEGIN tx-ide ===" "# === END tx-ide ===" "tx-ide tmux"
+
+printf '\n%sShell PATH block%s\n' "$B" "$X"
+for rc in "$HOME_DIR/.zshrc" "$HOME_DIR/.bash_profile" "$HOME_DIR/.bashrc"; do
+  strip_block "$rc" "# === BEGIN tx-ide PATH ===" "# === END tx-ide PATH ===" "tx-ide PATH"
+done
 
 # === ~/.tx-ide/ ===
 printf '\n%s~/.tx-ide/%s\n' "$B" "$X"
