@@ -32,12 +32,13 @@ trap 'rm -f "$CONF"' EXIT
 
 # --- Popups (prefix+t / prefix+m) ---
 # prefix+t: set TX_ORIGIN_PANE so tx can respawn the invoking pane after
-# attach; then display-popup with the tx CLI. prefix+m: same shape for mx.
-# prefix+M re-homes the default `select-pane -m` that prefix+m used to do.
+# attach; then display-popup with the tx CLI. prefix+m: same shape for the
+# mailbox subcommand. prefix+M re-homes the default `select-pane -m` that
+# prefix+m used to do.
 if [ "$popups" = on ]; then
   cat >> "$CONF" <<'EOF'
 bind t setenv -gF TX_ORIGIN_PANE "#{pane_id}" \; display-popup -E -w 100 -h 30 -x C -y 1 -T " tx " "tx"
-bind m display-popup -E -w 100 -h 30 -x C -y 1 -T " mx " "mx"
+bind m display-popup -E -w 100 -h 30 -x C -y 1 -T " mailbox " "tx mailbox"
 bind M select-pane -m
 EOF
 fi

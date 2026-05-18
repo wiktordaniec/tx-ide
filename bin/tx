@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# tx — fuzzy-pick a tmux session and nest-attach in this pane.
+# tx — tmux + Claude Code session controller.
 #
 # Usage:
-#   tx                    Open the picker (local sessions).
-#   tx -f QUERY           Open the picker with QUERY pre-filled in the search.
-#   tx -host [ALIAS]      Pick from remote tmux on ssh ALIAS (default: personal).
-#   tx -all               Pick from local + personal, remote rows prefixed (r).
-#   tx --jump             Enter focuses the existing pane hosting the session
-#                         instead of nest-attaching here (popup-friendly).
-#   tx --help             Show this message.
+#   tx [attach]                Open the session picker (default).
+#   tx mailbox                 Open the mailbox TUI (live + archived inbox).
+#   tx start [--project DIR]   Spawn a leader Claude Code session in tmux.
+#   tx help                    Show this message.
+#
+# Picker flags (apply to `tx` / `tx attach`):
+#   -f QUERY                   Pre-fill the search with QUERY.
+#   --host [ALIAS]             Pick from remote tmux on ssh ALIAS (default: personal).
+#   --all                      Pick from local + personal, remote rows prefixed (r).
+#   --jump / -j                Enter focuses the existing pane hosting the session
+#                              instead of nest-attaching here (popup-friendly).
+#
+# Flags must precede the subcommand.
 set -u
 
 # palette.sh lives at <repo>/shared/palette.sh — one level up from this file.
@@ -247,10 +253,10 @@ cmd_pick() {
   local list_args=""
   if ((MIX)); then
     refresh_interval=5
-    list_args="-all"
+    list_args="--all"
   elif [[ -n "$HOST" ]]; then
     refresh_interval=5
-    list_args="-host ${HOST}"
+    list_args="--host ${HOST}"
   fi
 
   # Size the NAME column to fit the current view + current longest name.
@@ -323,12 +329,53 @@ cmd_pick() {
 }
 
 cmd_help() {
-  sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# tx start — spawn a leader Claude Code session in tmux.
+cmd_start() {
+  local session_name="${LEADER_SESSION_NAME:-leader}"
+  local project_dir="$PWD"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --project)        project_dir="$2"; shift 2 ;;
+      --session-name)   session_name="$2"; shift 2 ;;
+      -h|--help)        cmd_help; exit 0 ;;
+      *) printf 'tx start: unknown argument: %s\n' "$1" >&2; exit 2 ;;
+    esac
+  done
+
+  if tmux has-session -t "=$session_name" 2>/dev/null; then
+    echo "Leader session '$session_name' already running."
+    echo "Attach with: tmux attach -t $session_name  (or: tx)"
+    return 0
+  fi
+
+  # Single line, no quotes or special chars — long/complex prompts crash tmux.
+  local priming_prompt='Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/LEADER.md as your first actions. Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/COMMON.md, ~/.tx-ide/user-agents/LEADER.local.md, and ~/.tx-ide/user-agents/LEADER.md (any user-agents/X.md replaces the shipped one; any user-agents/X.local.md extends it). Follow all of these for the duration of this session.'
+
+  # Try resume first; on fresh start, pass the priming prompt. Passed via env
+  # var to avoid quoting nightmares in tmux's command argument.
+  tmux new-session -d -s "$session_name" -c "$project_dir" \
+    -e COLORTERM=truecolor -e TERM=xterm-256color \
+    -e TX_LEADER_PROMPT="$priming_prompt" \
+    'claude --continue || claude "$TX_LEADER_PROMPT"'
+  tmux set -t "$session_name" @tag "leader,llm"
+
+  echo "Leader started in tmux session '$session_name' (cwd: $project_dir)."
+  echo "Attach with: tmux attach -t $session_name  (or: tx)"
+}
+
+# tx mailbox — exec the Python curses TUI in lib/.
+cmd_mailbox() {
+  local self_dir
+  self_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+  exec "$self_dir/../lib/tx-mailbox" "$@"
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-  -all)
+  --all)
     MIX=1
     shift
     ;;
@@ -336,7 +383,7 @@ while [[ $# -gt 0 ]]; do
     JUMP_MODE=1
     shift
     ;;
-  -host)
+  --host)
     # Alias is optional; defaults to `personal`. Treat a following arg as the
     # alias only when it doesn't look like a flag (`-…`) or hidden subcommand (`_…`).
     if [[ -n "${2:-}" && "${2:0:1}" != "-" && "${2:0:1}" != "_" ]]; then
@@ -352,22 +399,16 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${1:-}" in
--h | --help) cmd_help ;;
-_list)
-  shift
-  cmd_list "$@"
-  ;;
-_edit-tag)
-  shift
-  cmd_edit_tag "$@"
-  ;;
-_kill)
-  shift
-  cmd_kill "$@"
-  ;;
--f | --filter | "") cmd_pick "$@" ;;
+-h | --help | help)         cmd_help ;;
+attach | "")                shift 2>/dev/null; cmd_pick "$@" ;;
+mailbox)                    shift; cmd_mailbox "$@" ;;
+start)                      shift; cmd_start "$@" ;;
+_list)                      shift; cmd_list "$@" ;;
+_edit-tag)                  shift; cmd_edit_tag "$@" ;;
+_kill)                      shift; cmd_kill "$@" ;;
+-f | --filter)              cmd_pick "$@" ;;
 *)
-  printf 'tx: unknown argument: %s\n\n' "$1" >&2
+  printf 'tx: unknown command: %s\n\n' "$1" >&2
   cmd_help
   exit 2
   ;;

@@ -1,27 +1,28 @@
 # tx-ide
 
-A tmux + Claude Code "view" — `tx` (session picker), `mx` (mailbox), a repo/branch/model statusline, and an orchestration template for spawning Claude Code worker sessions.
+A tmux + Claude Code "view" — one CLI (`tx`) for picking sessions, opening the mailbox, and spawning leader/worker Claude Code sessions, plus a repo/branch/model statusline.
 
-Layered as an additive install: nothing you've configured in tmux, Claude Code, or your shell gets overwritten. Everything goes into files **tx-ide owns** (`~/.tx-ide/`, `~/.claude/settings.local.json`) or into clearly-marked blocks of your existing config (`~/.tmux.conf`). `uninstall.sh` puts it all back.
+Layered as an additive install: nothing you've configured in tmux, Claude Code, or your shell gets overwritten. Everything goes into files **tx-ide owns** (`~/.tx-ide/`, `~/.claude/settings.local.json`) or into clearly-marked blocks of your existing config (`~/.tmux.conf`). `./uninstall` puts it all back.
 
 ## What you get
 
-| Tool | What it does |
+| Command | What it does |
 |---|---|
-| `tx` | Fuzzy-pick a tmux session and nest-attach in the current pane. Filters by `@tag` user-options rendered as chips. Supports local + remote (`tx -all`, `tx -host`). Bound to `prefix + t` as a centered popup. |
-| `mx` | Curses TUI mailbox. Shows unread Claude Code Stop events + active sessions, grouped by tmux session and tagged. `Enter` jumps to the hosting pane. Bound to `prefix + m`. |
+| `tx` (or `tx attach`) | Fuzzy-pick a tmux session and nest-attach in the current pane. Filters by `@tag` user-options rendered as chips. Supports local + remote (`tx --all`, `tx --host`). Bound to `prefix + t` as a centered popup. |
+| `tx mailbox` | Curses TUI mailbox. Shows unread Claude Code Stop events + active sessions, grouped by tmux session and tagged. `Enter` jumps to the hosting pane. Bound to `prefix + m`. |
+| `tx start` | Spawn a leader Claude Code session in tmux, primed with the shipped orchestration role files (`agents/COMMON.md`, `agents/LEADER.md`) plus any user overrides in `~/.tx-ide/user-agents/`. Works from any project directory. |
+| `tx help` | Show the command summary. |
 | Statusline | Two-line Claude Code statusline: repo / worktree / branch · model · tokens · 5h-rate-limit · 7d-rate-limit. |
 | Pane border integration | Pane borders show inner attached session name + `@tag` chips. Remote ssh-attached panes are prefixed `(r)`. |
 | Claude scroll intercept | `C-u` / `C-d` scroll Claude Code's TUI (PageUp / PageDown). Pass through everywhere else. |
 | `M-1..9` / `User0..8` | Pane and window quick-switch. Requires your terminal to emit the matching escape sequences (`setup/iterm.sh` configures iTerm2). |
-| `tx-leader` | Spawn a leader Claude Code session in tmux, primed with the shipped orchestration role files (`agents/COMMON.md`, `agents/LEADER.md`) plus any user overrides in `~/.tx-ide/user-agents/`. Works from any project directory. |
 
 ## Install
 
 ```bash
 git clone <this-repo> ~/Desktop/Coding/tx-ide-private
 cd ~/Desktop/Coding/tx-ide-private
-./install.sh
+./install
 ```
 
 The installer is **click-through** — it tells you what it will do, asks for one confirm, then runs every step idempotently with backups. Re-run any time to update or to reconcile drift.
@@ -29,21 +30,21 @@ The installer is **click-through** — it tells you what it will do, asks for on
 When done:
 ```bash
 tmux source-file ~/.tmux.conf   # pick up the new bindings
-tx-ide-doctor                   # verify everything's green
+tx help                         # see available commands
 ```
 
 ## Uninstall
 
 ```bash
-./uninstall.sh
+./uninstall
 ```
 
-Reverses every change install.sh made. Leaves your inbox data (`~/.claude/mailbox/`), any scaffolded leader directory, and the repo itself in place.
+Reverses every change `./install` made. Leaves your inbox data (`~/.claude/mailbox/`), your role overrides (`~/.tx-ide/user-agents/`), and the repo itself in place.
 
-## What install.sh actually changes
+## What install actually changes
 
 **Creates / symlinks** (tx-ide owns these — safe to delete by hand):
-- `~/.local/bin/{tx,mx,tx-leader,tmux-pane-for-session,tmux-pane-session-name}` — symlinks to `bin/`
+- `~/.local/bin/{tx,tmux-pane-for-session,tmux-pane-session-name}` — symlinks to `bin/`
 - `~/.claude/hooks/mailbox/` — symlink to `claude/hooks/`
 - `~/.claude/statusline.sh` — symlink to `claude/statusline.sh`
 - `~/.tx-ide/agents/` — symlink to `agents/` (shipped role files; updates with `git pull`)
@@ -85,7 +86,7 @@ Hex literals in `shared/palette.sh` (tokyonight-night). Switching palettes is a 
 
 ## Leader / worker orchestration
 
-Run `tx-leader` from any project directory. It spawns a tmux session named `leader`, tagged `leader,llm`, running Claude Code primed with the shipped role files (`agents/COMMON.md`, `agents/LEADER.md`). Attach via `prefix+t` (or `tmux attach -t leader`). Tell the leader "spawn a developer worker for X" and it'll launch a worker session that follows `agents/DEVELOPER.md`.
+Run `tx start` from any project directory. It spawns a tmux session named `leader`, tagged `leader,llm`, running Claude Code primed with the shipped role files (`agents/COMMON.md`, `agents/LEADER.md`). Attach via `prefix+t` (or `tmux attach -t leader`). Tell the leader "spawn a developer worker for X" and it'll launch a worker session that follows `agents/DEVELOPER.md`.
 
 ### Role files
 
@@ -103,20 +104,12 @@ Drop files in `~/.tx-ide/user-agents/`:
 - `~/.tx-ide/user-agents/<ROLE>.md` — **replaces** the shipped role outright (same filename shadows it).
 - `~/.tx-ide/user-agents/<NEW-ROLE>.md` — adds a brand new role you can spawn workers for.
 
-Every prompt template (in `tx-leader` and `agents/LEADER.md`'s worker-spawn recipe) reads `~/.tx-ide/agents/<ROLE>.md` followed by both `~/.tx-ide/user-agents/<ROLE>.md` and `~/.tx-ide/user-agents/<ROLE>.local.md` if they exist.
+Every prompt template (in `tx start` and `agents/LEADER.md`'s worker-spawn recipe) reads `~/.tx-ide/agents/<ROLE>.md` followed by both `~/.tx-ide/user-agents/<ROLE>.md` and `~/.tx-ide/user-agents/<ROLE>.local.md` if they exist.
 
 ## Requirements
 
 - macOS (iTerm2 + `say` + `defaults write` are macOS-only; Linux support is a future PR)
 - `tmux`, `fzf`, `python3` (stdlib), `openssl` (for hook entry IDs)
-
-## Verify / debug
-
-```bash
-tx-ide-doctor
-```
-
-Checks CLIs on PATH, symlinks, settings.local.json contents, live tmux bindings (if a server is running), iTerm GlobalKeyMap, mx-speaker daemon. Read-only — makes no changes.
 
 ## License
 

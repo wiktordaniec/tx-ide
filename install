@@ -75,7 +75,7 @@ Repo:  $REPO
 
 I will:
   - symlink CLIs into ~/.local/bin/
-      tx, mx, tx-leader, tmux-pane-for-session, tmux-pane-session-name
+      tx, tmux-pane-for-session, tmux-pane-session-name
   - symlink Claude mailbox hooks dir: ~/.claude/hooks/mailbox/ → repo
   - symlink statusline: ~/.claude/statusline.sh → repo
   - symlink agents dir: ~/.tx-ide/agents/ → repo (orchestration role files)
@@ -84,8 +84,8 @@ I will:
   - add one source-file block to ~/.tmux.conf (with markers + backup)
   - add hooks + statusLine to ~/.claude/settings.json (with backup)
       (4 mailbox hook entries + statusLine, tracked via a _tx_ide_managed
-       marker so uninstall removes only ours and doctor detects drift.
-       Your existing hooks, permissions, plugins, theme are untouched.)
+       marker so uninstall removes only ours. Your existing hooks,
+       permissions, plugins, theme are untouched.)
   - configure iTerm keyboard map (only if iTerm + not currently running)
   - start the mx-speaker background daemon
 
@@ -97,8 +97,9 @@ I will NOT touch:
   - ~/.tx-ide/user-agents/ contents (your overrides survive re-runs)
 
 After install:
-  - run tx-leader from any project to start a leader Claude Code session
-  - run tx-ide-doctor to verify
+  - run `tx` from any tmux pane to pick a session
+  - run `tx start` from any project to spawn a leader Claude Code session
+  - run `tx mailbox` (or prefix+m) to open the inbox
 
 EOF
 
@@ -108,8 +109,6 @@ confirm "Proceed?" Y || { echo "Aborted."; exit 0; }
 header "CLIs into ~/.local/bin"
 mkdir -p "$LOCAL_BIN"
 link "$REPO/bin/tx"                      "$LOCAL_BIN/tx"
-link "$REPO/bin/mx"                      "$LOCAL_BIN/mx"
-link "$REPO/bin/tx-leader"               "$LOCAL_BIN/tx-leader"
 link "$REPO/bin/tmux-pane-for-session"   "$LOCAL_BIN/tmux-pane-for-session"
 link "$REPO/bin/tmux-pane-session-name"  "$LOCAL_BIN/tmux-pane-session-name"
 
@@ -305,14 +304,11 @@ ${B}Reload tmux to pick up the new bindings:${X}
   ${D}tmux source-file ~/.tmux.conf${X}
 
 ${B}Start a leader Claude Code session in any project:${X}
-  ${D}cd ~/Code/your-project && tx-leader${X}
+  ${D}cd ~/Code/your-project && tx start${X}
 
 ${B}Customize roles (optional):${X}
   ${D}drop overrides in ~/.tx-ide/user-agents/ (e.g. LEADER.local.md)${X}
 
-${B}Verify everything:${X}
-  ${D}tx-ide-doctor${X}
-
 ${B}Undo:${X}
-  ${D}$REPO/uninstall.sh${X}
+  ${D}$REPO/uninstall${X}
 EOF

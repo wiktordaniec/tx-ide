@@ -2,7 +2,7 @@
 #   . "<repo>/shared/palette.sh"
 #
 # Canonical reference for tx-ide. Non-bash consumers (tmux/tx-ide.tmux,
-# tmux/bin/mx, claude/statusline.sh) duplicate the literals and carry a
+# lib/tx-mailbox, claude/statusline.sh) duplicate the literals and carry a
 # comment pointing back here.
 #
 # === Switching palettes ===
@@ -10,7 +10,7 @@
 #   1. Update the hex values below
 #   2. Re-apply your terminal's color preset to match (iTerm: open the
 #      matching .itermcolors from tokyonight's extras dir, then apply)
-#   3. Update the hex literals in: tmux/tx-ide.tmux, tmux/bin/mx,
+#   3. Update the hex literals in: tmux/tx-ide.tmux, lib/tx-mailbox,
 #      claude/statusline.sh (grep for the old hex)
 
 # === Semantic colors ===
