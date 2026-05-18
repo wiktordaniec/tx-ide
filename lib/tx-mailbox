@@ -565,6 +565,10 @@ def tui(stdscr):
         curses.curs_set(0)
     except curses.error:
         pass
+    try:
+        curses.set_escdelay(25)
+    except (AttributeError, curses.error):
+        pass
     stdscr.timeout(1000)
     styles = init_styles()
 
