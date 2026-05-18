@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from paths import INBOX_FILE
+from paths import INBOX_FILE, CONFIG_FILE
 
 HOOK_DIR = Path(__file__).resolve().parent
 SPEAK_SCRIPT = HOOK_DIR / "speak.sh"
@@ -34,7 +34,14 @@ def load_entries():
     return entries
 
 
+def load_config():
+    with CONFIG_FILE.open() as config_handle:
+        return json.load(config_handle)
+
+
 def speak(text):
+    if not load_config()["tts"]["enabled"]:
+        return
     subprocess.Popen(
         [str(SPEAK_SCRIPT), text],
         stdout=subprocess.DEVNULL,
@@ -57,7 +64,10 @@ def current_mtime():
 def main():
     entries = load_entries()
     seen_ids = {entry.get("id") for entry in entries if entry.get("id")}
-    print(f"[mx-speaker] bootstrap: {len(seen_ids)} existing entries marked seen", flush=True)
+    print(
+        f"[mx-speaker] bootstrap: {len(seen_ids)} existing entries marked seen",
+        flush=True,
+    )
 
     # pending[id] = {"session": str, "created_at": monotonic_float, "fired": {1, 5}-subset}
     pending = {}

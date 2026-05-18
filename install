@@ -10,12 +10,17 @@ CLAUDE_DIR="$HOME_DIR/.claude"
 TX_IDE_DIR="$HOME_DIR/.tx-ide"
 STAMP=$(date +%Y%m%d%H%M%S)
 
-B=$'\e[1m'; G=$'\e[32m'; Y=$'\e[33m'; RED=$'\e[31m'; D=$'\e[2m'; X=$'\e[0m'
-ok()    { printf '  %s→%s %-48s %s%s%s\n' "$G" "$X" "$1" "$G" "${2:-ok}" "$X"; }
-warn()  { printf '  %s→%s %-48s %s%s%s\n' "$Y" "$X" "$1" "$Y" "$2" "$X"; }
-fail()  { printf '  %s→%s %-48s %s%s%s\n' "$RED" "$X" "$1" "$RED" "$2" "$X"; }
-info()  { printf '  %s%s%s\n' "$D" "$*" "$X"; }
-header(){ printf '\n%s%s%s\n' "$B" "$*" "$X"; }
+B=$'\e[1m'
+G=$'\e[32m'
+Y=$'\e[33m'
+RED=$'\e[31m'
+D=$'\e[2m'
+X=$'\e[0m'
+ok() { printf '  %s→%s %-48s %s%s%s\n' "$G" "$X" "$1" "$G" "${2:-ok}" "$X"; }
+warn() { printf '  %s→%s %-48s %s%s%s\n' "$Y" "$X" "$1" "$Y" "$2" "$X"; }
+fail() { printf '  %s→%s %-48s %s%s%s\n' "$RED" "$X" "$1" "$RED" "$2" "$X"; }
+info() { printf '  %s%s%s\n' "$D" "$*" "$X"; }
+header() { printf '\n%s%s%s\n' "$B" "$*" "$X"; }
 
 confirm() {
   local prompt="$1" default="${2:-N}" reply
@@ -102,13 +107,16 @@ I will NOT touch:
   - ~/.tx-ide/user-agents/ contents (your overrides survive re-runs)
 
 After install:
-  - run `tx` from any tmux pane to pick a session
-  - run `tx start` to spawn the leader (runs in this repo, the orchestration home)
-  - run `tx mailbox` (or prefix+m) to open the inbox
+  - run $(tx) from any tmux pane to pick a session
+  - run $(tx start) to spawn the leader (runs in this repo, the orchestration home)
+  - run $(tx mailbox) (or prefix+m) to open the inbox
 
 EOF
 
-confirm "Proceed?" Y || { echo "Aborted."; exit 0; }
+confirm "Proceed?" Y || {
+  echo "Aborted."
+  exit 0
+}
 
 # === 0: Dependencies ===
 # Hard requirements (auto-installed via brew): tmux, fzf.
@@ -154,9 +162,9 @@ fi
 # === 1: CLIs ===
 header "CLIs into ~/.local/bin"
 mkdir -p "$LOCAL_BIN"
-link "$REPO/bin/tx"                      "$LOCAL_BIN/tx"
-link "$REPO/bin/tmux-pane-for-session"   "$LOCAL_BIN/tmux-pane-for-session"
-link "$REPO/bin/tmux-pane-session-name"  "$LOCAL_BIN/tmux-pane-session-name"
+link "$REPO/bin/tx" "$LOCAL_BIN/tx"
+link "$REPO/bin/tmux-pane-for-session" "$LOCAL_BIN/tmux-pane-for-session"
+link "$REPO/bin/tmux-pane-session-name" "$LOCAL_BIN/tmux-pane-session-name"
 
 # === 1b: ~/.local/bin on PATH ===
 # Add a marked block to the user's shell rc so `tx` is callable from a fresh
@@ -166,13 +174,13 @@ header "PATH"
 PATH_BEGIN="# === BEGIN tx-ide PATH ==="
 PATH_END="# === END tx-ide PATH ==="
 case ":${PATH:-}:" in
-  *":$LOCAL_BIN:"*) ok "$LOCAL_BIN" "already on PATH in this session" ;;
-  *) info "$LOCAL_BIN is not on \$PATH in this shell (new shells will pick it up)" ;;
+*":$LOCAL_BIN:"*) ok "$LOCAL_BIN" "already on PATH in this session" ;;
+*) info "$LOCAL_BIN is not on \$PATH in this shell (new shells will pick it up)" ;;
 esac
 case "${SHELL:-}" in
-  */zsh)  rc_file="$HOME_DIR/.zshrc" ;;
-  */bash) rc_file="$HOME_DIR/.bash_profile" ;;
-  *)      rc_file="" ;;
+*/zsh) rc_file="$HOME_DIR/.zshrc" ;;
+*/bash) rc_file="$HOME_DIR/.bash_profile" ;;
+*) rc_file="" ;;
 esac
 if [[ -z "$rc_file" ]]; then
   warn "shell rc" "SHELL='${SHELL:-unknown}' — add $LOCAL_BIN to PATH yourself"
@@ -184,9 +192,9 @@ else
   if [[ -f "$rc_file" ]]; then
     cp "$rc_file" "$rc_file.bak.$STAMP"
   else
-    : > "$rc_file"
+    : >"$rc_file"
   fi
-  cat >> "$rc_file" <<HEREDOC
+  cat >>"$rc_file" <<HEREDOC
 
 $PATH_BEGIN
 case ":\$PATH:" in *":\$HOME/.local/bin:"*) ;; *) export PATH="\$HOME/.local/bin:\$PATH" ;; esac
@@ -229,7 +237,7 @@ else
   if [[ -f "$TX_IDE_CONF" ]]; then
     cp "$TX_IDE_CONF" "$TX_IDE_CONF.bak.$STAMP"
   fi
-  printf '%s' "$desired_content" > "$TX_IDE_CONF"
+  printf '%s' "$desired_content" >"$TX_IDE_CONF"
   ok "$TX_IDE_CONF" "written"
 fi
 
@@ -246,10 +254,10 @@ else
     cp "$USER_TMUX_CONF" "$USER_TMUX_CONF.bak.$STAMP"
     note="backup: $USER_TMUX_CONF.bak.$STAMP"
   else
-    : > "$USER_TMUX_CONF"
+    : >"$USER_TMUX_CONF"
     note="file created"
   fi
-  cat >> "$USER_TMUX_CONF" <<EOF
+  cat >>"$USER_TMUX_CONF" <<EOF
 
 $BEGIN_MARKER
 source-file $TX_IDE_CONF
@@ -381,11 +389,35 @@ else
   warn "iTerm" "TERM_PROGRAM='${TERM_PROGRAM:-unknown}' — skipping (iTerm only)"
 fi
 
-# === 9: mx-speaker daemon ===
+# === 9: mailbox config ===
+# The mx-speaker daemon (and any future mailbox-side feature) reads this file
+# on every event and assumes it exists with all expected keys, so install must
+# seed it. Re-runs preserve user edits.
+write_default_mailbox_config() {
+  cat >"$1" <<'JSON'
+{
+  "tts": {
+    "enabled": true
+  }
+}
+JSON
+}
+
+header "Mailbox config"
+config_file="$HOME_DIR/.claude/mailbox/config.json"
+if [[ -e "$config_file" ]]; then
+  ok "$config_file" "exists (preserved)"
+else
+  mkdir -p "$(dirname "$config_file")"
+  write_default_mailbox_config "$config_file"
+  ok "$config_file" "seeded"
+fi
+
+# === 10: mx-speaker daemon ===
 header "mx-speaker daemon"
 "$REPO/claude/hooks/start-speaker.sh" 2>&1 | sed 's/^/  → /'
 
-# === 10: reload tmux (only if a server is already running) ===
+# === 11: reload tmux (only if a server is already running) ===
 header "Reload tmux"
 if tmux info >/dev/null 2>&1; then
   if tmux source-file "$HOME_DIR/.tmux.conf" 2>&1 | sed 's/^/  → /'; then
@@ -415,11 +447,11 @@ EOF
 # is immediately callable. Skipped when PATH is already correct (most common
 # on re-runs) so we don't surprise the user with a "fresh shell" needlessly.
 case ":${PATH:-}:" in
-  *":$LOCAL_BIN:"*) : ;;
-  *)
-    if [[ -n "${SHELL:-}" && -x "$SHELL" ]]; then
-      printf '%sReloading shell so `tx` is on PATH... (exit to return to your previous shell)%s\n' "$D" "$X"
-      exec "$SHELL" -l
-    fi
-    ;;
+*":$LOCAL_BIN:"*) : ;;
+*)
+  if [[ -n "${SHELL:-}" && -x "$SHELL" ]]; then
+    printf '%sReloading shell so `tx` is on PATH... (exit to return to your previous shell)%s\n' "$D" "$X"
+    exec "$SHELL" -l
+  fi
+  ;;
 esac
