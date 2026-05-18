@@ -8,10 +8,10 @@ Layered as an additive install: nothing you've configured in tmux, Claude Code, 
 
 | Command | What it does |
 |---|---|
-| `tx` (or `tx attach`) | Fuzzy-pick a tmux session and nest-attach in the current pane. Filters by `@tag` user-options rendered as chips. Supports local + remote (`tx --all`, `tx --host`). Bound to `prefix + t` as a centered popup. |
-| `tx mailbox` | Curses TUI mailbox. Shows unread Claude Code Stop events + active sessions, grouped by tmux session and tagged. `Enter` jumps to the hosting pane. Bound to `prefix + m`. |
 | `tx start` | Spawn the leader Claude Code session in tmux. Runs in the tx-ide repo itself (the orchestration home), primed with the shipped role files (`agents/COMMON.md`, `agents/LEADER.md`) plus any user overrides in `~/.tx-ide/user-agents/`. |
-| `tx help` | Show the command summary. |
+| `tx attach` | Fuzzy-pick a tmux session and nest-attach in the current pane. Filters by `@tag` user-options rendered as chips. Supports local + remote (`tx attach --all`, `tx attach --host`). Bound to `prefix + t` as a centered popup. |
+| `tx mailbox` | Curses TUI mailbox. Shows unread Claude Code Stop events + active sessions, grouped by tmux session and tagged. `Enter` jumps to the hosting pane. Bound to `prefix + m`. |
+| `tx` / `tx help` | Show the command summary. |
 | Statusline | Two-line Claude Code statusline: repo / worktree / branch · model · tokens · 5h-rate-limit · 7d-rate-limit. |
 | Pane border integration | Pane borders show inner attached session name + `@tag` chips. Remote ssh-attached panes are prefixed `(r)`. |
 | Claude scroll intercept | `C-u` / `C-d` scroll Claude Code's TUI (PageUp / PageDown). Pass through everywhere else. |
@@ -27,10 +27,10 @@ cd ~/Desktop/Coding/tx-ide-private
 
 The installer is **click-through** — it tells you what it will do, asks for one confirm, then runs every step idempotently with backups. Re-run any time to update or to reconcile drift.
 
-When done:
+The installer reloads tmux's config for you if a server is running. After it finishes:
 ```bash
-tmux source-file ~/.tmux.conf   # pick up the new bindings
-tx help                         # see available commands
+tx help     # see available commands
+tx start    # spawn the leader Claude Code session
 ```
 
 ## Uninstall

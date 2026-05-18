@@ -2,12 +2,12 @@
 # tx — tmux + Claude Code session controller.
 #
 # Usage:
-#   tx [attach]                Open the session picker (default).
-#   tx mailbox                 Open the mailbox TUI (live + archived inbox).
 #   tx start                   Spawn the leader Claude Code session (runs in the tx-ide repo).
-#   tx help                    Show this message.
+#   tx attach                  Open the session picker.
+#   tx mailbox                 Open the mailbox TUI (live + archived inbox).
+#   tx help                    Show this message (also what `tx` shows with no args).
 #
-# Picker flags (apply to `tx` / `tx attach`):
+# Picker flags (apply to `tx attach`):
 #   -f QUERY                   Pre-fill the search with QUERY.
 #   --host [ALIAS]             Pick from remote tmux on ssh ALIAS (default: personal).
 #   --all                      Pick from local + personal, remote rows prefixed (r).
@@ -401,14 +401,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${1:-}" in
--h | --help | help)         cmd_help ;;
-attach | "")                shift 2>/dev/null; cmd_pick "$@" ;;
+"" | -h | --help | help)    cmd_help ;;
+attach)                     shift; cmd_pick "$@" ;;
 mailbox)                    shift; cmd_mailbox "$@" ;;
 start)                      shift; cmd_start "$@" ;;
 _list)                      shift; cmd_list "$@" ;;
 _edit-tag)                  shift; cmd_edit_tag "$@" ;;
 _kill)                      shift; cmd_kill "$@" ;;
--f | --filter)              cmd_pick "$@" ;;
 *)
   printf 'tx: unknown command: %s\n\n' "$1" >&2
   cmd_help

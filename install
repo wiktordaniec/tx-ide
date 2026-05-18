@@ -295,13 +295,20 @@ fi
 header "mx-speaker daemon"
 "$REPO/claude/hooks/start-speaker.sh" 2>&1 | sed 's/^/  → /'
 
+# === 10: reload tmux (only if a server is already running) ===
+header "Reload tmux"
+if tmux info >/dev/null 2>&1; then
+  if tmux source-file "$HOME_DIR/.tmux.conf" 2>&1 | sed 's/^/  → /'; then
+    ok "tmux bindings" "reloaded"
+  fi
+else
+  info "no tmux server running — bindings will load when you next start tmux"
+fi
+
 # === Final ===
 cat <<EOF
 
 ${B}=== Done ===${X}
-
-${B}Reload tmux to pick up the new bindings:${X}
-  ${D}tmux source-file ~/.tmux.conf${X}
 
 ${B}Start the leader Claude Code session:${X}
   ${D}tx start${X}  (runs in the tx-ide repo, the orchestration home)

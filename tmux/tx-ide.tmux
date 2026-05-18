@@ -37,7 +37,7 @@ trap 'rm -f "$CONF"' EXIT
 # prefix+m used to do.
 if [ "$popups" = on ]; then
   cat >> "$CONF" <<'EOF'
-bind t setenv -gF TX_ORIGIN_PANE "#{pane_id}" \; display-popup -E -w 100 -h 30 -x C -y 1 -T " tx " "tx"
+bind t setenv -gF TX_ORIGIN_PANE "#{pane_id}" \; display-popup -E -w 100 -h 30 -x C -y 1 -T " tx " "tx attach"
 bind m display-popup -E -w 100 -h 30 -x C -y 1 -T " mailbox " "tx mailbox"
 bind M select-pane -m
 EOF
