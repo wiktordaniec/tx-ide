@@ -2,8 +2,9 @@
 # tx — tmux + Claude Code session controller.
 #
 # Usage:
-#   tx start                   Spawn the leader Claude Code session (runs in the tx-ide repo),
+#   tx start [-r|--restart]    Spawn the leader Claude Code session (runs in the tx-ide repo),
 #                              ensure the Views home-base session exists, and attach Views.
+#                              --restart kills an existing leader first.
 #   tx attach                  Open the session picker.
 #   tx mailbox                 Open the mailbox TUI (live + archived inbox).
 #   tx help                    Show this message (also what `tx` shows with no args).
@@ -352,11 +353,16 @@ cmd_help() {
 # the leader orchestrates from there and spawns workers with their own -c.
 cmd_start() {
   local session_name="${LEADER_SESSION_NAME:-leader}"
+  local restart=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
     -h | --help)
       cmd_help
       exit 0
+      ;;
+    -r | --restart)
+      restart=1
+      shift
       ;;
     *)
       printf 'tx start: unknown argument: %s\n' "$1" >&2
@@ -368,18 +374,27 @@ cmd_start() {
   local repo_dir
   repo_dir=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 
+  if ((restart)) && tmux has-session -t "=$session_name" 2>/dev/null; then
+    tmux kill-session -t "$session_name"
+    echo "Killed leader session '$session_name'."
+  fi
+
   if tmux has-session -t "=$session_name" 2>/dev/null; then
     echo "Leader session '$session_name' already running."
   else
     # Single line, no quotes or special chars — long/complex prompts crash tmux.
     local priming_prompt='Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/LEADER.md as your first actions. Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/COMMON.md, ~/.tx-ide/user-agents/LEADER.local.md, and ~/.tx-ide/user-agents/LEADER.md (any user-agents/X.md replaces the shipped one; any user-agents/X.local.md extends it). Follow all of these for the duration of this session.'
 
-    # Try resume first; on fresh start, pass the priming prompt. Passed via env
-    # var to avoid quoting nightmares in tmux's command argument.
+    # Default boot: try resume first, fall back to fresh + priming prompt.
+    # --restart forces fresh so a restart is a real reset, not a resume.
+    local boot_cmd='claude --continue || claude "$TX_LEADER_PROMPT"'
+    if ((restart)); then
+      boot_cmd='claude "$TX_LEADER_PROMPT"'
+    fi
     tmux new-session -d -s "$session_name" -c "$repo_dir" \
       -e COLORTERM=truecolor -e TERM=xterm-256color \
       -e TX_LEADER_PROMPT="$priming_prompt" \
-      'claude --continue || claude "$TX_LEADER_PROMPT"'
+      "$boot_cmd"
     tmux set -t "$session_name" @tag "leader,llm"
     echo "Leader started in tmux session '$session_name' (cwd: $repo_dir)."
   fi
