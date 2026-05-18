@@ -78,11 +78,13 @@ tmux's "last write wins" means anything you bind *after* the source-file line wi
 
 ### Theme
 
-tx-ide assumes your Claude Code theme is `dark-ansi` so terminal colors line up with `tx`/`mx`. We don't set it for you — change yours via `/config` or `~/.claude/settings.json` if you want the integration to look right.
+tx-ide assumes your Claude Code theme is `dark-ansi` so terminal colors line up with `tx` / `tx mailbox`. We don't set it for you — change yours via `/config` or `~/.claude/settings.json` if you want the integration to look right.
 
 ### Palette
 
-Hex literals in `shared/palette.sh` (tokyonight-night). Switching palettes is a manual edit + terminal preset re-apply; see comments at the top of `shared/palette.sh`.
+Hex literals in `shared/palette.sh` (tokyonight-night). `install` bundles `setup/tokyonight-night.itermcolors` and imports it into iTerm as a Custom Color Preset; it then asks `[Y/n]` whether to also apply it to your Default profile. Say yes for the full out-of-the-box experience, or pick it manually later from iTerm Settings → Profiles → Colors → Color Presets.
+
+Switching to a different palette is a manual edit: update `shared/palette.sh`, regenerate `setup/tokyonight-<variant>.itermcolors` via `setup/_gen-itermcolors.py`, then re-run `./install`. See the comments at the top of `shared/palette.sh`.
 
 ## Leader / worker orchestration
 

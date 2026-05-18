@@ -35,7 +35,9 @@ I will NOT touch:
   - ~/.tx-ide/user-agents/ (your role overrides)
   - any settings.json entry not in _tx_ide_managed
   - ~/.claude/CLAUDE.md
-  - the iTerm GlobalKeyMap (run setup/iterm.sh with iTerm quit to clean up)
+  - the iTerm GlobalKeyMap or your Default profile colors
+      (we leave iTerm prefs alone; backups live at ~/Library/Preferences/com.googlecode.iterm2.plist.bak.*
+       if you need to revert manually)
 
 EOF
 read -r -p "Proceed? [y/N] " reply

@@ -1,13 +1,31 @@
 #!/usr/bin/env bash
-# Configure iTerm2 GlobalKeyMap for tmux:
-#   ⌘0..9    -> ESC + digit    (tmux reads as M-<digit>; selects pane)
-#   ⌘⌥1..9   -> ESC + 'W' + N  (tmux user-key; selects window N)
-# Also clears legacy ⌃N and ⌥N entries from earlier iterations of this setup.
+# Configure iTerm2 for tx-ide:
+#   1. GlobalKeyMap for tmux:
+#      ⌘0..9    -> ESC + digit    (tmux reads as M-<digit>; selects pane)
+#      ⌘⌥1..9   -> ESC + 'W' + N  (tmux user-key; selects window N)
+#      Also clears legacy ⌃N and ⌥N entries from earlier iterations.
+#   2. Imports tokyonight-night.itermcolors as a Custom Color Preset.
+#   3. Optionally applies it to the Default profile (--apply-colors).
 #
 # Must be run with iTerm2 quit, otherwise iTerm overwrites our edits on next quit.
 # After running, relaunch iTerm and `tmux attach`.
+#
+# Usage:
+#   setup/iterm.sh                  Keymap + import preset (no apply).
+#   setup/iterm.sh --apply-colors   Keymap + import preset + apply to Default profile.
 set -euo pipefail
 
+APPLY_COLORS=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --apply-colors) APPLY_COLORS=1; shift ;;
+    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) printf 'iterm.sh: unknown argument: %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PRESET_FILE="$SCRIPT_DIR/tokyonight-night.itermcolors"
 PLIST="$HOME/Library/Preferences/com.googlecode.iterm2.plist"
 PB=/usr/libexec/PlistBuddy
 
@@ -85,6 +103,46 @@ while $PB -c "Print :'New Bookmarks':${pidx}:Name" "$PLIST" >/dev/null 2>&1; do
   done
   pidx=$((pidx+1))
 done
+
+# === Color preset (always imported; optionally applied) ===
+# Python is more reliable than PlistBuddy for dict-of-dicts merging.
+if [[ -f "$PRESET_FILE" ]]; then
+  PLIST="$PLIST" PRESET_FILE="$PRESET_FILE" APPLY="$APPLY_COLORS" python3 - <<'PY'
+import os, plistlib
+
+plist_path = os.environ["PLIST"]
+preset_path = os.environ["PRESET_FILE"]
+apply = os.environ["APPLY"] == "1"
+
+with open(preset_path, "rb") as fh:
+    preset = plistlib.load(fh)
+
+with open(plist_path, "rb") as fh:
+    plist = plistlib.load(fh)
+
+# Always import the preset (additive, named).
+plist.setdefault("Custom Color Presets", {})["tokyonight-night"] = preset
+
+# Optionally overwrite the Default profile's colors with the preset's values.
+# Default profile is New Bookmarks[0]. We touch only color keys.
+if apply:
+    bookmarks = plist.get("New Bookmarks") or []
+    if bookmarks:
+        for color_name, color_value in preset.items():
+            bookmarks[0][color_name] = color_value
+
+with open(plist_path, "wb") as fh:
+    plistlib.dump(plist, fh)
+
+print(f"  → tokyonight-night preset imported into Custom Color Presets")
+if apply:
+    print(f"  → Default profile colors applied (tokyonight-night)")
+else:
+    print(f"  → Skipped applying to Default profile (run with --apply-colors)")
+PY
+else
+  echo "  ! preset file not found: $PRESET_FILE — skipping color setup"
+fi
 
 killall cfprefsd 2>/dev/null || true
 

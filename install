@@ -86,7 +86,9 @@ I will:
       (4 mailbox hook entries + statusLine, tracked via a _tx_ide_managed
        marker so uninstall removes only ours. Your existing hooks,
        permissions, plugins, theme are untouched.)
-  - configure iTerm keyboard map (only if iTerm + not currently running)
+  - configure iTerm: keyboard map + import tokyonight-night color preset,
+      with a [Y/n] confirm to also apply it to your Default profile
+      (only if iTerm is installed and currently quit)
   - start the mx-speaker background daemon
 
 I will NOT touch:
@@ -275,20 +277,27 @@ print(f"  \033[2mstatusLine: {status_msg}\033[0m")
 print(f"  \033[2m_tx_ide_managed marker written (uninstall + doctor use this)\033[0m")
 PY
 
-# === 8: iTerm ===
-header "iTerm keyboard map"
+# === 8: iTerm (keymap + tokyonight-night colors) ===
+header "iTerm setup"
 if [[ "${TERM_PROGRAM:-}" == "iTerm.app" ]]; then
   if pgrep -x iTerm2 >/dev/null 2>&1; then
-    warn "GlobalKeyMap" "iTerm is running — quit it, then run $REPO/setup/iterm.sh"
+    warn "iTerm" "iTerm is running — quit it, then run $REPO/setup/iterm.sh --apply-colors"
   else
-    if "$REPO/setup/iterm.sh" >/dev/null 2>&1; then
-      ok "GlobalKeyMap" "configured"
+    iterm_flag=""
+    if confirm "Apply tokyonight-night to your Default iTerm profile?" Y; then
+      iterm_flag="--apply-colors"
     else
-      fail "GlobalKeyMap" "setup script failed; see $REPO/setup/iterm.sh output"
+      info "Skipping color apply. The preset is still imported — pick it from"
+      info "iTerm Settings → Profiles → Colors → Color Presets when you want it."
+    fi
+    if "$REPO/setup/iterm.sh" $iterm_flag 2>&1 | sed 's/^/  /'; then
+      ok "iTerm" "keymap + preset configured"
+    else
+      fail "iTerm" "setup script failed; see $REPO/setup/iterm.sh output"
     fi
   fi
 else
-  warn "GlobalKeyMap" "TERM_PROGRAM='${TERM_PROGRAM:-unknown}' — skipping (iTerm only)"
+  warn "iTerm" "TERM_PROGRAM='${TERM_PROGRAM:-unknown}' — skipping (iTerm only)"
 fi
 
 # === 9: mx-speaker daemon ===
