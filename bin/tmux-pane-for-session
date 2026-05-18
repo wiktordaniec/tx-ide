@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Print the pane displaying session $1 (via nested attach or @remote-session
+# override) as `session:window.pane`, or exit 1.
+target="${1:-}"
+[[ -z "$target" ]] && exit 2
+
+clients=$(tmux list-clients -F '#{client_tty} #{client_session}' 2>/dev/null || true)
+remote_fallback=""
+
+while IFS=$'\t' read -r pane_id pane_tty session window pane; do
+  override=$(tmux show-options -pqv -t "$pane_id" @remote-session 2>/dev/null) || override=""
+  if [[ -n "$override" ]]; then
+    if [[ "$override" == "$target" && -z "$remote_fallback" ]]; then
+      remote_fallback="$session:$window.$pane"
+    fi
+    continue
+  fi
+  inner=$(printf '%s\n' "$clients" | awk -v t="$pane_tty" '$1==t {print $2; exit}')
+  if [[ -n "$inner" && "$inner" == "$target" ]]; then
+    printf '%s:%s.%s\n' "$session" "$window" "$pane"
+    exit 0
+  fi
+done < <(tmux list-panes -a -F '#{pane_id}	#{pane_tty}	#{session_name}	#{window_index}	#{pane_index}' 2>/dev/null)
+
+if [[ -n "$remote_fallback" ]]; then
+  printf '%s\n' "$remote_fallback"
+  exit 0
+fi
+exit 1

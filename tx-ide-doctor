@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# tx-ide-doctor — verify everything installed by install.sh is wired correctly.
+# Read-only: makes no changes, just reports.
+set -u
+
+REPO="$(cd "$(dirname "$0")" && pwd)"
+HOME_DIR="${HOME%/}"
+LOCAL_BIN="$HOME_DIR/.local/bin"
+CLAUDE_DIR="$HOME_DIR/.claude"
+TX_IDE_DIR="$HOME_DIR/.tx-ide"
+
+B=$'\e[1m'; G=$'\e[32m'; Y=$'\e[33m'; RED=$'\e[31m'; D=$'\e[2m'; X=$'\e[0m'
+fails=0
+warns=0
+
+check() {
+  local label="$1" result="$2" detail="${3:-}"
+  case "$result" in
+    ok)   printf '  %s✓%s %-44s %s\n' "$G" "$X" "$label" "$detail" ;;
+    warn) printf '  %s!%s %-44s %s%s%s\n' "$Y" "$X" "$label" "$Y" "$detail" "$X"; warns=$((warns + 1)) ;;
+    fail) printf '  %s✗%s %-44s %s%s%s\n' "$RED" "$X" "$label" "$RED" "$detail" "$X"; fails=$((fails + 1)) ;;
+  esac
+}
+
+# === CLIs on PATH ===
+printf '\n%sCLIs%s\n' "$B" "$X"
+for tool in tx mx tmux-pane-for-session tmux-pane-session-name; do
+  if path=$(command -v "$tool" 2>/dev/null); then
+    real=$(readlink -f "$path" 2>/dev/null || printf '%s' "$path")
+    if [[ "$real" == "$REPO/bin/$tool" ]]; then
+      check "$tool" ok "→ $path"
+    else
+      check "$tool" warn "on PATH but not this repo: $real"
+    fi
+  else
+    check "$tool" fail "not on PATH (expected $LOCAL_BIN/$tool)"
+  fi
+done
+
+# === Claude hooks ===
+printf '\n%sClaude hooks%s\n' "$B" "$X"
+mailbox_link="$CLAUDE_DIR/hooks/mailbox"
+if [[ -L "$mailbox_link" ]] && [[ "$(readlink "$mailbox_link")" == "$REPO/claude/hooks" ]]; then
+  check "$mailbox_link" ok ""
+else
+  check "$mailbox_link" fail "not linked to repo"
+fi
+
+statusline_link="$CLAUDE_DIR/statusline.sh"
+if [[ -L "$statusline_link" ]] && [[ "$(readlink "$statusline_link")" == "$REPO/claude/statusline.sh" ]]; then
+  check "$statusline_link" ok ""
+else
+  check "$statusline_link" fail "not linked to repo"
+fi
+
+# === settings.local.json hooks ===
+printf '\n%sClaude settings.local.json%s\n' "$B" "$X"
+SETTINGS_LOCAL="$CLAUDE_DIR/settings.local.json"
+if [[ -f "$SETTINGS_LOCAL" ]]; then
+  result_lines=$(SETTINGS_LOCAL="$SETTINGS_LOCAL" python3 - <<'PY'
+import json, os
+try:
+  with open(os.environ["SETTINGS_LOCAL"]) as fh:
+      data = json.load(fh)
+except Exception:
+  print("ERR"); raise SystemExit
+wanted = {
+    "Stop":              "$HOME/.claude/hooks/mailbox/post.sh",
+    "PermissionRequest": "$HOME/.claude/hooks/mailbox/post.sh",
+    "UserPromptSubmit":  "$HOME/.claude/hooks/mailbox/pre.sh",
+    "SessionEnd":        "$HOME/.claude/hooks/mailbox/end.sh",
+}
+hooks = data.get("hooks", {})
+missing = [
+    event for event, cmd in wanted.items()
+    if not any(
+        h.get("command") == cmd
+        for block in hooks.get(event, [])
+        for h in block.get("hooks", [])
+    )
+]
+print("HOOKS_MISSING:" + ",".join(missing) if missing else "HOOKS_OK")
+print("STATUS_OK" if "statusLine" in data else "STATUS_MISSING")
+PY
+)
+  if grep -q "^HOOKS_OK" <<<"$result_lines"; then
+    check "mailbox hooks (Stop/Pre/End/PR)" ok ""
+  else
+    missing=$(grep "^HOOKS_MISSING" <<<"$result_lines" | cut -d: -f2)
+    check "mailbox hooks (Stop/Pre/End/PR)" fail "missing: $missing"
+  fi
+  if grep -q "^STATUS_OK" <<<"$result_lines"; then
+    check "statusLine" ok ""
+  else
+    check "statusLine" warn "absent (using settings.json's, if any)"
+  fi
+else
+  check "settings.local.json" fail "missing"
+fi
+
+# === ~/.tx-ide and ~/.tmux.conf ===
+printf '\n%sTmux config wiring%s\n' "$B" "$X"
+if [[ -f "$TX_IDE_DIR/tmux.conf" ]] && grep -qF "$REPO/tmux/tx-ide.tmux" "$TX_IDE_DIR/tmux.conf"; then
+  check "$TX_IDE_DIR/tmux.conf" ok "→ $REPO/tmux/tx-ide.tmux"
+else
+  check "$TX_IDE_DIR/tmux.conf" fail "missing or wrong repo path"
+fi
+
+if [[ -f "$HOME_DIR/.tmux.conf" ]] && grep -qF "$TX_IDE_DIR/tmux.conf" "$HOME_DIR/.tmux.conf"; then
+  check "~/.tmux.conf source-file line" ok ""
+else
+  check "~/.tmux.conf source-file line" fail "no source-file pointing at $TX_IDE_DIR/tmux.conf"
+fi
+
+# === Live tmux bindings (only if a server is running) ===
+if tmux info >/dev/null 2>&1; then
+  printf '\n%sLive tmux bindings (running server detected)%s\n' "$B" "$X"
+  bindings=$(tmux list-keys 2>/dev/null)
+  if grep -q "bind-key.*-T prefix t .*display-popup.*tx" <<<"$bindings"; then
+    check "prefix+t → tx popup" ok ""
+  else
+    check "prefix+t → tx popup" warn "not bound (reload: tmux source-file ~/.tmux.conf)"
+  fi
+  if grep -q "bind-key.*-T prefix m .*display-popup.*mx" <<<"$bindings"; then
+    check "prefix+m → mx popup" ok ""
+  else
+    check "prefix+m → mx popup" warn "not bound (reload: tmux source-file ~/.tmux.conf)"
+  fi
+  if grep -q "bind-key.*-T root.*M-1.*select-pane" <<<"$bindings"; then
+    check "M-1..9 → select-pane" ok ""
+  else
+    check "M-1..9 → select-pane" warn "not bound"
+  fi
+  if grep -q "bind-key.*-T root.*User0.*select-window" <<<"$bindings"; then
+    check "User0..8 → select-window" ok ""
+  else
+    check "User0..8 → select-window" warn "not bound"
+  fi
+  if grep -q "bind-key.*-T root C-u.*if-shell.*claude" <<<"$bindings"; then
+    check "Claude scroll intercept (C-u/C-d)" ok ""
+  else
+    check "Claude scroll intercept (C-u/C-d)" warn "not bound"
+  fi
+  border_format=$(tmux show-option -gv pane-border-format 2>/dev/null || true)
+  if [[ "$border_format" == *"tmux-pane-session-name"* ]]; then
+    check "pane-border-format integration" ok ""
+  else
+    check "pane-border-format integration" warn "format does not call tmux-pane-session-name"
+  fi
+else
+  printf '\n%sLive tmux bindings%s\n' "$B" "$X"
+  printf '  %s(no tmux server running — start tmux and re-run)%s\n' "$D" "$X"
+fi
+
+# === iTerm GlobalKeyMap (if iTerm) ===
+printf '\n%siTerm GlobalKeyMap%s\n' "$B" "$X"
+if [[ "${TERM_PROGRAM:-}" == "iTerm.app" ]]; then
+  PLIST="$HOME_DIR/Library/Preferences/com.googlecode.iterm2.plist"
+  PB=/usr/libexec/PlistBuddy
+  cmd_pane_ok=true
+  cmd_window_ok=true
+  for d in 1 2 3 4 5 6 7 8 9; do
+    ascii=$(printf '0x%x' $((48 + d)))
+    if ! $PB -c "Print :GlobalKeyMap:${ascii}-0x100000-*:Text" "$PLIST" >/dev/null 2>&1; then
+      # PlistBuddy doesn't do globs; fall back to listing
+      :
+    fi
+  done
+  # Easier: check one known key as a smoke test
+  if $PB -c "Print :GlobalKeyMap" "$PLIST" 2>/dev/null | grep -q "0x100000"; then
+    check "Cmd+digit map" ok ""
+  else
+    check "Cmd+digit map" warn "not configured (run: $REPO/setup/iterm.sh with iTerm quit)"
+  fi
+  if $PB -c "Print :GlobalKeyMap" "$PLIST" 2>/dev/null | grep -q "0x180000"; then
+    check "Cmd+Opt+digit map" ok ""
+  else
+    check "Cmd+Opt+digit map" warn "not configured"
+  fi
+else
+  printf '  %sTERM_PROGRAM=%s — iTerm checks skipped%s\n' "$D" "${TERM_PROGRAM:-unknown}" "$X"
+fi
+
+# === mx-speaker daemon ===
+printf '\n%smx-speaker daemon%s\n' "$B" "$X"
+PID_FILE="$HOME_DIR/.claude/mailbox/mx-speaker.pid"
+if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+  check "mx-speaker" ok "pid $(cat "$PID_FILE")"
+else
+  check "mx-speaker" warn "not running (start: $REPO/claude/hooks/start-speaker.sh)"
+fi
+
+# === Summary ===
+printf '\n%sSummary%s\n' "$B" "$X"
+if (( fails == 0 && warns == 0 )); then
+  printf '  %sAll green.%s\n' "$G" "$X"
+elif (( fails == 0 )); then
+  printf '  %s%d warning(s).%s\n' "$Y" "$warns" "$X"
+else
+  printf '  %s%d failure(s)%s, %s%d warning(s).%s\n' "$RED" "$fails" "$X" "$Y" "$warns" "$X"
+  exit 1
+fi

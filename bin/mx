@@ -1,0 +1,698 @@
+#!/usr/bin/env python3
+"""Mailbox CLI — interactive TUI to view live activity and archived inbox."""
+
+import curses
+import json
+import shlex
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+# paths.py lives in <repo>/claude/hooks/ alongside the mailbox hook scripts.
+# resolve() follows symlinks so the import works whether mx is invoked via
+# the ~/.local/bin symlink or from the repo directly.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "claude" / "hooks"))
+from paths import INBOX_FILE, RUNNING_DIR
+
+VIEW_CYCLE = ("live", "archive")
+LIVE_UNREAD_CAP = 5
+SEARCH_PROMPT = "  ❯ "
+
+
+def load_entries():
+    if not INBOX_FILE.exists():
+        return []
+    entries = []
+    with INBOX_FILE.open() as inbox_handle:
+        for raw_line in inbox_handle:
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            entries.append(json.loads(stripped))
+    entries.sort(key=lambda entry: entry["timestamp"], reverse=True)
+    return entries
+
+
+def write_entries(entries):
+    if not entries:
+        INBOX_FILE.write_text("")
+        return
+    INBOX_FILE.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+
+
+def mark_read(entry_id):
+    if not INBOX_FILE.exists():
+        return
+    entries = []
+    with INBOX_FILE.open() as inbox_handle:
+        for raw_line in inbox_handle:
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            entry = json.loads(stripped)
+            if entry["id"] == entry_id:
+                entry["read"] = True
+            entries.append(entry)
+    write_entries(entries)
+
+
+def mark_all_read():
+    if not INBOX_FILE.exists():
+        return
+    entries = []
+    with INBOX_FILE.open() as inbox_handle:
+        for raw_line in inbox_handle:
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            entry = json.loads(stripped)
+            entry["read"] = True
+            entries.append(entry)
+    write_entries(entries)
+
+
+def has_tmux_session(name):
+    try:
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", f"={name}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+def jump_to_session(name):
+    """Surface session `name` on the current client.
+
+    - Helper resolves a hosting pane → select that window+pane on every
+      session in the hosting session's group. Session groups share the
+      window list but each session tracks its own current window, so we
+      must update each member so whichever one the user is attached to
+      follows. We do NOT switch-client across outer sessions: the popup's
+      calling client is typically a nested inner client, and switching it
+      would replace the outer pane's view with a recursive attach.
+    - No hosting pane, session attached to some other client → switch-client
+      so the calling client lands on it.
+    - Otherwise (truly unattached) → open a new window in the current session
+      that nest-attaches, leaving the user's previous pane intact.
+    Returns None on success or an error string.
+    """
+    if not name:
+        return None
+    current = subprocess.run(
+        ["tmux", "display-message", "-p", "#S"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    current_session = current.stdout.strip()
+    try:
+        helper = subprocess.run(
+            ["tmux-pane-for-session", name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return "tmux-pane-for-session helper not on PATH"
+    target = helper.stdout.strip()
+    if helper.returncode == 0 and target:
+        host_session, _, window_pane = target.partition(":")
+        for member in _group_members(host_session):
+            member_target = f"{member}:{window_pane}"
+            subprocess.run(["tmux", "select-window", "-t", member_target], check=False)
+            subprocess.run(["tmux", "select-pane", "-t", member_target], check=False)
+        return None
+
+    if not has_tmux_session(name):
+        return f"session '{name}' no longer exists"
+
+    attached = subprocess.run(
+        ["tmux", "display-message", "-t", name, "-p", "#{session_attached}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        attached_count = int(attached.stdout.strip() or "0")
+    except ValueError:
+        attached_count = 0
+    if attached_count > 0:
+        return _switch_client(name)
+
+    attach_cmd = f"TMUX= exec tmux attach -t {shlex.quote(name)}"
+    result = subprocess.run(
+        ["tmux", "new-window", "-t", f"{current_session}:", "-n", name, attach_cmd],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        msg = result.stderr.strip() or "new-window failed"
+        return f"could not open '{name}': {msg}"
+    return None
+
+
+def _group_members(session_name):
+    """Return all session names sharing a session group with `session_name`,
+    including itself. Sessions without a group return just [session_name]."""
+    result = subprocess.run(
+        ["tmux", "list-sessions", "-F", "#{session_name}\t#{session_group}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return [session_name]
+    rows = []
+    target_group = ""
+    for line in result.stdout.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) < 2:
+            continue
+        sname, sgroup = parts[0], parts[1]
+        rows.append((sname, sgroup))
+        if sname == session_name:
+            target_group = sgroup
+    if not target_group:
+        return [session_name]
+    return [sname for sname, sgroup in rows if sgroup == target_group]
+
+
+def _switch_client(name):
+    result = subprocess.run(
+        ["tmux", "switch-client", "-t", name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        msg = result.stderr.strip() or f"session '{name}' not found"
+        return f"could not switch to '{name}': {msg}"
+    return None
+
+
+def load_running():
+    if not RUNNING_DIR.exists():
+        return []
+    entries = []
+    for entry_path in list(RUNNING_DIR.iterdir()):
+        if entry_path.suffix != ".json":
+            continue
+        try:
+            entry = json.loads(entry_path.read_text())
+        except Exception:
+            continue
+        session = entry.get("tmux_session")
+        if not session or not has_tmux_session(session):
+            try:
+                entry_path.unlink()
+            except OSError:
+                pass
+            continue
+        entries.append(entry)
+    entries.sort(key=lambda entry: entry.get("timestamp", ""), reverse=True)
+    return entries
+
+
+def inbox_signature():
+    if INBOX_FILE.exists():
+        return INBOX_FILE.stat().st_mtime
+    return 0.0
+
+
+def running_signature():
+    if not RUNNING_DIR.exists():
+        return ()
+    try:
+        return tuple(
+            sorted((path.name, path.stat().st_mtime) for path in RUNNING_DIR.iterdir())
+        )
+    except OSError:
+        return ()
+
+
+def relative_age(timestamp_iso):
+    utc_time = datetime.fromisoformat(timestamp_iso.replace("Z", "+00:00"))
+    seconds = int((datetime.now(utc_time.tzinfo) - utc_time).total_seconds())
+    if seconds < 0:
+        seconds = 0
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h"
+    days = hours // 24
+    return f"{days}d"
+
+
+def format_entry_segments(entry):
+    """Return (text, style_key) tuples for one entry row. Column colors mirror
+    tx (see tmux/palette.sh): age=WARN (yellow), session=bold FG, suffix=DIM_FG.
+    Tags render as individual chips [a] [b] to match tx's chip layout.
+    """
+    age = relative_age(entry["timestamp"])
+    tags = entry.get("tmux_tags") or ""
+    segments = [
+        (f"{age:>4}", "entry_age"),
+        ("  ", "entry"),
+        (entry["tmux_session"], "entry_session"),
+        ("  ", "entry"),
+    ]
+    if tags:
+        for index, tag_part in enumerate(tags.split(",")):
+            if index > 0:
+                segments.append((" ", "entry"))
+            segments.append((f"[{tag_part}]", "entry_suffix"))
+    else:
+        segments.append((entry["cwd"].rsplit("/", 1)[-1], "entry_suffix"))
+    return segments
+
+
+def build_live_rows(inbox_entries, running_entries):
+    rows = []
+    unread = [entry for entry in inbox_entries if not entry.get("read")]
+    visible_unread = unread[:LIVE_UNREAD_CAP]
+    for entry in visible_unread:
+        rows.append({"type": "entry", "kind": "inbox", "data": entry})
+    overflow = len(unread) - len(visible_unread)
+    if overflow > 0:
+        rows.append({"type": "hint", "text": f"+{overflow} older in archive"})
+    if not unread and running_entries:
+        rows.append({"type": "hint", "text": "(no unread messages — waiting…)"})
+    if visible_unread or running_entries:
+        rows.append(
+            {"type": "separator", "text": f"── active ({len(running_entries)}) ──"}
+        )
+    for entry in running_entries:
+        rows.append({"type": "entry", "kind": "running", "data": entry})
+    return rows
+
+
+def build_archive_rows(inbox_entries):
+    return [
+        {"type": "entry", "kind": "inbox", "data": entry} for entry in inbox_entries
+    ]
+
+
+def build_rows(inbox_entries, running_entries, view_mode):
+    if view_mode == "live":
+        return build_live_rows(inbox_entries, running_entries)
+    return build_archive_rows(inbox_entries)
+
+
+def first_selectable_index(rows):
+    for index, row in enumerate(rows):
+        if row["type"] == "entry":
+            return index
+    return -1
+
+
+def find_next_selectable(rows, start, direction):
+    index = start + direction
+    while 0 <= index < len(rows):
+        if rows[index]["type"] == "entry":
+            return index
+        index += direction
+    return start
+
+
+def entry_matches(entry, query_lower):
+    if not query_lower:
+        return True
+    name = entry.get("tmux_session", "") or ""
+    tags = entry.get("tmux_tags") or ""
+    return query_lower in f"{name} {tags}".casefold()
+
+
+def filter_rows(rows, query):
+    if not query:
+        return rows
+    query_lower = query.casefold()
+    return [
+        row
+        for row in rows
+        if row["type"] == "entry" and entry_matches(row["data"], query_lower)
+    ]
+
+
+def row_identity(row):
+    if row.get("type") != "entry":
+        return None
+    data = row["data"]
+    return (row.get("kind"), data.get("id") or data.get("tmux_session"))
+
+
+def reselect_by_identity(rows, identity):
+    if identity is None:
+        return first_selectable_index(rows)
+    for index, row in enumerate(rows):
+        if row_identity(row) == identity:
+            return index
+    return first_selectable_index(rows)
+
+
+def draw_segments(stdscr, line_y, width, segments, styles, override=None, key_overrides=None):
+    """Write a list of (text, style_key) segments on `line_y`, padding to width.
+    `override` (if set) is applied to every segment AS A DEFAULT for selected/
+    read rows. `key_overrides` (if set) is a dict mapping style_key -> attr
+    that wins over `override` for those specific keys — used to keep a column's
+    own color even when the row is selected (e.g. yellow age on blue selection).
+    """
+    line_width = width - 1
+    x = 0
+    key_overrides = key_overrides or {}
+    for text, style_key in segments:
+        if x >= line_width:
+            break
+        remaining = line_width - x
+        chunk = text[:remaining]
+        if style_key in key_overrides:
+            attr = key_overrides[style_key]
+        elif override is not None:
+            attr = override
+        else:
+            attr = styles[style_key]
+        stdscr.addnstr(line_y, x, chunk, remaining, attr)
+        x += len(chunk)
+    if x < line_width:
+        pad_attr = override if override is not None else styles["entry"]
+        stdscr.addnstr(line_y, x, " " * (line_width - x), line_width - x, pad_attr)
+
+
+def draw_search_bar(stdscr, line_y, width, query, styles):
+    """Draw the input marker + query on line_y; return the column for the caret."""
+    if width <= 1:
+        return 0
+    line_width = width - 1
+    prompt = SEARCH_PROMPT
+    chunk = prompt[:line_width]
+    stdscr.addnstr(line_y, 0, chunk, line_width, styles["search_prompt"])
+    x = len(chunk)
+    if x >= line_width:
+        return max(0, line_width - 1)
+    # Query may exceed remaining width — show the rightmost slice so the caret
+    # stays visible while typing long filters.
+    remaining = line_width - x
+    q_display = query if len(query) <= remaining else query[-remaining:]
+    stdscr.addnstr(line_y, x, q_display, remaining, styles["search_query"])
+    caret_x = x + len(q_display)
+    if caret_x < line_width:
+        pad = line_width - caret_x
+        stdscr.addnstr(line_y, caret_x, " " * pad, pad, styles["entry"])
+    return min(caret_x, line_width - 1)
+
+
+def render(
+    stdscr,
+    rows,
+    cursor,
+    scroll_offset,
+    styles,
+    view_mode,
+    total_unread,
+    active_count,
+    query,
+    error_text="",
+):
+    height, width = stdscr.getmaxyx()
+    stdscr.erase()
+
+    if view_mode == "live":
+        header_text = f"live ({total_unread} unread · {active_count} active)"
+    else:
+        archive_count = sum(1 for row in rows if row["type"] == "entry")
+        header_text = f"archive ({archive_count} · {total_unread} unread)"
+    if query:
+        match_count = sum(1 for row in rows if row["type"] == "entry")
+        header_text = f"{header_text} · {match_count} matching"
+    stdscr.addnstr(
+        0, 0, header_text.ljust(width - 1)[: width - 1], width - 1, styles["header"]
+    )
+    caret_x = 0
+    if width > 1 and height > 1:
+        caret_x = draw_search_bar(stdscr, 1, width, query, styles)
+
+    list_top = 2
+    footer_y = height - 1
+    visible_lines = max(1, footer_y - list_top)
+
+    if not rows:
+        if list_top + 1 < footer_y:
+            if query:
+                empty_text = "(no matches)"
+            elif view_mode == "live":
+                empty_text = "(quiet — no unread, no active sessions)"
+            else:
+                empty_text = "(no messages)"
+            stdscr.addnstr(list_top + 1, 2, empty_text, width - 3, styles["empty"])
+    else:
+        for screen_index in range(visible_lines):
+            row_index = scroll_offset + screen_index
+            if row_index >= len(rows):
+                break
+            line_y = list_top + screen_index
+            if line_y >= footer_y:
+                break
+            row = rows[row_index]
+            if row["type"] == "entry":
+                segments = format_entry_segments(row["data"])
+                key_overrides = None
+                if row_index == cursor:
+                    row_override = styles["selected"]
+                    # Keep age yellow on the blue selection bg; everything else
+                    # falls back to the row-level "selected" override.
+                    key_overrides = {"entry_age": styles["selected_age"]}
+                elif row["data"].get("read"):
+                    row_override = styles["read"]
+                else:
+                    row_override = None
+                draw_segments(
+                    stdscr, line_y, width, segments, styles,
+                    override=row_override, key_overrides=key_overrides,
+                )
+            else:
+                if row["type"] == "separator":
+                    text = row["text"]
+                    attribute = styles["divider"]
+                else:
+                    text = "  " + row["text"]
+                    attribute = styles["empty"]
+                stdscr.addnstr(
+                    line_y, 0, text.ljust(width - 1)[: width - 1], width - 1, attribute
+                )
+
+    if footer_y > 1 and width > 1:
+        clock_text = datetime.now().strftime("%H:%M:%S")
+        clock_x = max(0, width - 1 - len(clock_text))
+        if error_text:
+            max_err = max(0, clock_x - 1)
+            if max_err > 0:
+                stdscr.addnstr(
+                    footer_y, 0, error_text[:max_err], max_err, styles["error"]
+                )
+        stdscr.addnstr(footer_y, clock_x, clock_text, len(clock_text), styles["clock"])
+
+    if height > 1 and width > 1:
+        stdscr.move(1, min(caret_x, width - 1))
+
+    stdscr.refresh()
+
+
+def init_styles():
+    # Colors map to the terminal's ANSI 8-color palette which iTerm renders
+    # via the tokyonight preset. See tmux/palette.sh for the canonical names:
+    #   COLOR_BLUE   == ACCENT_HEX  (#7aa2f7) — selection bg, divider
+    #   COLOR_YELLOW == WARN_HEX    (#e0af68) — age column (staleness)
+    #   COLOR_WHITE  == DIM_FG_HEX  (#a9b1d6) — suffix column (muted)
+    #   COLOR_RED                   (#f7768e) — error
+    try:
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_BLACK, -1)
+        curses.init_pair(2, curses.COLOR_BLUE, -1)
+        curses.init_pair(3, curses.COLOR_RED, -1)
+        curses.init_pair(4, curses.COLOR_BLACK, curses.COLOR_BLUE)
+        curses.init_pair(5, curses.COLOR_YELLOW, -1)
+        curses.init_pair(6, curses.COLOR_WHITE, -1)
+        curses.init_pair(7, curses.COLOR_YELLOW, curses.COLOR_BLUE)
+        return {
+            "header": curses.color_pair(1) | curses.A_BOLD,
+            "divider": curses.color_pair(2) | curses.A_DIM,
+            "entry": curses.A_NORMAL,
+            "entry_age": curses.color_pair(5),
+            "entry_session": curses.color_pair(6),
+            "entry_suffix": curses.color_pair(6),
+            "selected": curses.color_pair(4) | curses.A_BOLD,
+            # Yellow on blue + bold for age on selected rows — keeps the
+            # staleness signal during selection without overriding to dark.
+            "selected_age": curses.color_pair(7) | curses.A_BOLD,
+            "search_prompt": curses.color_pair(6),
+            "search_query": curses.color_pair(6) | curses.A_BOLD,
+            "read": curses.A_DIM,
+            "empty": curses.A_DIM,
+            "clock": curses.A_DIM,
+            "error": curses.color_pair(3) | curses.A_BOLD,
+        }
+    except curses.error:
+        return {
+            "header": curses.A_BOLD,
+            "divider": curses.A_DIM,
+            "entry": curses.A_NORMAL,
+            "entry_age": curses.A_NORMAL,
+            "entry_session": curses.A_DIM,
+            "entry_suffix": curses.A_DIM,
+            "selected": curses.A_REVERSE | curses.A_BOLD,
+            "selected_age": curses.A_REVERSE | curses.A_BOLD,
+            "search_prompt": curses.A_NORMAL,
+            "search_query": curses.A_BOLD,
+            "read": curses.A_DIM,
+            "empty": curses.A_DIM,
+            "clock": curses.A_DIM,
+            "error": curses.A_BOLD | curses.A_REVERSE,
+        }
+
+
+def tui(stdscr):
+    try:
+        curses.curs_set(1)
+    except curses.error:
+        pass
+    stdscr.timeout(1000)
+    styles = init_styles()
+
+    inbox_entries = load_entries()
+    running_entries = load_running()
+    view_mode = "live"
+    query = ""
+    all_rows = build_rows(inbox_entries, running_entries, view_mode)
+    rows = filter_rows(all_rows, query)
+    cursor = first_selectable_index(rows)
+    scroll_offset = 0
+    last_inbox_sig = inbox_signature()
+    last_running_sig = running_signature()
+    error_text = ""
+    error_until = 0.0
+
+    while True:
+        new_inbox_sig = inbox_signature()
+        new_running_sig = running_signature()
+        if new_inbox_sig != last_inbox_sig or new_running_sig != last_running_sig:
+            saved_identity = (
+                row_identity(rows[cursor]) if 0 <= cursor < len(rows) else None
+            )
+            inbox_entries = load_entries()
+            running_entries = load_running()
+            all_rows = build_rows(inbox_entries, running_entries, view_mode)
+            rows = filter_rows(all_rows, query)
+            cursor = reselect_by_identity(rows, saved_identity)
+            last_inbox_sig = new_inbox_sig
+            last_running_sig = running_signature()
+
+        height, _ = stdscr.getmaxyx()
+        visible_lines = max(1, height - 3)
+        if cursor >= 0:
+            if cursor < scroll_offset:
+                scroll_offset = cursor
+            elif cursor >= scroll_offset + visible_lines:
+                scroll_offset = cursor - visible_lines + 1
+
+        total_unread = sum(1 for entry in inbox_entries if not entry.get("read"))
+        active_count = len(running_entries)
+        if error_text and datetime.now().timestamp() > error_until:
+            error_text = ""
+        render(
+            stdscr,
+            rows,
+            cursor,
+            scroll_offset,
+            styles,
+            view_mode,
+            total_unread,
+            active_count,
+            query,
+            error_text,
+        )
+
+        key = stdscr.getch()
+        if key == -1:
+            continue
+        if key == 27:
+            return
+        if key == curses.KEY_UP and cursor >= 0:
+            cursor = find_next_selectable(rows, cursor, -1)
+        elif key == curses.KEY_DOWN and cursor >= 0:
+            cursor = find_next_selectable(rows, cursor, 1)
+        elif key in (curses.KEY_ENTER, 10, 13) and cursor >= 0:
+            row = rows[cursor]
+            if row["type"] == "entry":
+                # Opening an inbox entry counts as acking it — keeps the voice
+                # reminder aligned with what the inbox shows as unread.
+                if row.get("kind") == "inbox" and not row["data"].get("read"):
+                    mark_read(row["data"]["id"])
+                    last_inbox_sig = -1.0
+                err = jump_to_session(row["data"].get("tmux_session", ""))
+                if err:
+                    error_text = err
+                    error_until = datetime.now().timestamp() + 3.0
+                else:
+                    return
+        elif key in (curses.KEY_BACKSPACE, 127, 8):
+            if query:
+                saved_identity = (
+                    row_identity(rows[cursor]) if 0 <= cursor < len(rows) else None
+                )
+                query = query[:-1]
+                rows = filter_rows(all_rows, query)
+                cursor = reselect_by_identity(rows, saved_identity)
+                scroll_offset = 0
+        elif key == 21:
+            if query:
+                query = ""
+                rows = filter_rows(all_rows, query)
+                cursor = first_selectable_index(rows)
+                scroll_offset = 0
+        elif key == 1:
+            if cursor >= 0:
+                row = rows[cursor]
+                if row["type"] == "entry" and row.get("kind") == "inbox":
+                    mark_read(row["data"]["id"])
+                    last_inbox_sig = -1.0
+        elif key == 9:
+            view_mode = VIEW_CYCLE[(VIEW_CYCLE.index(view_mode) + 1) % len(VIEW_CYCLE)]
+            all_rows = build_rows(inbox_entries, running_entries, view_mode)
+            rows = filter_rows(all_rows, query)
+            cursor = first_selectable_index(rows)
+            scroll_offset = 0
+        elif 32 <= key <= 126:
+            saved_identity = (
+                row_identity(rows[cursor]) if 0 <= cursor < len(rows) else None
+            )
+            query += chr(key)
+            rows = filter_rows(all_rows, query)
+            cursor = reselect_by_identity(rows, saved_identity)
+            scroll_offset = 0
+
+
+def main():
+    arguments = sys.argv[1:]
+    command = arguments[0] if arguments else "list"
+    if command == "list":
+        try:
+            curses.wrapper(tui)
+        except KeyboardInterrupt:
+            pass
+    elif command == "ack":
+        mark_all_read()
+    else:
+        print("Usage: mx [list|ack]", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

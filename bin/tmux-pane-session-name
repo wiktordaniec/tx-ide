@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Print the tmux session attached inside the given pane (when the pane is
+# running a nested `tmux attach`), else the pane's own session name. Appends
+# the session's `@tag` user-option as bracketed chips when set.
+# Used by the tx-ide tmux fragment for pane-border-format so an aggregator
+# pane shows the program/session it's hosting rather than the outer name.
+#
+# Honors a `@remote-session` pane override — set by tx when ssh-attaching
+# a remote tmux, since list-clients cannot see the remote client over ssh.
+# Tags are skipped for the remote case (would require an ssh round-trip per
+# refresh).
+set -e
+
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../shared/palette.sh"
+
+pane_id="${1:-}"
+[[ -z "$pane_id" ]] && exit 0
+
+override=$(tmux show-options -pqv -t "$pane_id" @remote-session 2>/dev/null) || override=""
+if [[ -n "$override" ]]; then
+  printf '(r) %s' "$override"
+  exit 0
+fi
+
+print_tags() {
+  local session="$1" tag part
+  local -a parts
+  tag=$(tmux show-options -vqt "$session" @tag 2>/dev/null) || return 0
+  [[ -z "$tag" ]] && return 0
+  IFS=',' read -ra parts <<<"$tag"
+  for part in "${parts[@]}"; do
+    [[ -z "$part" ]] && continue
+    printf ' #[fg=#{?pane_active,#c0caf5,default},#{?pane_active,bold,nobold}][%s]#[default]' "$part"
+  done
+}
+
+pane_tty=$(tmux display-message -p -t "$pane_id" '#{pane_tty}' 2>/dev/null) || exit 0
+
+inner=$(tmux list-clients -F '#{client_tty} #{client_session}' 2>/dev/null |
+  awk -v t="$pane_tty" '$1==t {print $2; exit}')
+
+if [[ -n "$inner" ]]; then
+  printf '#[bold]%s#[default]' "$inner"
+  print_tags "$inner"
+else
+  printf '#[fg=colour240,nobold]—#[default]'
+fi

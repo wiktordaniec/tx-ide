@@ -1,0 +1,374 @@
+#!/usr/bin/env bash
+# tx — fuzzy-pick a tmux session and nest-attach in this pane.
+#
+# Usage:
+#   tx                    Open the picker (local sessions).
+#   tx -f QUERY           Open the picker with QUERY pre-filled in the search.
+#   tx -host [ALIAS]      Pick from remote tmux on ssh ALIAS (default: personal).
+#   tx -all               Pick from local + personal, remote rows prefixed (r).
+#   tx --jump             Enter focuses the existing pane hosting the session
+#                         instead of nest-attaching here (popup-friendly).
+#   tx --help             Show this message.
+set -u
+
+# palette.sh lives at <repo>/shared/palette.sh — one level up from this file.
+# readlink resolves the ~/.local/bin install symlink back to the repo.
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../shared/palette.sh"
+
+B=$'\e[1m'
+R=$'\e[0m'
+NAMEW=${NAMEW:-18}
+HOST=""
+MIX=0
+MIX_REMOTE_ALIAS="personal"
+JUMP_MODE=0
+
+reltime() {
+  local then="$1" now="${2:-}" d
+  [[ -z "$then" || "$then" == 0 ]] && {
+    echo "-"
+    return
+  }
+  [[ -z "$now" ]] && now=$(date +%s)
+  d=$((now - then))
+  ((d < 0)) && d=0
+  if ((d < 60)); then
+    printf '%ds\n' "$d"
+  elif ((d < 3600)); then
+    printf '%dm\n' $((d / 60))
+  elif ((d < 86400)); then
+    printf '%dh\n' $((d / 3600))
+  else
+    printf '%dd\n' $((d / 86400))
+  fi
+}
+
+trunc() {
+  local s="$1" w="$2"
+  if ((${#s} > w)); then printf '%s…' "${s:0:w-1}"; else printf '%s' "$s"; fi
+}
+
+# Column width of the surrounding terminal/popup. Inside a tmux popup,
+# /dev/tty is the popup's pty so this returns the popup width.
+detect_term_cols() {
+  local cols
+  if cols=$(stty size 2>/dev/null </dev/tty); then
+    cols="${cols##* }"
+    [[ "$cols" =~ ^[0-9]+$ ]] && {
+      printf '%s' "$cols"
+      return
+    }
+  fi
+  if cols=$(tput cols 2>/dev/null); then
+    [[ "$cols" =~ ^[0-9]+$ ]] && {
+      printf '%s' "$cols"
+      return
+    }
+  fi
+  printf '%s' "${COLUMNS:-80}"
+}
+
+# Longest visible session name, including the "(r) " prefix on remote rows.
+measure_max_name() {
+  list_raw | awk -F'|' '$3 !~ /^Views/ {
+      n = length($3); if ($1 == "R") n += 4
+      if (n > m) m = n
+    } END { print m+0 }'
+}
+
+# NAME column width: fit the widest name, capped so STARTED, IDLE, and tag
+# chips still fit. Floor 12, ceiling 60.
+compute_namew() {
+  local cols="$1" longest="${2:-12}"
+  # Past NAME: 3 gap + 7 STARTED + 1 + 6 IDLE + ~14 tag reservation + ~2 fzf gutter.
+  local overhead=33
+  local max=$((cols - overhead))
+  ((max < 12)) && max=12
+  ((max > 60)) && max=60
+  local namew=$longest
+  ((namew < 12)) && namew=12
+  ((namew > max)) && namew=$max
+  printf '%s' "$namew"
+}
+
+list_raw() {
+  # Each line is `origin|activity|name|attached|created|tag` where origin
+  # is `L` (local tmux) or `R` (remote ssh).
+  local fmt='#{session_activity}|#{session_name}|#{session_attached}|#{session_created}|#{@tag}'
+  if ((MIX)); then
+    tmux list-sessions -F "L|$fmt" 2>/dev/null
+    ssh "$MIX_REMOTE_ALIAS" "/opt/homebrew/bin/tmux list-sessions -F 'R|$fmt'" 2>/dev/null
+  elif [[ -n "$HOST" ]]; then
+    ssh "$HOST" "/opt/homebrew/bin/tmux list-sessions -F 'R|$fmt'" 2>/dev/null
+  else
+    tmux list-sessions -F "L|$fmt" 2>/dev/null
+  fi
+}
+
+# Emit fzf rows. Each row is tab-separated:
+#   $1 name   $2 plain_chips   $3 origin (L|R)   $4+ visual columns
+# Sorted by most recent activity; Views-prefixed sessions filtered out.
+sessions_with_meta() {
+  local now
+  now=$(date +%s)
+
+  while IFS='|' read -r name created activity tag origin; do
+    local prefix=""
+    [[ "$origin" == "R" ]] && prefix="(r) "
+    name_disp=$(trunc "$name" "$((NAMEW - ${#prefix}))")
+    pad=$((NAMEW - ${#name_disp} - ${#prefix}))
+    ((pad < 0)) && pad=0
+    local plain_chips=""
+    if [[ -n "$tag" ]]; then
+      local tag_part
+      IFS=',' read -ra tag_parts <<<"$tag"
+      for tag_part in "${tag_parts[@]}"; do
+        plain_chips+=" [${tag_part}]"
+      done
+    fi
+    # NAME/STARTED/TAGS have no ANSI fg — they inherit fzf's fg (DIM_FG) for
+    # unselected rows and fg+ (BG_DEEP on ACCENT) when selected. IDLE keeps
+    # its WARN escape so the staleness signal stays yellow in both states
+    # (matches mx's age column behavior, just rendered on a different bg).
+    printf '%s\t%s\t%s\t%s%s%*s   %-7s %b%-6s%b%s\n' \
+      "$name" \
+      "$plain_chips" \
+      "$origin" \
+      "$prefix" "$name_disp" "$pad" "" \
+      "$(reltime "$created" "$now")" \
+      "$WARN_ANSI" "$(reltime "$activity" "$now")" "$R" \
+      "$plain_chips"
+  done < <(list_raw |
+    awk -F'|' '$3 !~ /^Views/' |
+    sort -t'|' -k2 -nr |
+    awk -F'|' 'BEGIN{OFS="|"}{print $3,$5,$2,$6,$1}')
+}
+
+cmd_list() {
+  sessions_with_meta
+}
+
+# Hidden subcommand — invoked via tmux display-popup. Confirms with [y/N]
+# (single char, no Enter needed) and kills the session on `y`/`Y`.
+cmd_kill() {
+  local session="${1:-}"
+  [[ -z "$session" ]] && exit 0
+  local reply=""
+  read -rp "Kill session '$session'? [y/N] " -n 1 reply || true
+  printf '\n'
+  if [[ "$reply" == "y" || "$reply" == "Y" ]]; then
+    tmux kill-session -t "$session" 2>/dev/null || true
+  fi
+}
+
+# Hidden subcommand — invoked from the fzf binding via tmux display-popup.
+# Prompts (with the current value pre-filled via Python's readline since macOS
+# bash 3.2 lacks `read -i`) and writes back via `tmux set`. Empty input unsets.
+# Cancel (Ctrl-C / Ctrl-D) leaves the existing tag untouched.
+cmd_edit_tag() {
+  local session="${1:-}"
+  [[ -z "$session" ]] && {
+    printf 'tx: _edit-tag requires a session name\n' >&2
+    exit 2
+  }
+  local current outfile new
+  current=$(tmux show-options -vt "$session" @tag 2>/dev/null)
+  outfile=$(mktemp)
+  trap 'rm -f "$outfile"' RETURN
+  if python3 -c '
+import sys, readline
+session, current, outfile = sys.argv[1], sys.argv[2], sys.argv[3]
+def hook():
+    readline.insert_text(current)
+    readline.redisplay()
+readline.set_pre_input_hook(hook)
+try:
+    line = input(f"Tags for {session}: ")
+except (EOFError, KeyboardInterrupt):
+    print()
+    sys.exit(1)
+with open(outfile, "w") as f:
+    f.write(line)
+' "$session" "$current" "$outfile"; then
+    new=$(<"$outfile")
+    if [[ -z "$new" ]]; then
+      tmux set -t "$session" -u @tag 2>/dev/null || true
+    else
+      tmux set -t "$session" @tag "$new"
+    fi
+  fi
+}
+
+jump_to_session() {
+  local session="${1:-}" target target_session current_session
+  local origin_pane origin_cmd
+  [[ -z "$session" ]] && return 1
+  current_session=$(tmux display-message -p '#S' 2>/dev/null)
+  if [[ "$current_session" == "$session" ]]; then
+    return 0
+  fi
+  origin_pane="${TX_ORIGIN_PANE:-}"
+  target=$(tmux-pane-for-session "$session" 2>/dev/null)
+  if [[ -n "$target" ]]; then
+    target_session="${target%%:*}"
+    if [[ "$target_session" == "$current_session" ]]; then
+      tmux select-window -t "$target" 2>/dev/null || return 1
+      tmux select-pane -t "$target" 2>/dev/null || return 1
+      return 0
+    fi
+  fi
+  if [[ -n "$origin_pane" ]]; then
+    origin_cmd=$(tmux display-message -t "$origin_pane" -p '#{pane_current_command}' 2>/dev/null)
+    case "$origin_cmd" in
+    zsh | bash | sh | fish | dash)
+      # Trailing `exec $SHELL` keeps the pane alive after detach.
+      tmux respawn-pane -k -t "$origin_pane" \
+        "TMUX= tmux attach -t $(printf '%q' "$session"); exec \${SHELL:-zsh}"
+      return 0
+      ;;
+    esac
+  fi
+  tmux switch-client -t "$session" 2>/dev/null
+}
+
+cmd_pick() {
+  local self="$0"
+  local query=""
+  if [[ "${1:-}" == "-f" || "${1:-}" == "--filter" ]]; then
+    [[ -z "${2:-}" ]] && {
+      printf 'tx: -f requires a value\n' >&2
+      exit 2
+    }
+    query="$2"
+    shift 2
+  fi
+
+  local refresh_interval=1
+  local list_args=""
+  if ((MIX)); then
+    refresh_interval=5
+    list_args="-all"
+  elif [[ -n "$HOST" ]]; then
+    refresh_interval=5
+    list_args="-host ${HOST}"
+  fi
+
+  # Size the NAME column to fit the current view + current longest name.
+  # Exported so reload-sync subshells (`tx _list`) keep the same width.
+  local cols_now longest
+  cols_now=$(detect_term_cols)
+  longest=$(measure_max_name)
+  NAMEW=$(compute_namew "$cols_now" "$longest")
+  export NAMEW
+
+  local header_cols
+  header_cols=$(printf '%-*s   STARTED IDLE   TAGS' "$NAMEW" NAME)
+  # Focus header: bold ACCENT name + bold FG tag chips on line 1 (mirrors the
+  # active-pane title style), column header on line 2.
+  local focus_cmd="printf '${ACCENT_ANSI}${B}%s${R} ${FG_ANSI}${B}%s${R}\\n%s' {1} {2} '$header_cols'"
+  local opts=(
+    fzf --exact --ansi --prompt='  ❯ ' --height=100% --reverse
+    --delimiter=$'\t' --with-nth=4..
+    --listen --track
+    "--color=fg:${DIM_FG_HEX},pointer:${ACCENT_HEX},fg+:${BG_DEEP_HEX}:bold,bg+:${ACCENT_HEX},hl:${ACCENT_HEX},hl+:${BG_DEEP_HEX},header:${DIM_FG_HEX},footer:${DIM_FG_HEX},prompt:${DIM_FG_HEX},query:${FG_HEX}"
+    --header="$header_cols"
+    --query="$query"
+    --bind="start:execute-silent(( while sleep ${refresh_interval}; do curl -fsS -XPOST \"localhost:\$FZF_PORT\" -d \"reload-sync(${self} ${list_args} _list)\" >/dev/null 2>&1 || exit 0; done ) &)"
+    --bind="ctrl-r:reload-sync(${self} ${list_args} _list)"
+    --bind="focus:transform-header($focus_cmd)"
+  )
+  if [[ -z "$HOST" ]] && ((!MIX)); then
+    opts+=(
+      --bind="ctrl-t:execute(tmux display-popup -E -h 5 -w 60% \"${self} _edit-tag {1}\")+reload-sync(${self} _list)"
+      --bind="ctrl-d:execute(tmux display-popup -E -h 5 -w 60% \"${self} _kill {1}\")+reload-sync(${self} _list)"
+    )
+  fi
+
+  local pane="${TMUX_PANE:-}"
+  while :; do
+    pick=$(sessions_with_meta | "${opts[@]}")
+    local status=$?
+    [[ $status -ne 0 ]] && return 0
+    name=$(printf '%s' "$pick" | cut -f1)
+    origin=$(printf '%s' "$pick" | cut -f3)
+    if ((JUMP_MODE)); then
+      if jump_to_session "$name"; then
+        return 0
+      fi
+      printf 'tx: could not jump to or switch to session %s\n' "$name" >&2
+      sleep 1.2
+      continue
+    fi
+    if [[ "$origin" == "R" ]]; then
+      local remote_alias="${HOST:-$MIX_REMOTE_ALIAS}"
+      [[ -n "$pane" ]] && tmux set -p -t "$pane" @remote-session "$name" 2>/dev/null
+      ssh -t "$remote_alias" /opt/homebrew/bin/tmux a -t "$name"
+      [[ -n "$pane" ]] && tmux set -p -t "$pane" -u @remote-session 2>/dev/null
+    else
+      local origin_pane origin_cmd
+      origin_pane="${TX_ORIGIN_PANE:-}"
+      if [[ -n "$origin_pane" ]]; then
+        origin_cmd=$(tmux display-message -t "$origin_pane" -p '#{pane_current_command}' 2>/dev/null)
+        case "$origin_cmd" in
+        zsh | bash | sh | fish | dash)
+          tmux respawn-pane -k -t "$origin_pane" \
+            "TMUX= tmux attach -t $(printf '%q' "$name"); exec \${SHELL:-zsh}"
+          return 0
+          ;;
+        esac
+      fi
+      TMUX= tmux attach -t "$name"
+    fi
+  done
+}
+
+cmd_help() {
+  sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  -all)
+    MIX=1
+    shift
+    ;;
+  --jump | -j)
+    JUMP_MODE=1
+    shift
+    ;;
+  -host)
+    # Alias is optional; defaults to `personal`. Treat a following arg as the
+    # alias only when it doesn't look like a flag (`-…`) or hidden subcommand (`_…`).
+    if [[ -n "${2:-}" && "${2:0:1}" != "-" && "${2:0:1}" != "_" ]]; then
+      HOST="$2"
+      shift 2
+    else
+      HOST="personal"
+      shift
+    fi
+    ;;
+  *) break ;;
+  esac
+done
+
+case "${1:-}" in
+-h | --help) cmd_help ;;
+_list)
+  shift
+  cmd_list "$@"
+  ;;
+_edit-tag)
+  shift
+  cmd_edit_tag "$@"
+  ;;
+_kill)
+  shift
+  cmd_kill "$@"
+  ;;
+-f | --filter | "") cmd_pick "$@" ;;
+*)
+  printf 'tx: unknown argument: %s\n\n' "$1" >&2
+  cmd_help
+  exit 2
+  ;;
+esac

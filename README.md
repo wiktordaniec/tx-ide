@@ -1,0 +1,117 @@
+# tx-ide
+
+A tmux + Claude Code "view" — `tx` (session picker), `mx` (mailbox), a repo/branch/model statusline, and an orchestration template for spawning Claude Code worker sessions.
+
+Layered as an additive install: nothing you've configured in tmux, Claude Code, or your shell gets overwritten. Everything goes into files **tx-ide owns** (`~/.tx-ide/`, `~/.claude/settings.local.json`) or into clearly-marked blocks of your existing config (`~/.tmux.conf`). `uninstall.sh` puts it all back.
+
+## What you get
+
+| Tool | What it does |
+|---|---|
+| `tx` | Fuzzy-pick a tmux session and nest-attach in the current pane. Filters by `@tag` user-options rendered as chips. Supports local + remote (`tx -all`, `tx -host`). Bound to `prefix + t` as a centered popup. |
+| `mx` | Curses TUI mailbox. Shows unread Claude Code Stop events + active sessions, grouped by tmux session and tagged. `Enter` jumps to the hosting pane. Bound to `prefix + m`. |
+| Statusline | Two-line Claude Code statusline: repo / worktree / branch · model · tokens · 5h-rate-limit · 7d-rate-limit. |
+| Pane border integration | Pane borders show inner attached session name + `@tag` chips. Remote ssh-attached panes are prefixed `(r)`. |
+| Claude scroll intercept | `C-u` / `C-d` scroll Claude Code's TUI (PageUp / PageDown). Pass through everywhere else. |
+| `M-1..9` / `User0..8` | Pane and window quick-switch. Requires your terminal to emit the matching escape sequences (`setup/iterm.sh` configures iTerm2). |
+| `leader-template/` | A drop-in orchestration repo skeleton. Scaffold with `init-leader.sh <path>`. |
+
+## Install
+
+```bash
+git clone <this-repo> ~/Desktop/Coding/tx-ide-private
+cd ~/Desktop/Coding/tx-ide-private
+./install.sh
+```
+
+The installer is **click-through** — it tells you what it will do, asks for one confirm, then runs every step idempotently with backups. Re-run any time to update or to reconcile drift.
+
+When done:
+```bash
+tmux source-file ~/.tmux.conf   # pick up the new bindings
+tx-ide-doctor                   # verify everything's green
+```
+
+## Uninstall
+
+```bash
+./uninstall.sh
+```
+
+Reverses every change install.sh made. Leaves your inbox data (`~/.claude/mailbox/`), any scaffolded leader directory, and the repo itself in place.
+
+## What install.sh actually changes
+
+**Creates / symlinks** (tx-ide owns these — safe to delete by hand):
+- `~/.local/bin/{tx,mx,tmux-pane-for-session,tmux-pane-session-name}` — symlinks to `bin/`
+- `~/.claude/hooks/mailbox/` — symlink to `claude/hooks/`
+- `~/.claude/statusline.sh` — symlink to `claude/statusline.sh`
+- `~/.tx-ide/tmux.conf` — one-line shim that `run-shell`s the view
+- `~/.claude/settings.local.json` — Claude Code merges this with your `settings.json`
+
+**Adds one marked block** to (with backup):
+- `~/.tmux.conf` — three lines: `# === BEGIN tx-ide ===`, a `source-file` line, `# === END tx-ide ===`
+
+**Does not touch**:
+- `~/.claude/settings.json` (Claude Code concatenates `hooks` from `settings.local.json` automatically)
+- `~/.claude/CLAUDE.md`
+- Any tmux config outside the marked block
+- iTerm preferences if iTerm is currently running (you get a hint to re-run `setup/iterm.sh` later)
+
+## Customizing the view
+
+The plugin reads these tmux user-options. All default `on`. Set in your `~/.tmux.conf` **above** the `source-file ~/.tx-ide/tmux.conf` line:
+
+```tmux
+set -g @tx-ide-popups          on             # prefix+t (tx), prefix+m (mx)
+set -g @tx-ide-pane-borders    on             # pane-border-format integration + colors
+set -g @tx-ide-claude-scroll   on             # C-u/C-d → PageUp/PageDown in Claude panes
+set -g @tx-ide-pane-keys       on             # M-1..9 → select-pane
+set -g @tx-ide-window-keys     on             # User0..8 → select-window
+set -g @tx-ide-palette         tokyonight-night   # or 'off' to skip color overrides
+```
+
+tmux's "last write wins" means anything you bind *after* the source-file line wins over tx-ide's defaults.
+
+### Theme
+
+tx-ide assumes your Claude Code theme is `dark-ansi` so terminal colors line up with `tx`/`mx`. We don't set it for you — change yours via `/config` or `~/.claude/settings.json` if you want the integration to look right.
+
+### Palette
+
+Hex literals in `shared/palette.sh` (tokyonight-night). Switching palettes is a manual edit + terminal preset re-apply; see comments at the top of `shared/palette.sh`.
+
+## Leader / worker orchestration
+
+Optional. `init-leader.sh <path>` scaffolds an orchestration directory:
+
+```
+<path>/
+├── CLAUDE.md
+├── agents/
+│   ├── COMMON.md      # conventions every session must follow
+│   ├── LEADER.md      # orchestration role
+│   └── DEVELOPER.md   # coding worker role
+└── start-leader.sh
+```
+
+The leader session reads `agents/COMMON.md` + `agents/LEADER.md`. Workers spawned from the leader read `agents/COMMON.md` + their role file (`DEVELOPER.md`, etc.).
+
+`init-leader.sh` refuses to overwrite existing files — safe to re-run on an existing directory to add the bits you don't have.
+
+## Requirements
+
+- macOS (iTerm2 + `say` + `defaults write` are macOS-only; Linux support is a future PR)
+- `tmux`, `fzf`, `python3` (stdlib), `openssl` (for hook entry IDs)
+
+## Verify / debug
+
+```bash
+tx-ide-doctor
+```
+
+Checks CLIs on PATH, symlinks, settings.local.json contents, live tmux bindings (if a server is running), iTerm GlobalKeyMap, mx-speaker daemon. Read-only — makes no changes.
+
+## License
+
+MIT.
