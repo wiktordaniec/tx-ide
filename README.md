@@ -20,8 +20,8 @@ Layered as an additive install: nothing you've configured in tmux, Claude Code, 
 ## Install
 
 ```bash
-git clone <this-repo> ~/Desktop/Coding/tx-ide-private
-cd ~/Desktop/Coding/tx-ide-private
+git clone <this-repo> ~/Desktop/Coding/tx-ide
+cd ~/Desktop/Coding/tx-ide
 ./install
 ```
 

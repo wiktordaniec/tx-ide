@@ -2,7 +2,7 @@
 # Reverse everything install.sh did. Leaves user data alone:
 #   ~/.claude/mailbox/        (inbox.jsonl, running.d/, mx-speaker.log)
 #   ~/.tx-ide/user-agents/    (any role overrides you wrote)
-#   the tx-ide-private repo itself
+#   the tx-ide repo itself
 set -u
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
