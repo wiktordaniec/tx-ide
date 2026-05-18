@@ -224,7 +224,7 @@ jump_to_session() {
       return 0
     fi
   fi
-  if [[ -n "$origin_pane" ]]; then
+  if [[ -n "$origin_pane" && "$current_session" == Views* ]]; then
     origin_cmd=$(tmux display-message -t "$origin_pane" -p '#{pane_current_command}' 2>/dev/null)
     case "$origin_cmd" in
     zsh | bash | sh | fish | dash)
@@ -312,9 +312,10 @@ cmd_pick() {
       ssh -t "$remote_alias" /opt/homebrew/bin/tmux a -t "$name"
       [[ -n "$pane" ]] && tmux set -p -t "$pane" -u @remote-session 2>/dev/null
     else
-      local origin_pane origin_cmd
+      local origin_pane origin_cmd current_session
       origin_pane="${TX_ORIGIN_PANE:-}"
-      if [[ -n "$origin_pane" ]]; then
+      current_session=$(tmux display-message -p '#S' 2>/dev/null)
+      if [[ -n "$origin_pane" && "$current_session" == Views* ]]; then
         origin_cmd=$(tmux display-message -t "$origin_pane" -p '#{pane_current_command}' 2>/dev/null)
         case "$origin_cmd" in
         zsh | bash | sh | fish | dash)
@@ -324,7 +325,11 @@ cmd_pick() {
           ;;
         esac
       fi
-      TMUX= tmux attach -t "$name"
+      if [[ -n "${TMUX:-}" ]]; then
+        tmux switch-client -t "$name"
+      else
+        TMUX= tmux attach -t "$name"
+      fi
     fi
   done
 }
@@ -340,8 +345,14 @@ cmd_start() {
   local session_name="${LEADER_SESSION_NAME:-leader}"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -h|--help) cmd_help; exit 0 ;;
-      *) printf 'tx start: unknown argument: %s\n' "$1" >&2; exit 2 ;;
+    -h | --help)
+      cmd_help
+      exit 0
+      ;;
+    *)
+      printf 'tx start: unknown argument: %s\n' "$1" >&2
+      exit 2
+      ;;
     esac
   done
 
@@ -422,13 +433,31 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${1:-}" in
-"" | -h | --help | help)    cmd_help ;;
-attach)                     shift; cmd_pick "$@" ;;
-mailbox)                    shift; cmd_mailbox "$@" ;;
-start)                      shift; cmd_start "$@" ;;
-_list)                      shift; cmd_list "$@" ;;
-_edit-tag)                  shift; cmd_edit_tag "$@" ;;
-_kill)                      shift; cmd_kill "$@" ;;
+"" | -h | --help | help) cmd_help ;;
+attach)
+  shift
+  cmd_pick "$@"
+  ;;
+mailbox)
+  shift
+  cmd_mailbox "$@"
+  ;;
+start)
+  shift
+  cmd_start "$@"
+  ;;
+_list)
+  shift
+  cmd_list "$@"
+  ;;
+_edit-tag)
+  shift
+  cmd_edit_tag "$@"
+  ;;
+_kill)
+  shift
+  cmd_kill "$@"
+  ;;
 *)
   printf 'tx: unknown command: %s\n\n' "$1" >&2
   cmd_help
