@@ -53,50 +53,66 @@ else
   check "$statusline_link" fail "not linked to repo"
 fi
 
-# === settings.local.json hooks ===
-printf '\n%sClaude settings.local.json%s\n' "$B" "$X"
+# === Claude settings (main + local) ===
+# Hooks concatenate across settings.json and settings.local.json, so we check
+# both — wired in either is sufficient.
+printf '\n%sClaude settings (hooks + statusLine)%s\n' "$B" "$X"
 SETTINGS_LOCAL="$CLAUDE_DIR/settings.local.json"
-if [[ -f "$SETTINGS_LOCAL" ]]; then
-  result_lines=$(SETTINGS_LOCAL="$SETTINGS_LOCAL" python3 - <<'PY'
+SETTINGS_MAIN="$CLAUDE_DIR/settings.json"
+result_lines=$(SETTINGS_LOCAL="$SETTINGS_LOCAL" SETTINGS_MAIN="$SETTINGS_MAIN" python3 - <<'PY'
 import json, os
-try:
-  with open(os.environ["SETTINGS_LOCAL"]) as fh:
-      data = json.load(fh)
-except Exception:
-  print("ERR"); raise SystemExit
+
+def load(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+local = load(os.environ["SETTINGS_LOCAL"])
+main = load(os.environ["SETTINGS_MAIN"])
+
 wanted = {
     "Stop":              "$HOME/.claude/hooks/mailbox/post.sh",
     "PermissionRequest": "$HOME/.claude/hooks/mailbox/post.sh",
     "UserPromptSubmit":  "$HOME/.claude/hooks/mailbox/pre.sh",
     "SessionEnd":        "$HOME/.claude/hooks/mailbox/end.sh",
 }
-hooks = data.get("hooks", {})
-missing = [
-    event for event, cmd in wanted.items()
-    if not any(
-        h.get("command") == cmd
-        for block in hooks.get(event, [])
+
+def has_command(data, event, command):
+    return any(
+        h.get("command") == command
+        for block in data.get("hooks", {}).get(event, [])
         for h in block.get("hooks", [])
     )
+
+missing = [
+    event for event, cmd in wanted.items()
+    if not (has_command(local, event, cmd) or has_command(main, event, cmd))
 ]
 print("HOOKS_MISSING:" + ",".join(missing) if missing else "HOOKS_OK")
-print("STATUS_OK" if "statusLine" in data else "STATUS_MISSING")
+
+if "statusLine" in local:
+    print("STATUS_LOCAL")
+elif "statusLine" in main:
+    print("STATUS_MAIN")
+else:
+    print("STATUS_MISSING")
 PY
 )
-  if grep -q "^HOOKS_OK" <<<"$result_lines"; then
-    check "mailbox hooks (Stop/Pre/End/PR)" ok ""
-  else
-    missing=$(grep "^HOOKS_MISSING" <<<"$result_lines" | cut -d: -f2)
-    check "mailbox hooks (Stop/Pre/End/PR)" fail "missing: $missing"
-  fi
-  if grep -q "^STATUS_OK" <<<"$result_lines"; then
-    check "statusLine" ok ""
-  else
-    check "statusLine" warn "absent (using settings.json's, if any)"
-  fi
+if grep -q "^HOOKS_OK" <<<"$result_lines"; then
+  check "mailbox hooks (Stop/Pre/End/PR)" ok "in settings.json or settings.local.json"
 else
-  check "settings.local.json" fail "missing"
+  missing=$(grep "^HOOKS_MISSING" <<<"$result_lines" | cut -d: -f2)
+  check "mailbox hooks (Stop/Pre/End/PR)" fail "missing: $missing"
 fi
+case "$(grep "^STATUS_" <<<"$result_lines")" in
+  STATUS_LOCAL)   check "statusLine" ok "in settings.local.json" ;;
+  STATUS_MAIN)    check "statusLine" ok "in settings.json (your own)" ;;
+  STATUS_MISSING) check "statusLine" warn "absent in both files" ;;
+esac
 
 # === ~/.tx-ide and ~/.tmux.conf ===
 printf '\n%sTmux config wiring%s\n' "$B" "$X"
@@ -116,27 +132,29 @@ fi
 if tmux info >/dev/null 2>&1; then
   printf '\n%sLive tmux bindings (running server detected)%s\n' "$B" "$X"
   bindings=$(tmux list-keys 2>/dev/null)
-  if grep -q "bind-key.*-T prefix t .*display-popup.*tx" <<<"$bindings"; then
+  # tmux list-keys uses variable whitespace between columns — use [[:space:]]+
+  # rather than literal spaces in patterns.
+  if grep -qE "bind-key[[:space:]]+-T prefix[[:space:]]+t[[:space:]].*display-popup.*tx" <<<"$bindings"; then
     check "prefix+t → tx popup" ok ""
   else
     check "prefix+t → tx popup" warn "not bound (reload: tmux source-file ~/.tmux.conf)"
   fi
-  if grep -q "bind-key.*-T prefix m .*display-popup.*mx" <<<"$bindings"; then
+  if grep -qE "bind-key[[:space:]]+-T prefix[[:space:]]+m[[:space:]].*display-popup.*mx" <<<"$bindings"; then
     check "prefix+m → mx popup" ok ""
   else
     check "prefix+m → mx popup" warn "not bound (reload: tmux source-file ~/.tmux.conf)"
   fi
-  if grep -q "bind-key.*-T root.*M-1.*select-pane" <<<"$bindings"; then
+  if grep -qE "bind-key[[:space:]]+-T root[[:space:]]+M-1[[:space:]].*select-pane" <<<"$bindings"; then
     check "M-1..9 → select-pane" ok ""
   else
     check "M-1..9 → select-pane" warn "not bound"
   fi
-  if grep -q "bind-key.*-T root.*User0.*select-window" <<<"$bindings"; then
+  if grep -qE "bind-key[[:space:]]+-T root[[:space:]]+User0[[:space:]].*select-window" <<<"$bindings"; then
     check "User0..8 → select-window" ok ""
   else
     check "User0..8 → select-window" warn "not bound"
   fi
-  if grep -q "bind-key.*-T root C-u.*if-shell.*claude" <<<"$bindings"; then
+  if grep -qE "bind-key[[:space:]]+-T root[[:space:]]+C-u[[:space:]].*if-shell.*claude" <<<"$bindings"; then
     check "Claude scroll intercept (C-u/C-d)" ok ""
   else
     check "Claude scroll intercept (C-u/C-d)" warn "not bound"

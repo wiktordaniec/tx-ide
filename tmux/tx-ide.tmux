@@ -10,8 +10,10 @@
 #   @tx-ide-window-keys     on|off   User0..8 → select-window (terminal must send)
 #   @tx-ide-palette         tokyonight-night|off   color overrides
 #
-# All settings tmux sees are emitted via `tmux <cmd>`, so user's later
-# `bind` / `set` lines in tmux.conf override ours (last-write-wins).
+# Composes a tmux.conf fragment and source-file's it, so tmux's own parser
+# handles multi-command binds correctly (shell-quoted `;` confuses tmux when
+# `bind-key` is invoked directly). Anything the user re-binds later in their
+# own tmux.conf wins, since tmux is last-write-wins.
 set -u
 
 option() {
@@ -25,15 +27,19 @@ pane_keys=$(option @tx-ide-pane-keys on)
 window_keys=$(option @tx-ide-window-keys on)
 palette=$(option @tx-ide-palette tokyonight-night)
 
+CONF=$(mktemp -t tx-ide-bindings.XXXXXX)
+trap 'rm -f "$CONF"' EXIT
+
 # --- Popups (prefix+t / prefix+m) ---
 # prefix+t: set TX_ORIGIN_PANE so tx can respawn the invoking pane after
 # attach; then display-popup with the tx CLI. prefix+m: same shape for mx.
 # prefix+M re-homes the default `select-pane -m` that prefix+m used to do.
 if [ "$popups" = on ]; then
-  tmux bind-key t setenv -gF TX_ORIGIN_PANE '#{pane_id}' \; \
-    display-popup -E -w 100 -h 30 -x C -y 1 -T ' tx ' 'tx'
-  tmux bind-key m display-popup -E -w 100 -h 30 -x C -y 1 -T ' mx ' 'mx'
-  tmux bind-key M select-pane -m
+  cat >> "$CONF" <<'EOF'
+bind t setenv -gF TX_ORIGIN_PANE "#{pane_id}" \; display-popup -E -w 100 -h 30 -x C -y 1 -T " tx " "tx"
+bind m display-popup -E -w 100 -h 30 -x C -y 1 -T " mx " "mx"
+bind M select-pane -m
+EOF
 fi
 
 # --- Pane borders ---
@@ -43,14 +49,17 @@ fi
 #   BORDER_DIM_HEX   #3b4261   (inactive border)
 if [ "$pane_borders" = on ]; then
   if [ "$palette" = tokyonight-night ]; then
-    tmux set-option -g  pane-border-style        'fg=#3b4261'
-    tmux set-option -g  pane-active-border-style 'fg=#7aa2f7,bold'
+    cat >> "$CONF" <<'EOF'
+set -g pane-border-style "fg=#3b4261"
+set -g pane-active-border-style "fg=#7aa2f7,bold"
+EOF
   fi
-  tmux set-option -g  pane-border-lines       heavy
-  tmux set-option -g  pane-border-indicators  both
-  tmux set-option -g  pane-border-status      off
-  tmux set-option -g  pane-border-format \
-    ' [#P] #(tmux-pane-session-name #D) '
+  cat >> "$CONF" <<'EOF'
+set -g pane-border-lines heavy
+set -g pane-border-indicators both
+set -g pane-border-status off
+set -g pane-border-format " [#P] #(tmux-pane-session-name #D) "
+EOF
 fi
 
 # --- Claude scroll intercept ---
@@ -59,12 +68,10 @@ fi
 # either the literal "claude" command or a version-string-shaped command
 # (Claude Code shows its version while loading: "2.1.138").
 if [ "$claude_scroll" = on ]; then
-  tmux bind-key -n C-u if-shell -F \
-    '#{||:#{==:#{pane_current_command},claude},#{m:[0-9]*.[0-9]*.[0-9]*,#{pane_current_command}}}' \
-    'send-keys PageUp' 'send-keys C-u'
-  tmux bind-key -n C-d if-shell -F \
-    '#{||:#{==:#{pane_current_command},claude},#{m:[0-9]*.[0-9]*.[0-9]*,#{pane_current_command}}}' \
-    'send-keys PageDown' 'send-keys C-d'
+  cat >> "$CONF" <<'EOF'
+bind -n C-u if -F '#{||:#{==:#{pane_current_command},claude},#{m:[0-9]*.[0-9]*.[0-9]*,#{pane_current_command}}}' 'send-keys PageUp' 'send-keys C-u'
+bind -n C-d if -F '#{||:#{==:#{pane_current_command},claude},#{m:[0-9]*.[0-9]*.[0-9]*,#{pane_current_command}}}' 'send-keys PageDown' 'send-keys C-d'
+EOF
 fi
 
 # --- Pane keys (M-1..9 → select-pane) ---
@@ -73,10 +80,10 @@ fi
 # prefix+digit doesn't reflow your panes.
 if [ "$pane_keys" = on ]; then
   for n in 1 2 3 4 5 6 7 8 9; do
-    tmux bind-key -n "M-$n" select-pane -t "$n"
+    printf 'bind -n M-%s select-pane -t %s\n' "$n" "$n" >> "$CONF"
   done
   for n in 1 2 3 4 5 6 7; do
-    tmux unbind-key -T prefix "M-$n" 2>/dev/null || true
+    printf 'unbind -T prefix M-%s\n' "$n" >> "$CONF"
   done
 fi
 
@@ -86,8 +93,10 @@ fi
 if [ "$window_keys" = on ]; then
   i=0
   for n in 1 2 3 4 5 6 7 8 9; do
-    tmux set-option -s "user-keys[$i]" "\033W$n"
-    tmux bind-key -n "User$i" select-window -t "$n"
+    printf 'set -s user-keys[%d] "\\033W%s"\n' "$i" "$n" >> "$CONF"
+    printf 'bind -n User%d select-window -t %s\n' "$i" "$n" >> "$CONF"
     i=$((i + 1))
   done
 fi
+
+tmux source-file "$CONF"
