@@ -642,6 +642,13 @@ def tui(stdscr):
                     scroll_offset = 0
             elif key in (curses.KEY_ENTER, 10, 13):
                 search_active = False
+                if cursor >= 0 and rows[cursor]["type"] == "entry":
+                    err = jump_to_session(rows[cursor]["data"].get("tmux_session", ""))
+                    if err:
+                        error_text = err
+                        error_until = datetime.now().timestamp() + 3.0
+                    else:
+                        return
             elif key == curses.KEY_UP and cursor >= 0:
                 cursor = find_next_selectable(rows, cursor, -1)
             elif key == curses.KEY_DOWN and cursor >= 0:
