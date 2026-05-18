@@ -695,11 +695,6 @@ def tui(stdscr):
         elif key in (curses.KEY_ENTER, 10, 13) and cursor >= 0:
             row = rows[cursor]
             if row["type"] == "entry":
-                # Opening an inbox entry counts as acking it — keeps the voice
-                # reminder aligned with what the inbox shows as unread.
-                if row.get("kind") == "inbox" and not row["data"].get("read"):
-                    mark_read(row["data"]["id"])
-                    last_inbox_sig = -1.0
                 err = jump_to_session(row["data"].get("tmux_session", ""))
                 if err:
                     error_text = err
@@ -708,7 +703,7 @@ def tui(stdscr):
                     return
         elif key == ord("/"):
             search_active = True
-        elif key == 1:
+        elif key in (1, ord("a")):
             if cursor >= 0:
                 row = rows[cursor]
                 if row["type"] == "entry" and row.get("kind") == "inbox":
