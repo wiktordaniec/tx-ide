@@ -3,7 +3,6 @@
 
 import curses
 import json
-import shlex
 import subprocess
 import sys
 from datetime import datetime
@@ -143,24 +142,7 @@ def jump_to_session(name):
     if attached_count > 0:
         return _switch_client(name)
 
-    # Only spawn the nested-attach window inside a Views home-base session.
-    # Inside a program session that would stack a nested attach on top of
-    # another (Views→prog→other), which is the bug the prefix check exists
-    # to prevent. Until we have a real Views/program flag, prefix-match.
-    if not current_session.startswith("Views"):
-        return _switch_client(name)
-
-    attach_cmd = f"TMUX= exec tmux attach -t {shlex.quote(name)}"
-    result = subprocess.run(
-        ["tmux", "new-window", "-t", f"{current_session}:", "-n", name, attach_cmd],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        msg = result.stderr.strip() or "new-window failed"
-        return f"could not open '{name}': {msg}"
-    return None
+    return f"session '{name}' is not attached anywhere"
 
 
 def _group_members(session_name):

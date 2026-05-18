@@ -210,6 +210,10 @@ jump_to_session() {
   local session="${1:-}" target target_session current_session
   local origin_pane origin_cmd
   [[ -z "$session" ]] && return 1
+  if ! tmux has-session -t "=$session" 2>/dev/null; then
+    printf "tx: session '%s' does not exist\n" "$session" >&2
+    return 1
+  fi
   current_session=$(tmux display-message -p '#S' 2>/dev/null)
   if [[ "$current_session" == "$session" ]]; then
     return 0
@@ -312,6 +316,11 @@ cmd_pick() {
       ssh -t "$remote_alias" /opt/homebrew/bin/tmux a -t "$name"
       [[ -n "$pane" ]] && tmux set -p -t "$pane" -u @remote-session 2>/dev/null
     else
+      if ! tmux has-session -t "=$name" 2>/dev/null; then
+        printf "tx: session '%s' does not exist\n" "$name" >&2
+        sleep 1.2
+        continue
+      fi
       local origin_pane origin_cmd current_session
       origin_pane="${TX_ORIGIN_PANE:-}"
       current_session=$(tmux display-message -p '#S' 2>/dev/null)
