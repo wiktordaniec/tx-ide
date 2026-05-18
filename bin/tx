@@ -387,9 +387,10 @@ cmd_start() {
 
     # Default boot: try resume first, fall back to fresh + priming prompt.
     # --restart forces fresh so a restart is a real reset, not a resume.
-    local boot_cmd='claude --continue || claude "$TX_LEADER_PROMPT"'
+    local leader_flags='--dangerously-skip-permissions --model opus --effort low'
+    local boot_cmd="claude $leader_flags --continue || claude $leader_flags \"\$TX_LEADER_PROMPT\""
     if ((restart)); then
-      boot_cmd='claude "$TX_LEADER_PROMPT"'
+      boot_cmd="claude $leader_flags \"\$TX_LEADER_PROMPT\""
     fi
     tmux new-session -d -s "$session_name" -c "$repo_dir" \
       -e COLORTERM=truecolor -e TERM=xterm-256color \
