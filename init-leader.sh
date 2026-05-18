@@ -21,6 +21,15 @@ if [[ ! -d "$TEMPLATE" ]]; then
   exit 1
 fi
 
+# Don't scaffold into the tx-ide repo itself (would create root-level copies
+# of CLAUDE.md, agents/, start-leader.sh next to leader-template/).
+target_abs=$(cd "$target" 2>/dev/null && pwd || printf '%s' "$target")
+if [[ "$target_abs" == "$REPO" ]] || [[ -d "$target_abs/leader-template" ]]; then
+  printf 'error: %s looks like the tx-ide repo itself — refusing to scaffold into it.\n' "$target" >&2
+  printf '       pick a different path (e.g. ~/Code/my-orchestrator).\n' >&2
+  exit 1
+fi
+
 mkdir -p "$target"
 
 G=$'\e[32m'; Y=$'\e[33m'; D=$'\e[2m'; X=$'\e[0m'
