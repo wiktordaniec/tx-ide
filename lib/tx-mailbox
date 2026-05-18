@@ -386,11 +386,18 @@ def draw_segments(stdscr, line_y, width, segments, styles, override=None, key_ov
         stdscr.addnstr(line_y, x, " " * (line_width - x), line_width - x, pad_attr)
 
 
-def draw_search_bar(stdscr, line_y, width, query, styles):
-    """Draw the input marker + query on line_y; return the column for the caret."""
+def draw_search_bar(stdscr, line_y, width, query, styles, search_active):
+    """Draw the input marker + query on line_y; return the column for the caret.
+
+    In command mode (search_active=False) with no query, the bar is blank so
+    the UI signals that typing won't search — `/` is needed to enter search.
+    """
     if width <= 1:
         return 0
     line_width = width - 1
+    if not search_active and not query:
+        stdscr.addnstr(line_y, 0, " " * line_width, line_width, styles["entry"])
+        return 0
     prompt = SEARCH_PROMPT
     chunk = prompt[:line_width]
     stdscr.addnstr(line_y, 0, chunk, line_width, styles["search_prompt"])
@@ -420,6 +427,7 @@ def render(
     active_count,
     query,
     error_text="",
+    search_active=False,
 ):
     height, width = stdscr.getmaxyx()
     stdscr.erase()
@@ -437,7 +445,7 @@ def render(
     )
     caret_x = 0
     if width > 1 and height > 1:
-        caret_x = draw_search_bar(stdscr, 1, width, query, styles)
+        caret_x = draw_search_bar(stdscr, 1, width, query, styles, search_active)
 
     list_top = 2
     footer_y = height - 1
@@ -499,8 +507,13 @@ def render(
                 )
         stdscr.addnstr(footer_y, clock_x, clock_text, len(clock_text), styles["clock"])
 
-    if height > 1 and width > 1:
+    if height > 1 and width > 1 and search_active:
         stdscr.move(1, min(caret_x, width - 1))
+
+    try:
+        curses.curs_set(1 if search_active else 0)
+    except curses.error:
+        pass
 
     stdscr.refresh()
 
@@ -560,7 +573,7 @@ def init_styles():
 
 def tui(stdscr):
     try:
-        curses.curs_set(1)
+        curses.curs_set(0)
     except curses.error:
         pass
     stdscr.timeout(1000)
@@ -570,6 +583,7 @@ def tui(stdscr):
     running_entries = load_running()
     view_mode = "live"
     query = ""
+    search_active = False
     all_rows = build_rows(inbox_entries, running_entries, view_mode)
     rows = filter_rows(all_rows, query)
     cursor = first_selectable_index(rows)
@@ -617,11 +631,54 @@ def tui(stdscr):
             active_count,
             query,
             error_text,
+            search_active,
         )
 
         key = stdscr.getch()
         if key == -1:
             continue
+
+        if search_active:
+            # Search mode: typing edits the query, ESC cancels, Enter commits.
+            if key == 27:
+                search_active = False
+                if query:
+                    query = ""
+                    rows = filter_rows(all_rows, query)
+                    cursor = first_selectable_index(rows)
+                    scroll_offset = 0
+            elif key in (curses.KEY_ENTER, 10, 13):
+                search_active = False
+            elif key == curses.KEY_UP and cursor >= 0:
+                cursor = find_next_selectable(rows, cursor, -1)
+            elif key == curses.KEY_DOWN and cursor >= 0:
+                cursor = find_next_selectable(rows, cursor, 1)
+            elif key in (curses.KEY_BACKSPACE, 127, 8):
+                if query:
+                    saved_identity = (
+                        row_identity(rows[cursor]) if 0 <= cursor < len(rows) else None
+                    )
+                    query = query[:-1]
+                    rows = filter_rows(all_rows, query)
+                    cursor = reselect_by_identity(rows, saved_identity)
+                    scroll_offset = 0
+            elif key == 21:
+                if query:
+                    query = ""
+                    rows = filter_rows(all_rows, query)
+                    cursor = first_selectable_index(rows)
+                    scroll_offset = 0
+            elif 32 <= key <= 126:
+                saved_identity = (
+                    row_identity(rows[cursor]) if 0 <= cursor < len(rows) else None
+                )
+                query += chr(key)
+                rows = filter_rows(all_rows, query)
+                cursor = reselect_by_identity(rows, saved_identity)
+                scroll_offset = 0
+            continue
+
+        # Command mode.
         if key == 27:
             return
         if key == curses.KEY_UP and cursor >= 0:
@@ -642,21 +699,8 @@ def tui(stdscr):
                     error_until = datetime.now().timestamp() + 3.0
                 else:
                     return
-        elif key in (curses.KEY_BACKSPACE, 127, 8):
-            if query:
-                saved_identity = (
-                    row_identity(rows[cursor]) if 0 <= cursor < len(rows) else None
-                )
-                query = query[:-1]
-                rows = filter_rows(all_rows, query)
-                cursor = reselect_by_identity(rows, saved_identity)
-                scroll_offset = 0
-        elif key == 21:
-            if query:
-                query = ""
-                rows = filter_rows(all_rows, query)
-                cursor = first_selectable_index(rows)
-                scroll_offset = 0
+        elif key == ord("/"):
+            search_active = True
         elif key == 1:
             if cursor >= 0:
                 row = rows[cursor]
@@ -668,14 +712,6 @@ def tui(stdscr):
             all_rows = build_rows(inbox_entries, running_entries, view_mode)
             rows = filter_rows(all_rows, query)
             cursor = first_selectable_index(rows)
-            scroll_offset = 0
-        elif 32 <= key <= 126:
-            saved_identity = (
-                row_identity(rows[cursor]) if 0 <= cursor < len(rows) else None
-            )
-            query += chr(key)
-            rows = filter_rows(all_rows, query)
-            cursor = reselect_by_identity(rows, saved_identity)
             scroll_offset = 0
 
 
