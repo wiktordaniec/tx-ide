@@ -31,13 +31,16 @@ CONF=$(mktemp -t tx-ide-bindings.XXXXXX)
 trap 'rm -f "$CONF"' EXIT
 
 # --- Popups (prefix+t / prefix+m) ---
-# prefix+t: set TX_ORIGIN_PANE so tx can respawn the invoking pane after
-# attach; then display-popup with the tx CLI. prefix+m: same shape for the
+# prefix+t: launch the tx picker in a popup, passing the invoking pane's id as
+# TX_ORIGIN_PANE in the popup's own env. tx attach reads it to respawn that
+# pane after picking. Passing via `-e` instead of `setenv -g` keeps the
+# variable scoped to the popup — a CLI `tx attach` from a regular shell won't
+# inherit a stale value from a prior prefix+t. prefix+m: same shape for the
 # mailbox subcommand. prefix+M re-homes the default `select-pane -m` that
 # prefix+m used to do.
 if [ "$popups" = on ]; then
   cat >> "$CONF" <<'EOF'
-bind t setenv -gF TX_ORIGIN_PANE "#{pane_id}" \; display-popup -E -w 100 -h 30 -x C -y 1 -T " tx " "tx attach"
+bind t display-popup -E -e "TX_ORIGIN_PANE=#{pane_id}" -w 100 -h 30 -x C -y 1 -T " tx " "tx attach"
 bind m display-popup -E -w 100 -h 30 -x C -y 1 -T " mailbox " "tx mailbox"
 bind M select-pane -m
 EOF
