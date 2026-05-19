@@ -338,12 +338,21 @@ def row_identity(row):
     return (row.get("kind"), data.get("id") or data.get("tmux_session"))
 
 
-def reselect_by_identity(rows, identity):
-    if identity is None:
-        return first_selectable_index(rows)
-    for index, row in enumerate(rows):
-        if row_identity(row) == identity:
-            return index
+def reselect_by_identity(rows, identity, fallback_index=None):
+    """Find the row matching `identity`. If gone (e.g. just marked read in
+    live view, where read items vanish), prefer staying at `fallback_index`
+    so the next item slides into the cursor. If that slot is past the end
+    or on a non-entry row, walk back to the nearest entry."""
+    if identity is not None:
+        for index, row in enumerate(rows):
+            if row_identity(row) == identity:
+                return index
+    if fallback_index is not None:
+        if 0 <= fallback_index < len(rows) and rows[fallback_index]["type"] == "entry":
+            return fallback_index
+        for index in range(min(fallback_index, len(rows)) - 1, -1, -1):
+            if rows[index]["type"] == "entry":
+                return index
     return first_selectable_index(rows)
 
 
@@ -593,11 +602,12 @@ def tui(stdscr):
             saved_identity = (
                 row_identity(rows[cursor]) if 0 <= cursor < len(rows) else None
             )
+            saved_cursor = cursor
             inbox_entries = load_entries()
             running_entries = load_running()
             all_rows = build_rows(inbox_entries, running_entries, view_mode)
             rows = filter_rows(all_rows, query)
-            cursor = reselect_by_identity(rows, saved_identity)
+            cursor = reselect_by_identity(rows, saved_identity, saved_cursor)
             last_inbox_sig = new_inbox_sig
             last_running_sig = running_signature()
 
@@ -696,7 +706,7 @@ def tui(stdscr):
                     return
         elif key == ord("/"):
             search_active = True
-        elif key in (1, ord("a")):
+        elif key in (1, ord("a"), ord(" ")):
             if cursor >= 0:
                 row = rows[cursor]
                 if row["type"] == "entry" and row.get("kind") == "inbox":
