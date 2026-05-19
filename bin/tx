@@ -156,18 +156,6 @@ cmd_list() {
   sessions_with_meta
 }
 
-# Hidden subcommand — invoked via tmux display-popup. Confirms with [y/N]
-# (single char, no Enter needed) and kills the session on `y`/`Y`.
-cmd_kill() {
-  local session="${1:-}"
-  [[ -z "$session" ]] && exit 0
-  local reply=""
-  read -rp "Kill session '$session'? [y/N] " -n 1 reply || true
-  printf '\n'
-  if [[ "$reply" == "y" || "$reply" == "Y" ]]; then
-    tmux kill-session -t "$session" 2>/dev/null || true
-  fi
-}
 
 # Hidden subcommand — invoked from the fzf binding via tmux display-popup.
 # Prompts (with the current value pre-filled via Python's readline since macOS
@@ -265,6 +253,15 @@ cmd_pick() {
     list_args="--host ${HOST}"
   fi
 
+  # Arm file for the two-press ctrl-d kill: contains the name of the row armed
+  # by the last Ctrl-D. Empty/missing means "not armed". Cleaned up when the
+  # picker exits and zeroed on every focus change (cursor move disarms).
+  local arm_file
+  arm_file=$(mktemp -t tx-kill-arm.XXXXXX 2>/dev/null) || arm_file="/tmp/tx-kill-arm.$$"
+  : >"$arm_file"
+  export TX_ARM_FILE="$arm_file"
+  trap 'rm -f "$arm_file"' RETURN
+
   # Size the NAME column to fit the current view + current longest name.
   # Exported so reload-sync subshells (`tx _list`) keep the same width.
   local cols_now longest
@@ -278,6 +275,10 @@ cmd_pick() {
   # Focus header: bold ACCENT name + bold FG tag chips on line 1 (mirrors the
   # active-pane title style), column header on line 2.
   local focus_cmd="printf '${ACCENT_ANSI}${B}%s${R} ${FG_ANSI}${B}%s${R}\\n%s' {1} {2} '$header_cols'"
+  # Armed header: same two-line shape — line 1 swapped for a bold yellow kill
+  # prompt, line 2 keeps the column header so the layout doesn't shift.
+  # Square brackets (not parens) — fzf would close the action arg on `)`.
+  local arm_header_cmd="printf '${WARN_ANSI}${B} ⚠  Kill \"%s\"? [y/N]${R}\\n%s' {1} '$header_cols'"
   local opts=(
     fzf --exact --ansi --prompt='  ❯ ' --height=100% --reverse
     --delimiter=$'\t' --with-nth=4..
@@ -285,14 +286,27 @@ cmd_pick() {
     "--color=fg:${DIM_FG_HEX},pointer:${ACCENT_HEX},fg+:${BG_DEEP_HEX}:bold,bg+:${ACCENT_HEX},hl:${ACCENT_HEX},hl+:${BG_DEEP_HEX},header:${DIM_FG_HEX},footer:${DIM_FG_HEX},prompt:${DIM_FG_HEX},query:${FG_HEX}"
     --header="$header_cols"
     --query="$query"
-    --bind="start:execute-silent(( while sleep ${refresh_interval}; do curl -fsS -XPOST \"localhost:\$FZF_PORT\" -d \"reload-sync(${self} ${list_args} _list)\" >/dev/null 2>&1 || exit 0; done ) &)"
+    # Refresh loop + unbind y/n immediately on start so they fall through to
+    # default query input until Ctrl-D arms a session. ESC is intentionally
+    # left alone so it always aborts the picker (matches user expectation —
+    # `n` and cursor-move handle the in-picker cancel).
+    --bind="start:execute-silent(( while sleep ${refresh_interval}; do curl -fsS -XPOST \"localhost:\$FZF_PORT\" -d \"reload-sync(${self} ${list_args} _list)\" >/dev/null 2>&1 || exit 0; done ) &)+unbind(y,n)"
     --bind="ctrl-r:reload-sync(${self} ${list_args} _list)"
-    --bind="focus:transform-header($focus_cmd)"
+    # Cursor move re-renders the focus header, clears the arm file, and unbinds
+    # the confirm keys — so navigating away always disarms cleanly.
+    --bind="focus:transform-header($focus_cmd)+execute-silent(: >\"\$TX_ARM_FILE\")+unbind(y,n)"
   )
   if [[ -z "$HOST" ]] && ((!MIX)); then
     opts+=(
       --bind="ctrl-t:execute(tmux display-popup -E -h 5 -w 60% \"${self} _edit-tag {1}\")+reload-sync(${self} _list)"
-      --bind="ctrl-d:execute(tmux display-popup -E -h 5 -w 60% \"${self} _kill {1}\")+reload-sync(${self} _list)"
+      # tmux-style y/N kill: Ctrl-D records the row in $TX_ARM_FILE, swaps line
+      # 1 of the header for the yellow prompt, and rebind()s y/n to handle the
+      # answer. y kills + reloads. n / cursor-move cancel and restore the
+      # normal focus header. After firing or cancelling, y/n unbind themselves.
+      # No nested popup.
+      --bind="ctrl-d:execute-silent(printf '%s' {1} >\"\$TX_ARM_FILE\")+transform-header($arm_header_cmd)+rebind(y,n)"
+      --bind="y:execute-silent(tmux kill-session -t {1} 2>/dev/null; : >\"\$TX_ARM_FILE\")+reload-sync(${self} _list)+unbind(y,n)"
+      --bind="n:transform-header($focus_cmd)+execute-silent(: >\"\$TX_ARM_FILE\")+unbind(y,n)"
     )
   fi
 
@@ -489,10 +503,6 @@ _list)
 _edit-tag)
   shift
   cmd_edit_tag "$@"
-  ;;
-_kill)
-  shift
-  cmd_kill "$@"
   ;;
 *)
   printf 'tx: unknown command: %s\n\n' "$1" >&2
