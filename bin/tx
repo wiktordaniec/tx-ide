@@ -207,8 +207,10 @@ jump_to_session() {
   if [[ "$current_session" == "$session" ]]; then
     return 0
   fi
-  origin_pane="${TX_ORIGIN_PANE:-}"
-  target=$(tmux-pane-for-session "$session" 2>/dev/null)
+  # Outside tmux, display-message returns the most-recently-active client's pane.
+  origin_pane=""
+  [[ -n "${TMUX:-}" ]] && origin_pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
+  target=$(tmux-pane-for-session "$session" "$current_session" 2>/dev/null)
   if [[ -n "$target" ]]; then
     target_session="${target%%:*}"
     if [[ "$target_session" == "$current_session" ]]; then
@@ -337,8 +339,12 @@ cmd_pick() {
         continue
       fi
       local origin_pane origin_cmd current_session
-      origin_pane="${TX_ORIGIN_PANE:-}"
-      current_session=$(tmux display-message -p '#S' 2>/dev/null)
+      origin_pane=""
+      current_session=""
+      if [[ -n "${TMUX:-}" ]]; then
+        origin_pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
+        current_session=$(tmux display-message -p '#S' 2>/dev/null)
+      fi
       if [[ -n "$origin_pane" && "$current_session" == Views* ]]; then
         origin_cmd=$(tmux display-message -t "$origin_pane" -p '#{pane_current_command}' 2>/dev/null)
         case "$origin_cmd" in

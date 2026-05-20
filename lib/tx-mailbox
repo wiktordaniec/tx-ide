@@ -84,21 +84,8 @@ def has_tmux_session(name):
 
 
 def jump_to_session(name):
-    """Surface session `name` on the current client.
-
-    - Helper resolves a hosting pane → select that window+pane on every
-      session in the hosting session's group. Session groups share the
-      window list but each session tracks its own current window, so we
-      must update each member so whichever one the user is attached to
-      follows. We do NOT switch-client across outer sessions: the popup's
-      calling client is typically a nested inner client, and switching it
-      would replace the outer pane's view with a recursive attach.
-    - No hosting pane, session attached to some other client → switch-client
-      so the calling client lands on it.
-    - Otherwise (truly unattached) → open a new window in the current session
-      that nest-attaches, leaving the user's previous pane intact.
-    Returns None on success or an error string.
-    """
+    """Focus `name`'s host pane only when it's in the caller's session group;
+    return an error string otherwise (read-only — `tx attach` does materializing)."""
     if not name:
         return None
     current = subprocess.run(
@@ -108,9 +95,12 @@ def jump_to_session(name):
         check=False,
     )
     current_session = current.stdout.strip()
+    # Prefer a host in our own group so we don't focus a pane in a session nobody is viewing.
+    own_members = _group_members(current_session) if current_session else []
+    prefer = ",".join(own_members)
     try:
         helper = subprocess.run(
-            ["tmux-pane-for-session", name],
+            ["tmux-pane-for-session", name, prefer],
             capture_output=True,
             text=True,
             check=False,
@@ -120,27 +110,16 @@ def jump_to_session(name):
     target = helper.stdout.strip()
     if helper.returncode == 0 and target:
         host_session, _, window_pane = target.partition(":")
-        for member in _group_members(host_session):
-            member_target = f"{member}:{window_pane}"
-            subprocess.run(["tmux", "select-window", "-t", member_target], check=False)
-            subprocess.run(["tmux", "select-pane", "-t", member_target], check=False)
-        return None
+        members = _group_members(host_session)
+        if current_session in members:
+            for member in members:
+                member_target = f"{member}:{window_pane}"
+                subprocess.run(["tmux", "select-window", "-t", member_target], check=False)
+                subprocess.run(["tmux", "select-pane", "-t", member_target], check=False)
+            return None
 
     if not has_tmux_session(name):
         return f"session '{name}' no longer exists"
-
-    attached = subprocess.run(
-        ["tmux", "display-message", "-t", name, "-p", "#{session_attached}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    try:
-        attached_count = int(attached.stdout.strip() or "0")
-    except ValueError:
-        attached_count = 0
-    if attached_count > 0:
-        return _switch_client(name)
 
     return f"session '{name}' is not attached anywhere"
 
@@ -169,19 +148,6 @@ def _group_members(session_name):
     if not target_group:
         return [session_name]
     return [sname for sname, sgroup in rows if sgroup == target_group]
-
-
-def _switch_client(name):
-    result = subprocess.run(
-        ["tmux", "switch-client", "-t", name],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        msg = result.stderr.strip() or f"session '{name}' not found"
-        return f"could not switch to '{name}': {msg}"
-    return None
 
 
 def load_running():
