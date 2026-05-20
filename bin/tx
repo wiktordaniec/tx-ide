@@ -6,6 +6,10 @@
 #                              ensure the Views home-base session exists, and attach Views.
 #                              --restart kills an existing leader first.
 #   tx attach                  Open the session picker.
+#   tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"]
+#                              Spawn a detached tmux session. --tag is mandatory (no inheritance).
+#   tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]]
+#                              Spawn a detached nvim companion. --diff defaults BASE to main.
 #   tx mailbox                 Open the mailbox TUI (live + archived inbox).
 #   tx help                    Show this message (also what `tx` shows with no args).
 #
@@ -365,7 +369,7 @@ cmd_pick() {
 }
 
 cmd_help() {
-  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # tx start — spawn the leader Claude Code session in tmux. The leader's home
@@ -445,6 +449,137 @@ cmd_start() {
   fi
 }
 
+# Default cwd from the calling pane's pwd (inside tmux) or $PWD.
+spawn_default_cwd() {
+  local cwd=""
+  [[ -n "${TMUX:-}" ]] && cwd=$(tmux display-message -p '#{pane_current_path}' 2>/dev/null)
+  [[ -z "$cwd" ]] && cwd="$PWD"
+  printf '%s' "$cwd"
+}
+
+# tx spawn — bare detached tmux session with a mandatory --tag.
+cmd_spawn() {
+  local name="" tag="" cwd="" cmd_str=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    -h | --help)
+      cmd_help
+      exit 0
+      ;;
+    --tag)
+      [[ -z "${2:-}" ]] && { printf 'tx spawn: --tag requires a value\n' >&2; exit 2; }
+      tag="$2"
+      shift 2
+      ;;
+    --cwd)
+      [[ -z "${2:-}" ]] && { printf 'tx spawn: --cwd requires a value\n' >&2; exit 2; }
+      cwd="$2"
+      shift 2
+      ;;
+    --cmd)
+      [[ -z "${2:-}" ]] && { printf 'tx spawn: --cmd requires a value\n' >&2; exit 2; }
+      cmd_str="$2"
+      shift 2
+      ;;
+    -*)
+      printf 'tx spawn: unknown flag: %s\n' "$1" >&2
+      exit 2
+      ;;
+    *)
+      if [[ -z "$name" ]]; then
+        name="$1"
+        shift
+      else
+        printf "tx spawn: too many positional args: '%s'\n" "$1" >&2
+        exit 2
+      fi
+      ;;
+    esac
+  done
+
+  [[ -z "$name" ]] && { printf 'tx spawn: <name> required\n' >&2; exit 2; }
+  [[ -z "$tag" ]] && { printf 'tx spawn: --tag required\n' >&2; exit 2; }
+  if tmux has-session -t "=$name" 2>/dev/null; then
+    printf "tx spawn: session '%s' already exists\n" "$name" >&2
+    exit 1
+  fi
+  [[ -z "$cwd" ]] && cwd=$(spawn_default_cwd)
+  [[ -z "$cmd_str" ]] && cmd_str="${SHELL:-zsh}"
+
+  tmux new-session -d -s "$name" -c "$cwd" \
+    -e COLORTERM=truecolor -e TERM=xterm-256color \
+    "$cmd_str"
+  tmux set -t "$name" @tag "$tag"
+  printf "Spawned '%s' (cwd=%s, tag=%s)\n" "$name" "$cwd" "$tag"
+}
+
+# tx spawn-nvim — detached nvim companion. Forces tokyonight-moon (dark) via
+# +CMD because `tmux new-session -d` strips the terminal's OSC11 background
+# hint, and nvim's auto-mode would otherwise land on the light variant.
+cmd_spawn_nvim() {
+  local name="" tag="" cwd="" diff_base="" has_diff=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    -h | --help)
+      cmd_help
+      exit 0
+      ;;
+    --tag)
+      [[ -z "${2:-}" ]] && { printf 'tx spawn-nvim: --tag requires a value\n' >&2; exit 2; }
+      tag="$2"
+      shift 2
+      ;;
+    --cwd)
+      [[ -z "${2:-}" ]] && { printf 'tx spawn-nvim: --cwd requires a value\n' >&2; exit 2; }
+      cwd="$2"
+      shift 2
+      ;;
+    --diff)
+      has_diff=1
+      diff_base="main"
+      if [[ -n "${2:-}" && "${2:0:1}" != "-" ]]; then
+        diff_base="$2"
+        shift
+      fi
+      shift
+      ;;
+    -*)
+      printf 'tx spawn-nvim: unknown flag: %s\n' "$1" >&2
+      exit 2
+      ;;
+    *)
+      if [[ -z "$name" ]]; then
+        name="$1"
+        shift
+      else
+        printf "tx spawn-nvim: too many positional args: '%s'\n" "$1" >&2
+        exit 2
+      fi
+      ;;
+    esac
+  done
+
+  [[ -z "$name" ]] && { printf 'tx spawn-nvim: <name> required\n' >&2; exit 2; }
+  [[ -z "$tag" ]] && { printf 'tx spawn-nvim: --tag required\n' >&2; exit 2; }
+  if tmux has-session -t "=$name" 2>/dev/null; then
+    printf "tx spawn-nvim: session '%s' already exists\n" "$name" >&2
+    exit 1
+  fi
+  [[ -z "$cwd" ]] && cwd=$(spawn_default_cwd)
+
+  local nvim_cmd="nvim +'set background=dark | colorscheme tokyonight-moon'"
+  if ((has_diff)); then
+    nvim_cmd="$nvim_cmd +'DiffviewOpen $diff_base'"
+  fi
+
+  tmux new-session -d -s "$name" -c "$cwd" \
+    -e COLORTERM=truecolor -e TERM=xterm-256color \
+    "$nvim_cmd"
+  tmux set -t "$name" @tag "$tag"
+  printf "Spawned nvim '%s' (cwd=%s, tag=%s%s)\n" \
+    "$name" "$cwd" "$tag" "$( ((has_diff)) && printf ', diff=%s' "$diff_base" )"
+}
+
 # tx mailbox — exec the Python curses TUI in lib/.
 # Prefer /usr/bin/python3 over PATH lookup because the latter usually lands
 # on pyenv's shim, which adds ~60ms per launch — the dominant cost of
@@ -501,6 +636,14 @@ mailbox)
 start)
   shift
   cmd_start "$@"
+  ;;
+spawn)
+  shift
+  cmd_spawn "$@"
+  ;;
+spawn-nvim)
+  shift
+  cmd_spawn_nvim "$@"
   ;;
 _list)
   shift

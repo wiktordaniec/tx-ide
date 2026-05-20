@@ -2,43 +2,29 @@
 
 These conventions apply to every Claude Code session in this system: the leader, every worker, and any ad-hoc session you spin up inside the orchestration repo.
 
-## Session tags for `tx`
+## Spawning sessions
 
-The `tx` picker reads the tmux user-option `@tag` (singular) and renders comma-separated values as chips. **Tag every tmux session you spawn** so it's discoverable in `tx`.
-
-```bash
-tmux set -t <session-name> @tag "<tag1>,<tag2>,..."
-```
-
-Use `@tag`, not `@tags` — the plural form is silently ignored.
-
-Pick tags that describe the session's purpose (`llm`, `nvim`, `wrangler-p1`, `PR-1840`). A scope tag (`wrangler-p1`) plus a kind tag (`llm` / `nvim`) is the typical pair.
-
-## Nvim companion sessions
-
-During long-running work you may spawn a companion nvim tmux session for viewing diffs or files without cluttering your main session.
-
-**Naming:** give it a human-readable name that says what it's for (e.g. `wrangler-p1-diff`, `auth-review`). Don't try to make the name grep-able — tags handle filtering.
-
-**Tagging rule:** a companion nvim session mirrors its parent dev session's `@tag` **exactly**, swapping `llm` → `nvim`. No extra tags. Example: parent `llm,wrangler-p1,PR-1840` → companion `nvim,wrangler-p1,PR-1840`. This way `tx` filters by scope (`wrangler-p1`, `PR-1840`) surface both, and `nvim` filters surface all viewers.
+Use `tx spawn` (bare) and `tx spawn-nvim` (nvim companion). Both require `--tag` and refuse without it — no inheritance, no auto-magic, you pass the tags explicitly.
 
 ```bash
-PARENT_TAGS=$(tmux show -t <parent-session> -v @tag)
-NVIM_TAGS=${PARENT_TAGS//llm/nvim}
-
-tmux new-session -d -s <nvim-session-name> -c <worktree-path> \
-  -e COLORTERM=truecolor -e TERM=xterm-256color \
-  'nvim +"DiffviewOpen master"'
-tmux set -t <nvim-session-name> @tag "$NVIM_TAGS"
+tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"]
+tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]]
 ```
 
-If diffview.nvim is available, prefer `+"DiffviewOpen master"` to open straight into a diff view. Otherwise just `nvim`.
+**Tag convention** — a scope tag plus a kind tag (`llm` / `nvim`) is the pair:
+- AI worker session: `--tag llm,<scope>` (e.g. `llm,wrangler-p1`)
+- Nvim companion: `--tag nvim,<scope>` (use the same `<scope>` as the parent llm session)
 
-**Color snag:** `tmux new-session -d` does not propagate iTerm's dark-background OSC11 hint, so nvim's tokyonight auto-mode picks the light variant (tokyonight-day). The `-e COLORTERM=truecolor -e TERM=xterm-256color` flags fix true color but not background detection. If colors look washed out, send this after launch:
+`<scope>` describes the task (`wrangler-p1`, `PR-1840`, `auth-review`). The picker reads the `@tag` user-option and chips each comma-separated value; same scope on both makes them surface together when you filter by it.
+
+**Naming:** human-readable, says what it's for (e.g. `wrangler-p1-diff`, `auth-review`). The tag does the filtering, not the name.
 
 ```bash
-tmux send-keys -t <nvim-session-name> ":set background=dark | colorscheme tokyonight-moon" Enter
+tx spawn worker-auth --tag llm,auth --cwd ~/proj/auth --cmd "claude --resume"
+tx spawn-nvim wrangler-p1-diff --tag nvim,wrangler-p1 --diff main
 ```
+
+Both inject `COLORTERM=truecolor` and `TERM=xterm-256color`. `spawn-nvim` also forces `colorscheme tokyonight-moon` via `+CMD` because `tmux new-session -d` strips the OSC11 background hint and nvim's auto-mode would land on the light variant.
 
 ## Inter-session communication
 
