@@ -145,6 +145,91 @@ def _outer_view_session():
     return None
 
 
+def current_view_members():
+    import os
+    cmd = ["tmux", "display-message", "-p", "#S"]
+    pane = os.environ.get("TMUX_PANE")
+    if pane:
+        cmd = ["tmux", "display-message", "-t", pane, "-p", "#S"]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    current = result.stdout.strip()
+    if not current:
+        return []
+
+    clients_proc = subprocess.run(
+        ["tmux", "list-clients", "-F", "#{client_tty}\t#{client_session}"],
+        capture_output=True, text=True, check=False,
+    )
+    panes_proc = subprocess.run(
+        ["tmux", "list-panes", "-a", "-F", "#{pane_tty}\t#{session_name}"],
+        capture_output=True, text=True, check=False,
+    )
+    ttys_for_session = {}
+    for line in clients_proc.stdout.splitlines():
+        tty, _, sess = line.partition("\t")
+        if tty and sess:
+            ttys_for_session.setdefault(sess, set()).add(tty)
+    parent_of = {}
+    for line in panes_proc.stdout.splitlines():
+        pane_tty, _, host_session = line.partition("\t")
+        for inner_session, ttys in ttys_for_session.items():
+            if pane_tty in ttys:
+                parent_of.setdefault(inner_session, host_session)
+
+    def kind_of(session):
+        result = subprocess.run(
+            ["tmux", "show-options", "-vt", session, "-q", "@kind"],
+            capture_output=True, text=True, check=False,
+        )
+        return result.stdout.strip()
+
+    seen = set()
+    while current and current not in seen:
+        if kind_of(current) == "view":
+            return _group_members(current)
+        seen.add(current)
+        current = parent_of.get(current)
+    return []
+
+
+def host_window_map(view_members):
+    if not view_members:
+        return {}
+    members = set(view_members)
+    clients_proc = subprocess.run(
+        ["tmux", "list-clients", "-F", "#{client_tty}\t#{client_session}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    client_session = {}
+    for line in clients_proc.stdout.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) == 2 and parts[0]:
+            client_session[parts[0]] = parts[1]
+    panes_proc = subprocess.run(
+        [
+            "tmux", "list-panes", "-a", "-F",
+            "#{pane_tty}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{@remote-session}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    result = {}
+    for line in panes_proc.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 6:
+            continue
+        pane_tty, host_session, window_index, window_name, pane_index, override = parts[:6]
+        if host_session not in members:
+            continue
+        nested = override or client_session.get(pane_tty, "")
+        if nested and nested not in result:
+            result[nested] = (window_index, window_name, pane_index)
+    return result
+
+
 def _group_members(session_name):
     """Return all session names sharing a session group with `session_name`,
     including itself. Sessions without a group return just [session_name]."""
@@ -194,6 +279,22 @@ def load_running():
     return entries
 
 
+def apply_view_scope(inbox_entries, running_entries, view_members):
+    if not view_members:
+        return inbox_entries, running_entries
+    window_by_session = host_window_map(view_members)
+    def keep(entry):
+        location = window_by_session.get(entry.get("tmux_session", ""))
+        if location is None:
+            return False
+        entry["_location"] = location
+        return True
+    return (
+        [entry for entry in inbox_entries if keep(entry)],
+        [entry for entry in running_entries if keep(entry)],
+    )
+
+
 def inbox_signature():
     if INBOX_FILE.exists():
         return INBOX_FILE.stat().st_mtime
@@ -235,12 +336,16 @@ def format_entry_segments(entry):
     """
     age = relative_age(entry["timestamp"])
     tags = entry.get("tmux_tags") or ""
+    location = entry.get("_location")
     segments = [
         (f"{age:>4}", "entry_age"),
         ("  ", "entry"),
         (entry["tmux_session"], "entry_session"),
-        ("  ", "entry"),
     ]
+    if location is not None:
+        _window_index, window_name, pane_index = location
+        segments.append((f" {window_name}[{pane_index}]", "entry_age"))
+    segments.append(("  ", "entry"))
     if tags:
         for index, tag_part in enumerate(tags.split(",")):
             if index > 0:
@@ -568,8 +673,10 @@ def tui(stdscr):
     stdscr.timeout(1000)
     styles = init_styles()
 
-    inbox_entries = load_entries()
-    running_entries = load_running()
+    view_members = current_view_members()
+    inbox_entries, running_entries = apply_view_scope(
+        load_entries(), load_running(), view_members
+    )
     view_mode = "live"
     query = ""
     search_active = False
@@ -590,8 +697,9 @@ def tui(stdscr):
                 row_identity(rows[cursor]) if 0 <= cursor < len(rows) else None
             )
             saved_cursor = cursor
-            inbox_entries = load_entries()
-            running_entries = load_running()
+            inbox_entries, running_entries = apply_view_scope(
+                load_entries(), load_running(), view_members
+            )
             all_rows = build_rows(inbox_entries, running_entries, view_mode)
             rows = filter_rows(all_rows, query)
             cursor = reselect_by_identity(rows, saved_identity, saved_cursor)
