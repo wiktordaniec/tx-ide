@@ -96,9 +96,11 @@ def jump_to_session(name):
         check=False,
     )
     current_session = current.stdout.strip()
-    # Prefer a host in our own group for tie-breaking when multiple panes host the target.
-    own_members = _group_members(current_session) if current_session else []
-    prefer = ",".join(own_members)
+    prefer_list = list(_group_members(current_session)) if current_session else []
+    outer = _outer_view_session()
+    if outer and outer not in prefer_list:
+        prefer_list.append(outer)
+    prefer = ",".join(prefer_list)
     try:
         helper = subprocess.run(
             ["tmux-pane-for-session", name, prefer],
@@ -121,6 +123,26 @@ def jump_to_session(name):
         return f"session '{name}' no longer exists"
 
     return f"session '{name}' is not attached anywhere"
+
+
+def _outer_view_session():
+    caller_tty = subprocess.run(
+        ["tmux", "display-message", "-p", "#{client_tty}"],
+        capture_output=True, text=True, check=False,
+    ).stdout.strip()
+    if not caller_tty:
+        return None
+    panes = subprocess.run(
+        ["tmux", "list-panes", "-a", "-F", "#{pane_tty}|#{session_name}"],
+        capture_output=True, text=True, check=False,
+    )
+    if panes.returncode != 0:
+        return None
+    for line in panes.stdout.splitlines():
+        tty, _, session = line.partition("|")
+        if tty == caller_tty:
+            return session
+    return None
 
 
 def _group_members(session_name):
