@@ -84,8 +84,9 @@ def has_tmux_session(name):
 
 
 def jump_to_session(name):
-    """Focus `name`'s host pane only when it's in the caller's session group;
-    return an error string otherwise (read-only — `tx attach` does materializing)."""
+    """Focus `name`'s host pane wherever it is, returning None on success.
+    Returns an error string if no host pane was found
+    (read-only — `tx attach` does materializing)."""
     if not name:
         return None
     current = subprocess.run(
@@ -95,7 +96,7 @@ def jump_to_session(name):
         check=False,
     )
     current_session = current.stdout.strip()
-    # Prefer a host in our own group so we don't focus a pane in a session nobody is viewing.
+    # Prefer a host in our own group for tie-breaking when multiple panes host the target.
     own_members = _group_members(current_session) if current_session else []
     prefer = ",".join(own_members)
     try:
@@ -110,13 +111,11 @@ def jump_to_session(name):
     target = helper.stdout.strip()
     if helper.returncode == 0 and target:
         host_session, _, window_pane = target.partition(":")
-        members = _group_members(host_session)
-        if current_session in members:
-            for member in members:
-                member_target = f"{member}:{window_pane}"
-                subprocess.run(["tmux", "select-window", "-t", member_target], check=False)
-                subprocess.run(["tmux", "select-pane", "-t", member_target], check=False)
-            return None
+        for member in _group_members(host_session):
+            member_target = f"{member}:{window_pane}"
+            subprocess.run(["tmux", "select-window", "-t", member_target], check=False)
+            subprocess.run(["tmux", "select-pane", "-t", member_target], check=False)
+        return None
 
     if not has_tmux_session(name):
         return f"session '{name}' no longer exists"
