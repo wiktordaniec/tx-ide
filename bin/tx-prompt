@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# tx-prompt — forward one line of input to the tx-manager session.
+#
+# Invoked by the `prefix+/` tmux binding (see tmux/tx-ide.tmux). Spawns
+# the persistent `tx-manager` session on first call, then `send-keys`'s
+# the user's line into it and exits. No round-trip — the user attaches
+# via `tx attach` (filter on `tx-manager`) if they want to see the reply.
+set -u
+
+input="${1:-}"
+[ -z "${input// /}" ] && exit 0
+
+session=tx-manager
+
+if ! tmux has-session -t "=$session" 2>/dev/null; then
+  priming='You are tx-manager. Each user line is one tmux or tx operation. Execute it skillfully and stop. Do not ask clarifying questions — pick a reasonable interpretation and run it.'
+  tmux new-session -d -s "$session" -c "$HOME" \
+    -e COLORTERM=truecolor -e TERM=xterm-256color \
+    -e TX_MANAGER_PROMPT="$priming" \
+    "claude --model haiku --effort low --dangerously-skip-permissions \"\$TX_MANAGER_PROMPT\""
+  tmux set -t "$session" @tag "system,tx-manager"
+  for _ in $(seq 1 10); do
+    tmux capture-pane -p -t "$session" 2>/dev/null | grep -q '^> ' && break
+    sleep 0.5
+  done
+fi
+
+tmux send-keys -t "$session" -l -- "$input"
+sleep 0.3
+tmux send-keys -t "$session" Enter
+exit 0

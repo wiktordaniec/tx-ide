@@ -11,6 +11,7 @@ Layered as an additive install: nothing you've configured in tmux, Claude Code, 
 | `tx start` | Spawn the leader Claude Code session in tmux. Runs in the tx-ide repo itself (the orchestration home), primed with the shipped role files (`agents/COMMON.md`, `agents/LEADER.md`) plus any user overrides in `~/.tx-ide/user-agents/`. |
 | `tx attach` | Fuzzy-pick a tmux session and nest-attach in the current pane. Filters by `@tag` user-options rendered as chips. Supports local + remote (`tx attach --all`, `tx attach --host`). Bound to `prefix + t` as a centered popup. |
 | `tx mailbox` | Curses TUI mailbox. Shows unread Claude Code Stop events + active sessions, grouped by tmux session and tagged. `Enter` jumps to the hosting pane. Bound to `prefix + m`. |
+| `prefix + /` | Open a one-line `tx-manager>` prompt. Whatever you type is forwarded to a persistent `tx-manager` Claude session (Haiku, low effort) that runs tmux/tx operations on your behalf. Fire and forget — attach via `tx attach` (filter `tx-manager`) to see what it did. |
 | `tx` / `tx help` | Show the command summary. |
 | Statusline | Two-line Claude Code statusline: repo / worktree / branch · model · tokens · 5h-rate-limit · 7d-rate-limit. |
 | Pane border integration | Pane borders show inner attached session name + `@tag` chips. Remote ssh-attached panes are prefixed `(r)`. |
@@ -44,7 +45,7 @@ Reverses every change `./install` made. Leaves your inbox data (`~/.claude/mailb
 ## What install actually changes
 
 **Creates / symlinks** (tx-ide owns these — safe to delete by hand):
-- `~/.local/bin/{tx,tmux-pane-for-session,tmux-pane-session-name}` — symlinks to `bin/`
+- `~/.local/bin/{tx,tx-prompt,tmux-pane-for-session,tmux-pane-session-name}` — symlinks to `bin/`
 - `~/.claude/hooks/mailbox/` — symlink to `claude/hooks/`
 - `~/.claude/statusline.sh` — symlink to `claude/statusline.sh`
 - `~/.tx-ide/agents/` — symlink to `agents/` (shipped role files; updates with `git pull`)

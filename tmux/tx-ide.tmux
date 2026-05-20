@@ -3,7 +3,7 @@
 # which is sourced from the user's ~/.tmux.conf by install.sh.
 #
 # Reads @tx-ide-* options to decide which view features to enable:
-#   @tx-ide-popups          on|off   prefix+t (tx), prefix+m (mx)
+#   @tx-ide-popups          on|off   prefix+t (tx), prefix+m (mx), prefix+/ (tx-manager)
 #   @tx-ide-pane-borders    on|off   pane-border-format integration + colors
 #   @tx-ide-claude-scroll   on|off   C-u/C-d → PageUp/PageDown in Claude panes
 #   @tx-ide-pane-keys       on|off   M-1..9 → select-pane
@@ -30,16 +30,20 @@ palette=$(option @tx-ide-palette tokyonight-night)
 CONF=$(mktemp -t tx-ide-bindings.XXXXXX)
 trap 'rm -f "$CONF"' EXIT
 
-# --- Popups (prefix+t / prefix+m) ---
+# --- Popups (prefix+t / prefix+m / prefix+/) ---
 # prefix+t opens the tx picker, prefix+m the mailbox. tx attach figures out the
 # pane to glue into by asking tmux directly (`display-message -p #{pane_id}`),
 # so the bind doesn't need to plumb anything through. prefix+M re-homes the
 # default `select-pane -m` that prefix+m used to do.
+# prefix+/ opens tmux's command-prompt; whatever the user types is forwarded
+# to the persistent `tx-manager` Claude session via bin/tx-prompt. %%% is the
+# escaped substitution form so quotes in the user's line pass through verbatim.
 if [ "$popups" = on ]; then
   cat >> "$CONF" <<'EOF'
 bind t display-popup -E -w 100 -h 30 -x C -y 1 -T " tx " "tx attach"
 bind m display-popup -E -w 100 -h 30 -x C -y 1 -T " mailbox " "tx mailbox"
 bind M select-pane -m
+bind '/' command-prompt -p "tx-manager>" "run-shell 'tx-prompt %%%'"
 EOF
 fi
 

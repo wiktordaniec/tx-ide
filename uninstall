@@ -19,7 +19,7 @@ cat <<EOF
 ${B}=== tx-ide uninstall ===${X}
 
 I will remove:
-  - the three CLI symlinks in ~/.local/bin/ (only if they still point at this repo)
+  - the four CLI symlinks in ~/.local/bin/ (only if they still point at this repo)
   - ~/.claude/hooks/mailbox/ (symlink)
   - ~/.claude/statusline.sh (symlink)
   - ~/.tx-ide/agents (symlink) and ~/.tx-ide/tmux.conf
@@ -46,7 +46,7 @@ read -r -p "Proceed? [y/N] " reply
 
 # === Symlinks ===
 printf '\n%sCLI symlinks%s\n' "$B" "$X"
-for tool in tx tmux-pane-for-session tmux-pane-session-name; do
+for tool in tx tx-prompt tmux-pane-for-session tmux-pane-session-name; do
   target="$LOCAL_BIN/$tool"
   if [[ -L "$target" ]] && [[ "$(readlink "$target")" == "$REPO/bin/$tool" ]]; then
     rm "$target"
