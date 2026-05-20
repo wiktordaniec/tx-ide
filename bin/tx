@@ -6,6 +6,7 @@
 #                              ensure the Views home-base session exists, and attach Views.
 #                              --restart kills an existing leader first.
 #   tx attach                  Open the session picker.
+#   tx ls                      Plain stdout list: VIEWS and PROCESSES sections.
 #   tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"]
 #                              Spawn a detached tmux session. --tag is mandatory (no inheritance).
 #   tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]]
@@ -60,6 +61,11 @@ trunc() {
   if ((${#s} > w)); then printf '%s…' "${s:0:w-1}"; else printf '%s' "$s"; fi
 }
 
+# True if the named session has @kind set to "view".
+is_view_session() {
+  [[ "$(tmux show-options -vt "$1" -q @kind 2>/dev/null)" == "view" ]]
+}
+
 # Column width of the surrounding terminal/popup. Inside a tmux popup,
 # /dev/tty is the popup's pty so this returns the popup width.
 detect_term_cols() {
@@ -82,7 +88,7 @@ detect_term_cols() {
 
 # Longest visible session name, including the "(r) " prefix on remote rows.
 measure_max_name() {
-  list_raw | awk -F'|' '$3 !~ /^Views/ {
+  list_raw | awk -F'|' '$7 != "view" {
       n = length($3); if ($1 == "R") n += 4
       if (n > m) m = n
     } END { print m+0 }'
@@ -104,9 +110,9 @@ compute_namew() {
 }
 
 list_raw() {
-  # Each line is `origin|activity|name|attached|created|tag` where origin
+  # Each line is `origin|activity|name|attached|created|tag|kind` where origin
   # is `L` (local tmux) or `R` (remote ssh).
-  local fmt='#{session_activity}|#{session_name}|#{session_attached}|#{session_created}|#{@tag}'
+  local fmt='#{session_activity}|#{session_name}|#{session_attached}|#{session_created}|#{@tag}|#{@kind}'
   if ((MIX)); then
     tmux list-sessions -F "L|$fmt" 2>/dev/null
     ssh "$MIX_REMOTE_ALIAS" "/opt/homebrew/bin/tmux list-sessions -F 'R|$fmt'" 2>/dev/null
@@ -119,7 +125,7 @@ list_raw() {
 
 # Emit fzf rows. Each row is tab-separated:
 #   $1 name   $2 plain_chips   $3 origin (L|R)   $4+ visual columns
-# Sorted by most recent activity; Views-prefixed sessions filtered out.
+# Sorted by most recent activity; @kind == view sessions filtered out.
 sessions_with_meta() {
   local now
   now=$(date +%s)
@@ -151,13 +157,44 @@ sessions_with_meta() {
       "$WARN_ANSI" "$(reltime "$activity" "$now")" "$R" \
       "$plain_chips"
   done < <(list_raw |
-    awk -F'|' '$3 !~ /^Views/' |
+    awk -F'|' '$7 != "view"' |
     sort -t'|' -k2 -nr |
     awk -F'|' 'BEGIN{OFS="|"}{print $3,$5,$2,$6,$1}')
 }
 
 cmd_list() {
   sessions_with_meta
+}
+
+# tx ls — print sessions in two sections, VIEWS (@kind == view) and PROCESSES
+# (everything else). Plain stdout: no fzf, no ANSI, pipe-friendly. Columns are
+# name, idle (via reltime), and tag chips.
+cmd_ls() {
+  local now views_out="" processes_out=""
+  now=$(date +%s)
+  while IFS='|' read -r origin activity name attached created tag kind; do
+    local idle chips="" tag_part
+    idle=$(reltime "$activity" "$now")
+    if [[ -n "$tag" ]]; then
+      local -a tag_parts
+      IFS=',' read -ra tag_parts <<<"$tag"
+      for tag_part in "${tag_parts[@]}"; do
+        chips+=" [${tag_part}]"
+      done
+    fi
+    local row
+    row=$(printf '  %-24s %-6s%s' "$name" "$idle" "$chips")
+    if [[ "$kind" == "view" ]]; then
+      views_out+="$row"$'\n'
+    else
+      processes_out+="$row"$'\n'
+    fi
+  done < <(list_raw | sort -t'|' -k2 -nr)
+
+  printf 'VIEWS\n'
+  [[ -n "$views_out" ]] && printf '%s' "$views_out"
+  printf '\nPROCESSES\n'
+  [[ -n "$processes_out" ]] && printf '%s' "$processes_out"
 }
 
 
@@ -223,7 +260,7 @@ jump_to_session() {
       return 0
     fi
   fi
-  if [[ -n "$origin_pane" && "$current_session" == Views* ]]; then
+  if [[ -n "$origin_pane" ]] && is_view_session "$current_session"; then
     origin_cmd=$(tmux display-message -t "$origin_pane" -p '#{pane_current_command}' 2>/dev/null)
     case "$origin_cmd" in
     zsh | bash | sh | fish | dash)
@@ -349,7 +386,7 @@ cmd_pick() {
         origin_pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
         current_session=$(tmux display-message -p '#S' 2>/dev/null)
       fi
-      if [[ -n "$origin_pane" && "$current_session" == Views* ]]; then
+      if [[ -n "$origin_pane" ]] && is_view_session "$current_session"; then
         origin_cmd=$(tmux display-message -t "$origin_pane" -p '#{pane_current_command}' 2>/dev/null)
         case "$origin_cmd" in
         zsh | bash | sh | fish | dash)
@@ -436,6 +473,7 @@ cmd_start() {
       -e COLORTERM=truecolor -e TERM=xterm-256color \
       "TMUX= tmux attach -t $session_q; exec \${SHELL:-zsh}"
     tmux set -t Views @tag "views"
+    tmux set -t Views @kind "view"
     echo "Views session created with leader attached."
   fi
 
@@ -628,6 +666,10 @@ case "${1:-}" in
 attach)
   shift
   cmd_pick "$@"
+  ;;
+ls)
+  shift
+  cmd_ls "$@"
   ;;
 mailbox)
   shift
