@@ -7,9 +7,95 @@ input="${1:-}"
 [ -z "${input// /}" ] && exit 0
 
 session=tx-assistant
-priming='You are the tx-assistant. Each user line is one tmux or tx operation. Execute it skillfully and stop. Do not ask clarifying questions — pick a reasonable interpretation and run it.'
+priming='You are the tx-assistant. A user line may begin with a self-closing <tx-command-prompt .../> envelope describing the tmux focus at the moment of input (session, window, pane, optional nest-attached inner-session + inner pane). When the envelope is present, use it whenever the request implicitly refers to "this" / "here" / "the current pane"; when absent, treat the message as having no focus context. Each user line is one tmux or tx operation. Execute it skillfully and stop. Do not ask clarifying questions — pick a reasonable interpretation and run it.'
 
 repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
+
+xml_escape() {
+  local raw="$1"
+  raw="${raw//&/&amp;}"
+  raw="${raw//\'/&apos;}"
+  raw="${raw//</&lt;}"
+  raw="${raw//>/&gt;}"
+  printf '%s' "$raw"
+}
+
+attr() {
+  printf " %s='%s'" "$1" "$(xml_escape "$2")"
+}
+
+build_envelope() {
+  [ -z "${TMUX:-}" ] && return 0
+
+  # run-shell does not set $TMUX_PANE — fall back to the firing client's pane.
+  local target_pane="${TMUX_PANE:-}"
+  [ -z "$target_pane" ] && target_pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
+  [ -z "$target_pane" ] && return 0
+
+  local format='#{session_name}|#{window_index}|#{window_name}|#{pane_index}|#{pane_title}|#{pane_current_command}|#{pane_current_path}|#{pane_tty}'
+  local line
+  line=$(tmux display-message -t "$target_pane" -p "$format" 2>/dev/null) || return 0
+  [ -z "$line" ] && return 0
+
+  local session_name window_index window_name pane_index pane_title pane_command pane_path pane_tty
+  IFS='|' read -r session_name window_index window_name pane_index pane_title pane_command pane_path pane_tty <<<"$line"
+  local pane_id="$target_pane"
+
+  local session_kind session_tag
+  session_kind=$(tmux show-options -vqt "$session_name" @kind 2>/dev/null) || session_kind=""
+  session_tag=$(tmux show-options -vqt "$session_name" @tag 2>/dev/null) || session_tag=""
+
+  local envelope="<tx-command-prompt"
+  envelope+=$(attr session-name "$session_name")
+  envelope+=$(attr session-kind "$session_kind")
+  envelope+=$(attr session-tag "$session_tag")
+  envelope+=$(attr window-index "$window_index")
+  envelope+=$(attr window-name "$window_name")
+  envelope+=$(attr pane-id "$pane_id")
+  envelope+=$(attr pane-index "$pane_index")
+  envelope+=$(attr pane-title "$pane_title")
+  envelope+=$(attr pane-cmd "$pane_command")
+  envelope+=$(attr pane-path "$pane_path")
+
+  # Nest-attach detection mirrors bin/tmux-pane-session-name. @remote-session
+  # marks an ssh-attached remote tmux — skip inner introspection (needs ssh).
+  local remote_session
+  remote_session=$(tmux show-options -pqv -t "$pane_id" @remote-session 2>/dev/null) || remote_session=""
+  if [ -n "$remote_session" ]; then
+    envelope+=$(attr inner-remote "1")
+    envelope+=$(attr inner-session-name "$remote_session")
+  else
+    local inner_session
+    inner_session=$(tmux list-clients -F '#{client_tty} #{client_session}' 2>/dev/null |
+      awk -v t="$pane_tty" '$1==t {print $2; exit}')
+    if [ -n "$inner_session" ]; then
+      local inner_kind inner_tag inner_info
+      inner_kind=$(tmux show-options -vqt "$inner_session" @kind 2>/dev/null) || inner_kind=""
+      inner_tag=$(tmux show-options -vqt "$inner_session" @tag 2>/dev/null) || inner_tag=""
+      inner_info=$(tmux display-message -t "$inner_session" -p \
+        '#{window_index}|#{window_name}|#{pane_id}|#{pane_index}|#{pane_title}|#{pane_current_command}|#{pane_current_path}' \
+        2>/dev/null) || inner_info=""
+      local inner_window_index inner_window_name inner_pane_id inner_pane_index inner_pane_title inner_pane_command inner_pane_path
+      IFS='|' read -r inner_window_index inner_window_name inner_pane_id inner_pane_index inner_pane_title inner_pane_command inner_pane_path <<<"$inner_info"
+      envelope+=$(attr inner-session-name "$inner_session")
+      envelope+=$(attr inner-session-kind "$inner_kind")
+      envelope+=$(attr inner-session-tag "$inner_tag")
+      envelope+=$(attr inner-window-index "$inner_window_index")
+      envelope+=$(attr inner-window-name "$inner_window_name")
+      envelope+=$(attr inner-pane-id "$inner_pane_id")
+      envelope+=$(attr inner-pane-index "$inner_pane_index")
+      envelope+=$(attr inner-pane-title "$inner_pane_title")
+      envelope+=$(attr inner-pane-cmd "$inner_pane_command")
+      envelope+=$(attr inner-pane-path "$inner_pane_path")
+    fi
+  fi
+
+  envelope+="/>"
+  printf '%s' "$envelope"
+}
+
+envelope=$(build_envelope)
+[ -n "$envelope" ] && input="$envelope $input"
 
 if ! tmux has-session -t "=$session" 2>/dev/null; then
   tmux new-session -d -s "$session" -c "$repo" \
