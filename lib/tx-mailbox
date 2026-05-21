@@ -329,22 +329,97 @@ def relative_age(timestamp_iso):
     return f"{days}d"
 
 
-def format_entry_segments(entry):
+NAME_COL_FLOOR = 12
+NAME_COL_CEILING = 60
+LOC_COL_HEADER = "LOCATION"
+LOC_COL_CEILING = 24
+
+
+def name_visible_length(entry):
+    return len(entry.get("tmux_session", "") or "")
+
+
+def location_text(entry):
+    location = entry.get("_location")
+    if location is None:
+        return ""
+    _window_index, window_name, pane_index = location
+    return f"{window_name}[{pane_index}]"
+
+
+def compute_location_col_width(rows):
+    """Width for the LOCATION column, or 0 to suppress it. The column only
+    renders when at least one entry has a `_location` (set by apply_view_scope
+    when a View is active — archive view typically has none). Floor is the
+    header width so the header is never clipped."""
+    longest = 0
+    for row in rows:
+        if row.get("type") != "entry":
+            continue
+        length = len(location_text(row["data"]))
+        if length > longest:
+            longest = length
+    if longest == 0:
+        return 0
+    return max(min(longest, LOC_COL_CEILING), len(LOC_COL_HEADER))
+
+
+def compute_name_col_width(rows, term_width, loc_col_width):
+    """Fit the widest session name across entry rows, floor 12, ceiling 60,
+    capped so AT (if present), AGE, and tag chips still fit. Mirrors tx's
+    compute_namew(): one stable width per render so the right-side columns
+    line up."""
+    longest = NAME_COL_FLOOR
+    for row in rows:
+        if row.get("type") != "entry":
+            continue
+        length = name_visible_length(row["data"])
+        if length > longest:
+            longest = length
+    # Past NAME: 2 (gap) + [LOC + 2 (gap)] + 4 (AGE) + 2 (gap) + ~12 (tag/cwd).
+    loc_overhead = (loc_col_width + 2) if loc_col_width > 0 else 0
+    overhead = 2 + loc_overhead + 4 + 2 + 12
+    max_w = max(NAME_COL_FLOOR, term_width - overhead)
+    if max_w > NAME_COL_CEILING:
+        max_w = NAME_COL_CEILING
+    return max(NAME_COL_FLOOR, min(longest, max_w))
+
+
+def format_entry_segments(entry, name_col_width, loc_col_width):
     """Return (text, style_key) tuples for one entry row. Column colors mirror
     tx (see tmux/palette.sh): age=WARN (yellow), session=bold FG, suffix=DIM_FG.
-    Tags render as individual chips [a] [b] to match tx's chip layout.
+    Columns: NAME | (AT) | AGE | TAGS. The AT column is omitted when
+    loc_col_width is 0. Tags render as individual chips [a] [b].
     """
     age = relative_age(entry["timestamp"])
     tags = entry.get("tmux_tags") or ""
-    location = entry.get("_location")
-    segments = [
-        (f"{age:>4}", "entry_age"),
-        ("  ", "entry"),
-        (entry["tmux_session"], "entry_session"),
-    ]
-    if location is not None:
-        _window_index, window_name, pane_index = location
-        segments.append((f" {window_name}[{pane_index}]", "entry_age"))
+    session = entry["tmux_session"]
+
+    segments = []
+    name_len = len(session)
+    if name_len <= name_col_width:
+        segments.append((session, "entry_session"))
+        pad = name_col_width - name_len
+        if pad > 0:
+            segments.append((" " * pad, "entry"))
+    else:
+        segments.append((session[: name_col_width - 1] + "…", "entry_session"))
+
+    if loc_col_width > 0:
+        segments.append(("  ", "entry"))
+        loc = location_text(entry)
+        if loc:
+            if len(loc) > loc_col_width:
+                loc = loc[: loc_col_width - 1] + "…"
+            segments.append((loc, "entry_session"))
+            pad = loc_col_width - len(loc)
+        else:
+            pad = loc_col_width
+        if pad > 0:
+            segments.append((" " * pad, "entry"))
+
+    segments.append(("  ", "entry"))
+    segments.append((f"{age:>4}", "entry_age"))
     segments.append(("  ", "entry"))
     if tags:
         for index, tag_part in enumerate(tags.split(",")):
@@ -537,7 +612,23 @@ def render(
     if width > 1 and height > 1:
         caret_x = draw_search_bar(stdscr, 1, width, query, styles, search_active)
 
-    list_top = 2
+    loc_col_width = compute_location_col_width(rows)
+    name_col_width = compute_name_col_width(rows, width, loc_col_width)
+    if loc_col_width > 0:
+        column_header = (
+            f"{'NAME':<{name_col_width}}  "
+            f"{LOC_COL_HEADER:<{loc_col_width}}  "
+            f"{'AGE':>4}  TAGS"
+        )
+    else:
+        column_header = f"{'NAME':<{name_col_width}}  {'AGE':>4}  TAGS"
+    if height > 2 and width > 1:
+        stdscr.addnstr(
+            2, 0, column_header.ljust(width - 1)[: width - 1],
+            width - 1, styles["column_header"],
+        )
+
+    list_top = 3
     footer_y = height - 1
     visible_lines = max(1, footer_y - list_top)
 
@@ -560,7 +651,7 @@ def render(
                 break
             row = rows[row_index]
             if row["type"] == "entry":
-                segments = format_entry_segments(row["data"])
+                segments = format_entry_segments(row["data"], name_col_width, loc_col_width)
                 key_overrides = None
                 if row_index == cursor:
                     row_override = styles["selected"]
@@ -627,6 +718,7 @@ def init_styles():
         return {
             "header": curses.color_pair(1) | curses.A_BOLD,
             "divider": curses.color_pair(2) | curses.A_DIM,
+            "column_header": curses.color_pair(6),
             "entry": curses.A_NORMAL,
             "entry_age": curses.color_pair(5),
             "entry_session": curses.color_pair(6),
@@ -646,6 +738,7 @@ def init_styles():
         return {
             "header": curses.A_BOLD,
             "divider": curses.A_DIM,
+            "column_header": curses.A_NORMAL,
             "entry": curses.A_NORMAL,
             "entry_age": curses.A_NORMAL,
             "entry_session": curses.A_DIM,
