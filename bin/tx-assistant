@@ -18,8 +18,13 @@ input="${1:-}"
 session=tx-assistant
 priming='You are the tx-assistant. Each user line is one tmux or tx operation. Execute it skillfully and stop. Do not ask clarifying questions — pick a reasonable interpretation and run it.'
 
+# Resolve the repo this script ships from so the session lands inside the
+# tx-ide checkout — matches the convention used by bin/tx and lets the
+# assistant edit/inspect tx-ide files directly.
+repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
+
 if ! tmux has-session -t "=$session" 2>/dev/null; then
-  tmux new-session -d -s "$session" -c "$HOME" \
+  tmux new-session -d -s "$session" -c "$repo" \
     -e COLORTERM=truecolor -e TERM=xterm-256color \
     "claude --model haiku --effort low --dangerously-skip-permissions"
   tmux set -t "$session" @tag "tx-system,tx-assistant"
