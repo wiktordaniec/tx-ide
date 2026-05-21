@@ -11,15 +11,19 @@ LOCAL_BIN="$HOME_DIR/.local/bin"
 CLAUDE_DIR="$HOME_DIR/.claude"
 TX_IDE_DIR="$HOME_DIR/.tx-ide"
 
-B=$'\e[1m'; G=$'\e[32m'; Y=$'\e[33m'; D=$'\e[2m'; X=$'\e[0m'
-ok()    { printf '  %s→%s %-48s %s%s%s\n' "$G" "$X" "$1" "$G" "${2:-removed}" "$X"; }
-skip()  { printf '  %s→%s %-48s %s%s%s\n' "$Y" "$X" "$1" "$Y" "$2" "$X"; }
+B=$'\e[1m'
+G=$'\e[32m'
+Y=$'\e[33m'
+D=$'\e[2m'
+X=$'\e[0m'
+ok() { printf '  %s→%s %-48s %s%s%s\n' "$G" "$X" "$1" "$G" "${2:-removed}" "$X"; }
+skip() { printf '  %s→%s %-48s %s%s%s\n' "$Y" "$X" "$1" "$Y" "$2" "$X"; }
 
 cat <<EOF
 ${B}=== tx-ide uninstall ===${X}
 
 I will remove:
-  - the three CLI symlinks in ~/.local/bin/ (only if they still point at this repo)
+  - the CLI symlinks in ~/.local/bin/ (only if they still point at this repo)
   - ~/.claude/hooks/mailbox/ (symlink)
   - ~/.claude/statusline.sh (symlink)
   - ~/.tx-ide/agents (symlink) and ~/.tx-ide/tmux.conf
@@ -42,11 +46,14 @@ I will NOT touch:
 
 EOF
 read -r -p "Proceed? [y/N] " reply
-[[ "$reply" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
+[[ "$reply" =~ ^[Yy]$ ]] || {
+  echo "Aborted."
+  exit 0
+}
 
 # === Symlinks ===
 printf '\n%sCLI symlinks%s\n' "$B" "$X"
-for tool in tx tmux-pane-for-session tmux-pane-session-name; do
+for tool in tx tx-assistant tmux-pane-for-session tmux-pane-session-name; do
   target="$LOCAL_BIN/$tool"
   if [[ -L "$target" ]] && [[ "$(readlink "$target")" == "$REPO/bin/$tool" ]]; then
     rm "$target"
@@ -92,8 +99,8 @@ strip_block() {
       $0==b { skip=1; next }
       $0==e { skip=0; next }
       !skip
-    ' "$file" > "$file.tmp"
-    sed -e :a -e '/^$/{$d;N;ba' -e '}' "$file.tmp" > "$file"
+    ' "$file" >"$file.tmp"
+    sed -e :a -e '/^$/{$d;N;ba' -e '}' "$file.tmp" >"$file"
     rm "$file.tmp"
     ok "$file" "$label removed (backup: $file.bak.$stamp)"
   else

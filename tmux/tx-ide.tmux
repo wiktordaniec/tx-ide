@@ -3,7 +3,7 @@
 # which is sourced from the user's ~/.tmux.conf by install.sh.
 #
 # Reads @tx-ide-* options to decide which view features to enable:
-#   @tx-ide-popups          on|off   prefix+t (tx), prefix+m (mx)
+#   @tx-ide-popups          on|off   prefix+t (tx), prefix+m (mx), prefix+/ (tx-assistant)
 #   @tx-ide-pane-borders    on|off   pane-border-format integration + colors
 #   @tx-ide-claude-scroll   on|off   C-u/C-d → PageUp/PageDown in Claude panes
 #   @tx-ide-pane-keys       on|off   M-1..9 → select-pane
@@ -30,16 +30,19 @@ palette=$(option @tx-ide-palette tokyonight-night)
 CONF=$(mktemp -t tx-ide-bindings.XXXXXX)
 trap 'rm -f "$CONF"' EXIT
 
-# --- Popups (prefix+t / prefix+m) ---
+# --- Popups (prefix+t / prefix+m / prefix+/) ---
 # prefix+t opens the tx picker, prefix+m the mailbox. tx attach figures out the
 # pane to glue into by asking tmux directly (`display-message -p #{pane_id}`),
 # so the bind doesn't need to plumb anything through. prefix+M re-homes the
 # default `select-pane -m` that prefix+m used to do.
+# prefix+/ forwards a line to tx-assistant. `-b` is required so the
+# cold-spawn warmup doesn't block tmux's command queue.
 if [ "$popups" = on ]; then
-  cat >> "$CONF" <<'EOF'
+  cat >>"$CONF" <<'EOF'
 bind t display-popup -E -w 100 -h 30 -x C -y 1 -T " tx " "tx attach"
 bind m display-popup -E -w 100 -h 30 -x C -y 1 -T " mailbox " "tx mailbox"
 bind M select-pane -m
+bind '/' command-prompt -p "tx-assistant>" "run-shell -b \"tx-assistant '%%%'\""
 EOF
 fi
 
@@ -50,12 +53,12 @@ fi
 #   BORDER_DIM_HEX   #3b4261   (inactive border)
 if [ "$pane_borders" = on ]; then
   if [ "$palette" = tokyonight-night ]; then
-    cat >> "$CONF" <<'EOF'
+    cat >>"$CONF" <<'EOF'
 set -g pane-border-style "fg=#3b4261"
 set -g pane-active-border-style "fg=#7aa2f7,bold"
 EOF
   fi
-  cat >> "$CONF" <<'EOF'
+  cat >>"$CONF" <<'EOF'
 set -g pane-border-lines heavy
 set -g pane-border-indicators both
 set -g pane-border-status off
@@ -69,7 +72,7 @@ fi
 # either the literal "claude" command or a version-string-shaped command
 # (Claude Code shows its version while loading: "2.1.138").
 if [ "$claude_scroll" = on ]; then
-  cat >> "$CONF" <<'EOF'
+  cat >>"$CONF" <<'EOF'
 bind -n C-u if -F '#{||:#{==:#{pane_current_command},claude},#{m:[0-9]*.[0-9]*.[0-9]*,#{pane_current_command}}}' 'send-keys PageUp' 'send-keys C-u'
 bind -n C-d if -F '#{||:#{==:#{pane_current_command},claude},#{m:[0-9]*.[0-9]*.[0-9]*,#{pane_current_command}}}' 'send-keys PageDown' 'send-keys C-d'
 EOF
@@ -81,10 +84,10 @@ fi
 # prefix+digit doesn't reflow your panes.
 if [ "$pane_keys" = on ]; then
   for n in 1 2 3 4 5 6 7 8 9; do
-    printf 'bind -n M-%s select-pane -t %s\n' "$n" "$n" >> "$CONF"
+    printf 'bind -n M-%s select-pane -t %s\n' "$n" "$n" >>"$CONF"
   done
   for n in 1 2 3 4 5 6 7; do
-    printf 'unbind -T prefix M-%s\n' "$n" >> "$CONF"
+    printf 'unbind -T prefix M-%s\n' "$n" >>"$CONF"
   done
 fi
 
@@ -94,8 +97,8 @@ fi
 if [ "$window_keys" = on ]; then
   i=0
   for n in 1 2 3 4 5 6 7 8 9; do
-    printf 'set -s user-keys[%d] "\\033W%s"\n' "$i" "$n" >> "$CONF"
-    printf 'bind -n User%d select-window -t %s\n' "$i" "$n" >> "$CONF"
+    printf 'set -s user-keys[%d] "\\033W%s"\n' "$i" "$n" >>"$CONF"
+    printf 'bind -n User%d select-window -t %s\n' "$i" "$n" >>"$CONF"
     i=$((i + 1))
   done
 fi

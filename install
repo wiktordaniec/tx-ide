@@ -82,7 +82,7 @@ I will:
   - check dependencies and brew-install tmux + fzf if missing
       (also warn if python3 / claude / gh are not on PATH)
   - symlink CLIs into ~/.local/bin/
-      tx, tmux-pane-for-session, tmux-pane-session-name
+      tx, tx-assistant, tmux-pane-for-session, tmux-pane-session-name
   - add ~/.local/bin to your shell PATH (zsh/bash; marker-tracked)
   - symlink Claude mailbox hooks dir: ~/.claude/hooks/mailbox/ → repo
   - symlink statusline: ~/.claude/statusline.sh → repo
@@ -163,6 +163,7 @@ fi
 header "CLIs into ~/.local/bin"
 mkdir -p "$LOCAL_BIN"
 link "$REPO/bin/tx" "$LOCAL_BIN/tx"
+link "$REPO/bin/tx-assistant" "$LOCAL_BIN/tx-assistant"
 link "$REPO/bin/tmux-pane-for-session" "$LOCAL_BIN/tmux-pane-for-session"
 link "$REPO/bin/tmux-pane-session-name" "$LOCAL_BIN/tmux-pane-session-name"
 

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# tx-assistant — forward one line of input to the tx-assistant session.
+# Bound to prefix+/ via tmux/tx-ide.tmux.
+set -u
+
+input="${1:-}"
+[ -z "${input// /}" ] && exit 0
+
+session=tx-assistant
+priming='You are the tx-assistant. Each user line is one tmux or tx operation. Execute it skillfully and stop. Do not ask clarifying questions — pick a reasonable interpretation and run it.'
+
+repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
+
+if ! tmux has-session -t "=$session" 2>/dev/null; then
+  tmux new-session -d -s "$session" -c "$repo" \
+    -e COLORTERM=truecolor -e TERM=xterm-256color \
+    "claude --model haiku --effort low --dangerously-skip-permissions"
+  tmux set -t "$session" @tag "tx-system,tx-assistant"
+  # Wait for claude's input box to render (its prefix char is `❯`, not `>`).
+  for _ in $(seq 1 20); do
+    tmux capture-pane -p -t "$session" 2>/dev/null | grep -q '❯ ' && break
+    sleep 0.5
+  done
+  input="$priming Now: $input"
+fi
+
+tmux send-keys -t "$session" -l -- "$input"
+sleep 0.3
+tmux send-keys -t "$session" Enter
+exit 0
