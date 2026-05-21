@@ -100,6 +100,8 @@ Mandatory flag on both spawn commands: `--tag`. They refuse without it.
 
 **For name or tag changes, use `rename-session` / `set @tag` in place — never kill and respawn.** Kill-respawn loses scrollback, breaks attached clients, and drops any nest-attached inner sessions.
 
+**Shortcuts cannot rename sessions.** Tmux key bindings such as `prefix+$` are only available in interactive clients, not from your shell. Always use the full command: `tmux rename-session -t <old> <new>`.
+
 ## Configuration
 
 `~/.claude/mailbox/config.json` holds runtime knobs read live by tx-ide processes — no daemon restart needed; changes take effect on the next event. Current schema:
@@ -131,14 +133,14 @@ When the user asks for a worker — coding, scoping, planning, or research/explo
 ```bash
 tmux new-session -d -s <name> -c <cwd> \
   -e COLORTERM=truecolor -e TERM=xterm-256color \
-  'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
+  'claude --dangerously-skip-permissions --model "sonnet[1m]" --effort max "<priming>"'
 tmux set -t <name> @tag "llm,<scope>"
 ```
 
 - `<name>` — short, descriptive (e.g., `orchestrator-cleanup`, `auth-review`).
 - `<scope>` — the work scope (`wrangler-p1`, `PR-1840`, `cleanup`). Pairs with future `nvim,<scope>` companions.
 - `<cwd>` — project root. If the user said "here", use `pane-path` / `inner-pane-path` from the envelope. Otherwise resolve the project root they named.
-- Model + effort: `--model "opus[1m]"` and `--effort max` are the defaults. Don't downgrade unless the user asks.
+- Model + effort: `--model "sonnet[1m]"` and `--effort max` are the defaults. Don't downgrade unless the user asks.
 - Keep `<priming>` short — long prompts with special characters crash tmux.
 
 For **coding workers**, also pass `-e CLAUDE_REQUIRE_WORKTREE=1` on the new-session command. This trips an optional PreToolUse hook that blocks Write/Edit until the worker `cd`s into a linked worktree:
@@ -147,7 +149,7 @@ For **coding workers**, also pass `-e CLAUDE_REQUIRE_WORKTREE=1` on the new-sess
 tmux new-session -d -s <name> -c <cwd> \
   -e COLORTERM=truecolor -e TERM=xterm-256color \
   -e CLAUDE_REQUIRE_WORKTREE=1 \
-  'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
+  'claude --dangerously-skip-permissions --model "sonnet[1m]" --effort max "<priming>"'
 tmux set -t <name> @tag "llm,<scope>"
 ```
 
