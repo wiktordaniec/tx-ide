@@ -3,7 +3,7 @@
 # which is sourced from the user's ~/.tmux.conf by install.sh.
 #
 # Reads @tx-ide-* options to decide which view features to enable:
-#   @tx-ide-popups          on|off   prefix+t (tx), prefix+m (mx), prefix+/ (tx-manager)
+#   @tx-ide-popups          on|off   prefix+t (tx), prefix+m (mx), prefix+/ (assistant)
 #   @tx-ide-pane-borders    on|off   pane-border-format integration + colors
 #   @tx-ide-claude-scroll   on|off   C-u/C-d → PageUp/PageDown in Claude panes
 #   @tx-ide-pane-keys       on|off   M-1..9 → select-pane
@@ -36,14 +36,17 @@ trap 'rm -f "$CONF"' EXIT
 # so the bind doesn't need to plumb anything through. prefix+M re-homes the
 # default `select-pane -m` that prefix+m used to do.
 # prefix+/ opens tmux's command-prompt; whatever the user types is forwarded
-# to the persistent `tx-manager` Claude session via bin/tx-prompt. %%% is the
-# escaped substitution form so quotes in the user's line pass through verbatim.
+# to the persistent `assistant` Claude session via bin/tx-assistant. The %%%
+# substitution doubles single quotes inside the typed input, so wrapping it
+# in '…' inside the outer "…" gives the shell one argument containing the
+# whole line (without quotes around %%%, the shell word-splits and only the
+# first word reaches tx-assistant).
 if [ "$popups" = on ]; then
   cat >> "$CONF" <<'EOF'
 bind t display-popup -E -w 100 -h 30 -x C -y 1 -T " tx " "tx attach"
 bind m display-popup -E -w 100 -h 30 -x C -y 1 -T " mailbox " "tx mailbox"
 bind M select-pane -m
-bind '/' command-prompt -p "tx-manager>" "run-shell 'tx-prompt %%%'"
+bind '/' command-prompt -p "assistant>" "run-shell \"tx-assistant '%%%'\""
 EOF
 fi
 
