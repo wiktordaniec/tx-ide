@@ -1,6 +1,6 @@
 # tx-ide
 
-A tmux + Claude Code "view" — one CLI (`tx`) for picking sessions, opening the mailbox, and spawning leader/worker Claude Code sessions, plus a repo/branch/model statusline.
+A tmux + Claude Code "view" — one CLI (`tx`) for picking sessions, opening the mailbox, and spawning Claude Code workers (via the `tx-assistant` popup), plus a repo/branch/model statusline.
 
 Layered as an additive install: nothing you've configured in tmux, Claude Code, or your shell gets overwritten. Everything goes into files **tx-ide owns** (`~/.tx-ide/`, `~/.claude/settings.local.json`) or into clearly-marked blocks of your existing config (`~/.tmux.conf`). `./uninstall` puts it all back.
 
@@ -8,10 +8,10 @@ Layered as an additive install: nothing you've configured in tmux, Claude Code, 
 
 | Command | What it does |
 |---|---|
-| `tx start` | Spawn the leader Claude Code session in tmux. Runs in the tx-ide repo itself (the orchestration home), primed with the shipped role files (`agents/COMMON.md`, `agents/LEADER.md`) plus any user overrides in `~/.tx-ide/user-agents/`. |
+| `tx start` | Set up the tx-ide view: create the `Views` home-base session and warm the `tx-assistant` Claude Code session. `--restart` recreates the assistant. |
 | `tx attach` | Fuzzy-pick a tmux session and nest-attach in the current pane. Filters by `@tag` user-options rendered as chips. Supports local + remote (`tx attach --all`, `tx attach --host`). Bound to `prefix + t` as a centered popup. |
 | `tx mailbox` | Curses TUI mailbox. Shows unread Claude Code Stop events + active sessions, grouped by tmux session and tagged. `Enter` jumps to the hosting pane. Bound to `prefix + m`. |
-| `prefix + /` | Open a one-line `tx-assistant>` prompt. Whatever you type is forwarded to a persistent `tx-assistant` Claude session (Haiku, low effort) that runs tmux/tx operations on your behalf. Fire and forget — attach via `tx attach` (filter `tx-assistant`) to see what it did. |
+| `prefix + /` | Open a one-line `tx-assistant>` prompt. Whatever you type is forwarded to the persistent `tx-assistant` Claude session (Haiku, low effort) that runs tmux/tx operations and spawns Claude Code workers on your behalf. Fire and forget — attach via `tx attach` (filter `tx-assistant`) to see what it did. |
 | `tx` / `tx help` | Show the command summary. |
 | Statusline | Two-line Claude Code statusline: repo / worktree / branch · model · tokens · 5h-rate-limit · 7d-rate-limit. |
 | Pane border integration | Pane borders show inner attached session name + `@tag` chips. Remote ssh-attached panes are prefixed `(r)`. |
@@ -31,7 +31,7 @@ The installer is **click-through** — it tells you what it will do, asks for on
 The installer reloads tmux's config for you if a server is running. After it finishes:
 ```bash
 tx help     # see available commands
-tx start    # spawn the leader Claude Code session
+tx start    # create Views + warm the tx-assistant
 ```
 
 ## Uninstall
@@ -87,16 +87,18 @@ Hex literals in `shared/palette.sh` (tokyonight-night). `install` bundles `setup
 
 Switching to a different palette is a manual edit: update `shared/palette.sh`, regenerate `setup/tokyonight-<variant>.itermcolors` via `setup/_gen-itermcolors.py`, then re-run `./install`. See the comments at the top of `shared/palette.sh`.
 
-## Leader / worker orchestration
+## Orchestration via the tx-assistant
 
-Run `tx start`. It spawns a tmux session named `leader`, tagged `leader,llm`, with cwd set to the tx-ide repo (the leader's home), running Claude Code primed with the shipped role files (`agents/COMMON.md`, `agents/LEADER.md`). Attach via `prefix+t` (or `tmux attach -t leader`). Tell the leader "spawn a developer worker for ~/Code/my-project on ticket X" and it'll launch a worker session with `-c ~/Code/my-project` that follows `agents/DEVELOPER.md`.
+The `tx-assistant` is your orchestration surface. It's a Haiku Claude Code session pinned to a single tmux session named `tx-assistant`, talked to via the `prefix+/` one-line popup. Each line you send is one operation: spawn a worker, kill a session, retag, message a peer.
+
+Run `tx start` once to create the `Views` home-base and warm the assistant. After that, hit `prefix+/` from anywhere in tmux and tell it what to do — e.g. "spawn a coding worker for ~/Code/my-project on the auth-rewrite plan" and it'll launch a worker session with `-c ~/Code/my-project` that follows `agents/DEVELOPER.md`.
 
 ### Role files
 
 The shipped roles live in this repo under `agents/` and are exposed at `~/.tx-ide/agents/` via symlink, so `git pull` updates them for every install.
 
 - `agents/COMMON.md` — conventions every session must follow
-- `agents/LEADER.md` — orchestration role (how/when to spawn workers)
+- `agents/TX-ASSISTANT.md` — assistant role (how to interpret requests, what to spawn, guard rails)
 - `agents/DEVELOPER.md` — coding worker role (worktree-first, atomic commits, draft PR)
 
 ### Customizing
@@ -107,7 +109,7 @@ Drop files in `~/.tx-ide/user-agents/`:
 - `~/.tx-ide/user-agents/<ROLE>.md` — **replaces** the shipped role outright (same filename shadows it).
 - `~/.tx-ide/user-agents/<NEW-ROLE>.md` — adds a brand new role you can spawn workers for.
 
-Every prompt template (in `tx start` and `agents/LEADER.md`'s worker-spawn recipe) reads `~/.tx-ide/agents/<ROLE>.md` followed by both `~/.tx-ide/user-agents/<ROLE>.md` and `~/.tx-ide/user-agents/<ROLE>.local.md` if they exist.
+Every prompt template (in `bin/tx-assistant` and `agents/TX-ASSISTANT.md`'s worker-spawn recipe) reads `~/.tx-ide/agents/<ROLE>.md` followed by both `~/.tx-ide/user-agents/<ROLE>.md` and `~/.tx-ide/user-agents/<ROLE>.local.md` if they exist.
 
 ## Requirements
 

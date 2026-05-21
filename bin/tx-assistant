@@ -1,22 +1,36 @@
 #!/usr/bin/env bash
 # tx-assistant — forward one line of input to the tx-assistant session.
 # Bound to prefix+/ via tmux/tx-ide.tmux.
+#   --from-buffer   input is the tx-assistant-input tmux paste buffer
+#                   (set by the prefix+/ binding to avoid shell-escaping
+#                   the command-prompt value)
+#   --warm          ensure the session exists (and send priming if freshly
+#                   created) without forwarding any input — used by `tx start`
 set -u
 
 buffer=tx-assistant-input
+warm_only=0
 case "${1:-}" in
 --from-buffer)
   input=$(tmux show-buffer -b "$buffer" 2>/dev/null) || input=""
   tmux delete-buffer -b "$buffer" 2>/dev/null || true
   ;;
+--warm)
+  warm_only=1
+  input=""
+  ;;
 *)
-  input="${1:-}"
+  printf 'tx-assistant: unknown invocation; pass --warm or --from-buffer\n' >&2
+  exit 2
   ;;
 esac
-[ -z "${input// /}" ] && exit 0
+
+if [ "$warm_only" -eq 0 ]; then
+  [ -z "${input// /}" ] && exit 0
+fi
 
 session=tx-assistant
-priming='You are the tx-assistant. A user line may begin with a self-closing <tx-command-prompt .../> envelope describing the tmux focus at the moment of input (session, window, pane, optional nest-attached inner-session + inner pane). When the envelope is present, use it whenever the request implicitly refers to "this" / "here" / "the current pane"; when absent, treat the message as having no focus context. Each user line is one tmux or tx operation. Execute it skillfully and stop. Do not ask clarifying questions — pick a reasonable interpretation and run it.'
+priming='Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/TX-ASSISTANT.md as your first actions. Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.md, ~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/TX-ASSISTANT.md, and ~/.tx-ide/user-agents/TX-ASSISTANT.local.md (any user-agents/X.md replaces the shipped one; any user-agents/X.local.md extends it). Follow all of these for the duration of this session. Then snap-act on every turn — one plausible reading, one command, done; no deliberation, no re-reading the doc on routine ops.'
 
 repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
 
@@ -103,19 +117,38 @@ build_envelope() {
   printf '%s' "$envelope"
 }
 
-envelope=$(build_envelope)
-[ -n "$envelope" ] && input="$envelope $input"
-
-if ! tmux has-session -t "=$session" 2>/dev/null; then
+ensure_session() {
+  if tmux has-session -t "=$session" 2>/dev/null; then
+    echo existed
+    return
+  fi
   tmux new-session -d -s "$session" -c "$repo" \
     -e COLORTERM=truecolor -e TERM=xterm-256color \
     "claude --model haiku --effort low --dangerously-skip-permissions"
-  tmux set -t "$session" @tag "tx-system,tx-assistant"
+  tmux set -t "$session" @tag "tx-system"
   # Wait for claude's input box to render (its prefix char is `❯`, not `>`).
   for _ in $(seq 1 20); do
     tmux capture-pane -p -t "$session" 2>/dev/null | grep -q '❯ ' && break
     sleep 0.5
   done
+  echo created
+}
+
+state=$(ensure_session)
+
+if [ "$warm_only" -eq 1 ]; then
+  if [ "$state" = created ]; then
+    tmux send-keys -t "$session" -l -- "$priming"
+    sleep 0.3
+    tmux send-keys -t "$session" Enter
+  fi
+  exit 0
+fi
+
+envelope=$(build_envelope)
+[ -n "$envelope" ] && input="$envelope $input"
+
+if [ "$state" = created ]; then
   input="$priming Now: $input"
 fi
 

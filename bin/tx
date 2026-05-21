@@ -2,9 +2,9 @@
 # tx — tmux + Claude Code session controller.
 #
 # Usage:
-#   tx start [-r|--restart]    Spawn the leader Claude Code session (runs in the tx-ide repo),
-#                              ensure the Views home-base session exists, and attach Views.
-#                              --restart kills an existing leader first.
+#   tx start [-r|--restart]    Ensure the Views home-base session exists, warm the
+#                              tx-assistant, and attach Views. --restart kills an
+#                              existing tx-assistant first.
 #   tx attach                  Open the session picker.
 #   tx ls                      Plain stdout list: VIEWS and PROCESSES sections.
 #   tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"]
@@ -409,11 +409,10 @@ cmd_help() {
   sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
 }
 
-# tx start — spawn the leader Claude Code session in tmux. The leader's home
-# is the tx-ide repo itself (resolved from this script's path), not $PWD —
-# the leader orchestrates from there and spawns workers with their own -c.
+# tx start — ensure the Views home-base session exists, warm the tx-assistant,
+# then attach Views. --restart kills an existing tx-assistant first so warmup
+# recreates it fresh.
 cmd_start() {
-  local session_name="${LEADER_SESSION_NAME:-leader}"
   local restart=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -432,49 +431,33 @@ cmd_start() {
     esac
   done
 
-  local repo_dir
-  repo_dir=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
+  local self_dir repo_dir
+  self_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
+  repo_dir=$(cd "$self_dir/.." && pwd)
 
-  if ((restart)) && tmux has-session -t "=$session_name" 2>/dev/null; then
-    tmux kill-session -t "$session_name"
-    echo "Killed leader session '$session_name'."
+  if ((restart)) && tmux has-session -t "=tx-assistant" 2>/dev/null; then
+    tmux kill-session -t "tx-assistant"
   fi
 
-  if tmux has-session -t "=$session_name" 2>/dev/null; then
-    echo "Leader session '$session_name' already running."
+  if tmux has-session -t "=tx-assistant" 2>/dev/null; then
+    echo "tx-assistant already running."
   else
-    # Single line, no quotes or special chars — long/complex prompts crash tmux.
-    local priming_prompt='Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/LEADER.md as your first actions. Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/COMMON.md, ~/.tx-ide/user-agents/LEADER.local.md, and ~/.tx-ide/user-agents/LEADER.md (any user-agents/X.md replaces the shipped one; any user-agents/X.local.md extends it). Follow all of these for the duration of this session.'
-
-    # Default boot: try resume first, fall back to fresh + priming prompt.
-    # --restart forces fresh so a restart is a real reset, not a resume.
-    local leader_flags='--dangerously-skip-permissions --model opus --effort low'
-    local boot_cmd="claude $leader_flags --continue || claude $leader_flags \"\$TX_LEADER_PROMPT\""
-    if ((restart)); then
-      boot_cmd="claude $leader_flags \"\$TX_LEADER_PROMPT\""
-    fi
-    tmux new-session -d -s "$session_name" -c "$repo_dir" \
-      -e COLORTERM=truecolor -e TERM=xterm-256color \
-      -e TX_LEADER_PROMPT="$priming_prompt" \
-      "$boot_cmd"
-    tmux set -t "$session_name" @tag "leader,llm"
-    echo "Leader started in tmux session '$session_name' (cwd: $repo_dir)."
+    "$self_dir/tx-assistant" --warm
+    echo "tx-assistant session created."
   fi
 
   # Ensure the Views home-base session exists. Views is the outer session
   # the user lives in and uses `tx attach` to nest inner sessions into. It
   # is intentionally filtered out of the tx picker (see list_raw / sessions_with_meta).
-  # When freshly created, its first pane nest-attaches the leader so the user
-  # lands looking at it. If Views already exists, we don't touch its panes.
-  local session_q
-  session_q=$(printf '%q' "$session_name")
+  # The initial pane is a plain shell — Views is just a stable surface to
+  # nest-attach into; pick a target with `tx attach` once inside.
   if ! tmux has-session -t "=Views" 2>/dev/null; then
     tmux new-session -d -s "Views" -c "$repo_dir" \
       -e COLORTERM=truecolor -e TERM=xterm-256color \
-      "TMUX= tmux attach -t $session_q; exec \${SHELL:-zsh}"
+      "${SHELL:-zsh}"
     tmux set -t Views @tag "views"
     tmux set -t Views @kind "view"
-    echo "Views session created with leader attached."
+    echo "Views session created."
   fi
 
   # Attach Views — switch-client if we're already inside tmux, otherwise
