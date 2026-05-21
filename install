@@ -108,7 +108,7 @@ I will NOT touch:
 
 After install:
   - run $(tx) from any tmux pane to pick a session
-  - run $(tx start) to spawn the leader (runs in this repo, the orchestration home)
+  - run $(tx start) to create the Views home-base and warm the tx-assistant
   - run $(tx mailbox) (or prefix+m) to open the inbox
 
 EOF
@@ -433,11 +433,11 @@ cat <<EOF
 
 ${B}=== Done ===${X}
 
-${B}Start the leader Claude Code session:${X}
-  ${D}tx start${X}  (runs in the tx-ide repo, the orchestration home)
+${B}Set up the tx-ide view:${X}
+  ${D}tx start${X}  (creates the Views home-base and warms the tx-assistant)
 
 ${B}Customize roles (optional):${X}
-  ${D}drop overrides in ~/.tx-ide/user-agents/ (e.g. LEADER.local.md)${X}
+  ${D}drop overrides in ~/.tx-ide/user-agents/ (e.g. TX-ASSISTANT.local.md)${X}
 
 ${B}Undo:${X}
   ${D}$REPO/uninstall${X}

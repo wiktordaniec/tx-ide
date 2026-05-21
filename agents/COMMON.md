@@ -1,6 +1,6 @@
 # COMMON — every session must follow this
 
-These conventions apply to every Claude Code session in this system: the leader, every worker, and any ad-hoc session you spin up inside the orchestration repo.
+These conventions apply to every Claude Code session in this system: the tx-assistant, every worker, and any ad-hoc session you spin up inside the orchestration repo.
 
 ## Spawning sessions
 
