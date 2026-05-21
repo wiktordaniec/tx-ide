@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
 # tx-assistant — forward one line of input to the tx-assistant session.
 # Bound to prefix+/ via tmux/tx-ide.tmux.
-#
-# Wraps the input in a <tx-command-prompt .../> envelope describing the
-# calling tmux pane's session/window/pane plus any nest-attached inner
-# session, so the assistant knows what the user was looking at when they
-# typed. Only command-prompt-originated messages carry the envelope; direct
-# send-keys, peer messages, and the user typing into the assistant pane all
-# bypass it.
 set -u
 
 input="${1:-}"
@@ -18,7 +11,6 @@ priming='You are the tx-assistant. A user line may begin with a self-closing <tx
 
 repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
 
-# XML attribute escape for single-quoted attrs.
 xml_escape() {
   local raw="$1"
   raw="${raw//&/&amp;}"
@@ -32,16 +24,10 @@ attr() {
   printf " %s='%s'" "$1" "$(xml_escape "$2")"
 }
 
-# Single-line <tx-command-prompt .../> envelope for the calling pane. Empty
-# when invoked outside tmux — the script may be called directly from a
-# non-tmux shell and fabricating focus would be wrong.
 build_envelope() {
   [ -z "${TMUX:-}" ] && return 0
 
-  # Resolve the calling pane. Shells set $TMUX_PANE on startup; tmux's own
-  # run-shell does NOT set it, so when fired from a binding (prefix+/) we
-  # fall back to display-message without -t — which resolves to the calling
-  # client's active pane (the View pane the user fired from).
+  # run-shell does not set $TMUX_PANE — fall back to the firing client's pane.
   local target_pane="${TMUX_PANE:-}"
   [ -z "$target_pane" ] && target_pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
   [ -z "$target_pane" ] && return 0
@@ -71,9 +57,8 @@ build_envelope() {
   envelope+=$(attr pane-cmd "$pane_command")
   envelope+=$(attr pane-path "$pane_path")
 
-  # Nest-attach detection mirrors bin/tmux-pane-session-name. Honor
-  # @remote-session for ssh-attached remote tmux (no inner window/pane info
-  # — those would need an ssh round-trip).
+  # Nest-attach detection mirrors bin/tmux-pane-session-name. @remote-session
+  # marks an ssh-attached remote tmux — skip inner introspection (needs ssh).
   local remote_session
   remote_session=$(tmux show-options -pqv -t "$pane_id" @remote-session 2>/dev/null) || remote_session=""
   if [ -n "$remote_session" ]; then
