@@ -35,14 +35,15 @@ trap 'rm -f "$CONF"' EXIT
 # pane to glue into by asking tmux directly (`display-message -p #{pane_id}`),
 # so the bind doesn't need to plumb anything through. prefix+M re-homes the
 # default `select-pane -m` that prefix+m used to do.
-# prefix+/ forwards a line to tx-assistant. `-b` is required so the
-# cold-spawn warmup doesn't block tmux's command queue.
 if [ "$popups" = on ]; then
   cat >>"$CONF" <<'EOF'
 bind t display-popup -E -w 100 -h 30 -x C -y 1 -T " tx " "tx attach"
 bind m display-popup -E -w 100 -h 30 -x C -y 1 -T " mailbox " "tx mailbox"
 bind M select-pane -m
-bind '/' command-prompt -p "tx-assistant>" "run-shell -b \"tx-assistant '%%%'\""
+bind '/' command-prompt -p "tx-assistant>" {
+  set-buffer -b tx-assistant-input "%%"
+  run-shell -b "tx-assistant --from-buffer"
+}
 EOF
 fi
 

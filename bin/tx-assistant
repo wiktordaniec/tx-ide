@@ -3,7 +3,16 @@
 # Bound to prefix+/ via tmux/tx-ide.tmux.
 set -u
 
-input="${1:-}"
+buffer=tx-assistant-input
+case "${1:-}" in
+--from-buffer)
+  input=$(tmux show-buffer -b "$buffer" 2>/dev/null) || input=""
+  tmux delete-buffer -b "$buffer" 2>/dev/null || true
+  ;;
+*)
+  input="${1:-}"
+  ;;
+esac
 [ -z "${input// /}" ] && exit 0
 
 session=tx-assistant
