@@ -35,16 +35,10 @@ trap 'rm -f "$CONF"' EXIT
 # pane to glue into by asking tmux directly (`display-message -p #{pane_id}`),
 # so the bind doesn't need to plumb anything through. prefix+M re-homes the
 # default `select-pane -m` that prefix+m used to do.
-# prefix+/ opens tmux's command-prompt; whatever the user types is forwarded
-# to the persistent `tx-assistant` Claude session via bin/tx-assistant. The
-# %%% substitution doubles single quotes inside the typed input, so wrapping
-# it in '…' inside the outer "…" gives the shell one argument containing the
-# whole line (without quotes around %%%, the shell word-splits and only the
-# first word reaches tx-assistant). `-b` is required: without it, tmux's
-# command queue blocks for the cold-spawn warmup (3–5 s) and the whole UI
-# freezes.
+# prefix+/ forwards a line to tx-assistant. `-b` is required so the
+# cold-spawn warmup doesn't block tmux's command queue.
 if [ "$popups" = on ]; then
-  cat >> "$CONF" <<'EOF'
+  cat >>"$CONF" <<'EOF'
 bind t display-popup -E -w 100 -h 30 -x C -y 1 -T " tx " "tx attach"
 bind m display-popup -E -w 100 -h 30 -x C -y 1 -T " mailbox " "tx mailbox"
 bind M select-pane -m
@@ -59,12 +53,12 @@ fi
 #   BORDER_DIM_HEX   #3b4261   (inactive border)
 if [ "$pane_borders" = on ]; then
   if [ "$palette" = tokyonight-night ]; then
-    cat >> "$CONF" <<'EOF'
+    cat >>"$CONF" <<'EOF'
 set -g pane-border-style "fg=#3b4261"
 set -g pane-active-border-style "fg=#7aa2f7,bold"
 EOF
   fi
-  cat >> "$CONF" <<'EOF'
+  cat >>"$CONF" <<'EOF'
 set -g pane-border-lines heavy
 set -g pane-border-indicators both
 set -g pane-border-status off
@@ -78,7 +72,7 @@ fi
 # either the literal "claude" command or a version-string-shaped command
 # (Claude Code shows its version while loading: "2.1.138").
 if [ "$claude_scroll" = on ]; then
-  cat >> "$CONF" <<'EOF'
+  cat >>"$CONF" <<'EOF'
 bind -n C-u if -F '#{||:#{==:#{pane_current_command},claude},#{m:[0-9]*.[0-9]*.[0-9]*,#{pane_current_command}}}' 'send-keys PageUp' 'send-keys C-u'
 bind -n C-d if -F '#{||:#{==:#{pane_current_command},claude},#{m:[0-9]*.[0-9]*.[0-9]*,#{pane_current_command}}}' 'send-keys PageDown' 'send-keys C-d'
 EOF
@@ -90,10 +84,10 @@ fi
 # prefix+digit doesn't reflow your panes.
 if [ "$pane_keys" = on ]; then
   for n in 1 2 3 4 5 6 7 8 9; do
-    printf 'bind -n M-%s select-pane -t %s\n' "$n" "$n" >> "$CONF"
+    printf 'bind -n M-%s select-pane -t %s\n' "$n" "$n" >>"$CONF"
   done
   for n in 1 2 3 4 5 6 7; do
-    printf 'unbind -T prefix M-%s\n' "$n" >> "$CONF"
+    printf 'unbind -T prefix M-%s\n' "$n" >>"$CONF"
   done
 fi
 
@@ -103,8 +97,8 @@ fi
 if [ "$window_keys" = on ]; then
   i=0
   for n in 1 2 3 4 5 6 7 8 9; do
-    printf 'set -s user-keys[%d] "\\033W%s"\n' "$i" "$n" >> "$CONF"
-    printf 'bind -n User%d select-window -t %s\n' "$i" "$n" >> "$CONF"
+    printf 'set -s user-keys[%d] "\\033W%s"\n' "$i" "$n" >>"$CONF"
+    printf 'bind -n User%d select-window -t %s\n' "$i" "$n" >>"$CONF"
     i=$((i + 1))
   done
 fi

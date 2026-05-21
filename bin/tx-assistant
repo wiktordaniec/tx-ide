@@ -1,15 +1,6 @@
 #!/usr/bin/env bash
 # tx-assistant — forward one line of input to the tx-assistant session.
-#
-# Invoked by the `prefix+/` tmux binding (see tmux/tx-ide.tmux). Spawns the
-# persistent `tx-assistant` session on first call, then `send-keys`'s the
-# user's line into it and exits. No round-trip — the user attaches via
-# `tx attach` (filter on `tx-assistant`) if they want to see the reply.
-#
-# Cold-start priming is inlined into the first user message (rather than
-# passed as claude's positional arg) so there is no race between claude
-# digesting a separate "you are the tx-assistant" turn and our `send-keys`
-# landing the user's actual ask. Subsequent presses send only the user input.
+# Bound to prefix+/ via tmux/tx-ide.tmux.
 set -u
 
 input="${1:-}"
@@ -18,9 +9,6 @@ input="${1:-}"
 session=tx-assistant
 priming='You are the tx-assistant. Each user line is one tmux or tx operation. Execute it skillfully and stop. Do not ask clarifying questions — pick a reasonable interpretation and run it.'
 
-# Resolve the repo this script ships from so the session lands inside the
-# tx-ide checkout — matches the convention used by bin/tx and lets the
-# assistant edit/inspect tx-ide files directly.
 repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
 
 if ! tmux has-session -t "=$session" 2>/dev/null; then
