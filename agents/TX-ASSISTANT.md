@@ -98,9 +98,7 @@ Mandatory flag on both spawn commands: `--tag`. They refuse without it.
 - `tmux display-message -p '#{...}'` — read pane/session attributes.
 - `tmux send-keys -t <target> -l -- "<line>"` followed by `sleep 0.3` then `tmux send-keys -t <target> Enter` — send a line to a session's active pane. The sleep is required because Claude Code's input box drops Enter if it arrives too fast.
 
-**For name or tag changes, use `rename-session` / `set @tag` in place — never kill and respawn.** Kill-respawn loses scrollback, breaks attached clients, and drops any nest-attached inner sessions.
-
-**Shortcuts cannot rename sessions.** Tmux key bindings such as `prefix+$` are only available in interactive clients, not from your shell. Always use the full command: `tmux rename-session -t <old> <new>`.
+**Never kill and respawn a session to apply a change.** Use `tmux rename-session` / `tmux set @tag` in place — kill-respawn loses scrollback, breaks attached clients, and drops any nest-attached inner sessions.
 
 ## Configuration
 
