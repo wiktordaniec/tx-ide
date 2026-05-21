@@ -194,7 +194,7 @@ def current_view_members():
 
 def host_window_map(view_members):
     if not view_members:
-        return {}
+        return {}, set()
     members = set(view_members)
     clients_proc = subprocess.run(
         ["tmux", "list-clients", "-F", "#{client_tty}\t#{client_session}"],
@@ -216,18 +216,20 @@ def host_window_map(view_members):
         text=True,
         check=False,
     )
-    result = {}
+    in_view = {}
+    attached_anywhere = set()
     for line in panes_proc.stdout.splitlines():
         parts = line.split("\t")
         if len(parts) < 6:
             continue
         pane_tty, host_session, window_index, window_name, pane_index, override = parts[:6]
-        if host_session not in members:
-            continue
         nested = override or client_session.get(pane_tty, "")
-        if nested and nested not in result:
-            result[nested] = (window_index, window_name, pane_index)
-    return result
+        if not nested:
+            continue
+        attached_anywhere.add(nested)
+        if host_session in members and nested not in in_view:
+            in_view[nested] = (window_index, window_name, pane_index)
+    return in_view, attached_anywhere
 
 
 def _group_members(session_name):
@@ -282,13 +284,14 @@ def load_running():
 def apply_view_scope(inbox_entries, running_entries, view_members):
     if not view_members:
         return inbox_entries, running_entries
-    window_by_session = host_window_map(view_members)
+    in_view, attached_anywhere = host_window_map(view_members)
     def keep(entry):
-        location = window_by_session.get(entry.get("tmux_session", ""))
-        if location is None:
-            return False
-        entry["_location"] = location
-        return True
+        session = entry.get("tmux_session", "")
+        location = in_view.get(session)
+        if location is not None:
+            entry["_location"] = location
+            return True
+        return session not in attached_anywhere
     return (
         [entry for entry in inbox_entries if keep(entry)],
         [entry for entry in running_entries if keep(entry)],
