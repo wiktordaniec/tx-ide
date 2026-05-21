@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
 # tx-assistant — forward one line of input to the tx-assistant session.
-# Bound to prefix+/ via tmux/tx-ide.tmux (display-popup; no-arg → read prompt).
+# Bound to prefix+/ via tmux/tx-ide.tmux.
 set -u
 
-if [ $# -eq 0 ]; then
-  read -r -p 'tx-assistant> ' input || exit 0
-else
-  input="$1"
-fi
+input="${1:-}"
 [ -z "${input// /}" ] && exit 0
 
 session=tx-assistant
