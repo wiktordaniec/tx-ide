@@ -40,13 +40,15 @@ trap 'rm -f "$CONF"' EXIT
 # %%% substitution doubles single quotes inside the typed input, so wrapping
 # it in '…' inside the outer "…" gives the shell one argument containing the
 # whole line (without quotes around %%%, the shell word-splits and only the
-# first word reaches tx-assistant).
+# first word reaches tx-assistant). `-b` is required: without it, tmux's
+# command queue blocks for the cold-spawn warmup (3–5 s) and the whole UI
+# freezes.
 if [ "$popups" = on ]; then
   cat >> "$CONF" <<'EOF'
 bind t display-popup -E -w 100 -h 30 -x C -y 1 -T " tx " "tx attach"
 bind m display-popup -E -w 100 -h 30 -x C -y 1 -T " mailbox " "tx mailbox"
 bind M select-pane -m
-bind '/' command-prompt -p "tx-assistant>" "run-shell \"tx-assistant '%%%'\""
+bind '/' command-prompt -p "tx-assistant>" "run-shell -b \"tx-assistant '%%%'\""
 EOF
 fi
 
