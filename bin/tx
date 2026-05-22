@@ -459,6 +459,8 @@ cmd_start() {
       "${SHELL:-zsh}"
     tmux set -t Views @tag "views"
     tmux set -t Views @kind "view"
+    tmux set -t Views status on
+    tmux setw -t Views pane-border-status top
     echo "Views session created."
   fi
 
@@ -659,6 +661,8 @@ cmd_spawn_view() {
     "$cmd_str"
   tmux set -t "$name" @tag "$tag"
   tmux set -t "$name" @kind "view"
+  tmux set -t "$name" status on
+  tmux setw -t "$name" pane-border-status top
   printf "Spawned view '%s' (cwd=%s, tag=%s)\n" "$name" "$cwd" "$tag"
 }
 

@@ -64,6 +64,7 @@ set -g pane-border-lines heavy
 set -g pane-border-indicators both
 set -g pane-border-status off
 set -g pane-border-format " [#P] #(tmux-pane-session-name #D) "
+set-hook -g after-new-window "if-shell -F '#{==:#{@kind},view}' 'setw pane-border-status top'"
 EOF
 fi
 
