@@ -18,45 +18,28 @@ VIEW_CYCLE = ("live", "archive")
 LIVE_UNREAD_CAP = 5
 SEARCH_PROMPT = "  ❯ "
 
-# Tag chip palette — twelve tokyonight named colors not already carrying a
-# semantic role (no ACCENT blue, WARN yellow, FG/DIM_FG white). A polynomial
-# hash on the tag string picks the index so the same tag value paints the
-# same color across tx, mx, and the pane border. Mirrors shared/palette.sh —
-# keep TAG_PALETTE_SIZE and the RGB tuple in sync with that file.
-#
-# In 256-color terminals (the common case — tx spawns set TERM=xterm-256color)
-# we redefine palette slots 16..27 via init_color() so the chip color matches
-# tx's 24-bit-hex output exactly. On 8-color-only terminals we fall back to
-# the ANSI 8-color set; colors collapse to the four ANSI colors that
-# tokyonight's iTerm preset maps cleanly (red/green/magenta/cyan), so chips
-# still vary but lose precision relative to tx.
 TAG_PALETTE_SIZE = 12
 
-# Tag palette as xterm-256 cube indices — the closest cube color to each
-# tokyonight hex in shared/palette.sh. tmux refuses dynamic palette overrides
-# (`can_change_color()` is False under tmux even with COLORS=256), so we
-# can't call init_color() to hit the exact tokyonight RGB. Cube indices are
-# approximations (~5-10% off in raw RGB) but they live in the same hue family
-# and are visually recognisable as the same color tx renders. Order mirrors
-# TAG_HEX_<i> in shared/palette.sh.
+# Closest xterm-256 cube index per shared/palette.sh::TAG_HEX_<i>. tmux blocks
+# init_color() so we can't redefine slots; cube approximations are ~5-10% off
+# raw RGB but read as the same hue.
 TAG_PALETTE_XTERM = (
-    210,  # 0  red       #f7768e → #ff8787
-    167,  # 1  red1      #db4b4b → #d75f5f
-    215,  # 2  orange    #ff9e64 → #ffaf5f
-    149,  # 3  green     #9ece6a → #afd75f
-    80,   # 4  green1    #73daca → #5fd7d7
-    73,   # 5  green2    #41a6b5 → #5fafaf
-    37,   # 6  teal      #1abc9c → #00afaf
-    117,  # 7  cyan      #7dcfff → #87d7ff
-    38,   # 8  blue1     #2ac3de → #00afd7
-    141,  # 9  magenta   #bb9af7 → #af87ff
-    198,  # 10 magenta2  #ff007c → #ff0087
-    140,  # 11 purple    #9d7cd8 → #af87d7
+    210,  # red       #f7768e
+    167,  # red1      #db4b4b
+    215,  # orange    #ff9e64
+    149,  # green     #9ece6a
+    80,   # green1    #73daca
+    73,   # green2    #41a6b5
+    37,   # teal      #1abc9c
+    117,  # cyan      #7dcfff
+    38,   # blue1     #2ac3de
+    141,  # magenta   #bb9af7
+    198,  # magenta2  #ff007c
+    140,  # purple    #9d7cd8
 )
 
 
 def tag_color_index(tag_value):
-    """Polynomial hash mirroring shared/palette.sh::tag_color_index."""
     hash_value = 0
     for character in tag_value:
         hash_value = (hash_value * 31 + ord(character)) % 2147483647
@@ -64,7 +47,6 @@ def tag_color_index(tag_value):
 
 
 def tag_style_key(tag_value, selected=False):
-    """Style key for a tag chip — name resolves via init_styles()'s dict."""
     prefix = "selected_tag" if selected else "entry_tag"
     return f"{prefix}_{tag_color_index(tag_value)}"
 
@@ -708,9 +690,6 @@ def render(
                 key_overrides = None
                 if row_index == cursor:
                     row_override = styles["selected"]
-                    # Keep age yellow and tag chips in their own color on the
-                    # blue selection bg; everything else falls back to the
-                    # row-level "selected" override (black-on-blue bold).
                     key_overrides = {"entry_age": styles["selected_age"]}
                     for palette_index in range(TAG_PALETTE_SIZE):
                         key_overrides[f"entry_tag_{palette_index}"] = (
@@ -757,20 +736,11 @@ def render(
     stdscr.refresh()
 
 
-# Curses pair-index layout for chip rendering. Pairs 1..7 are the pre-
-# existing UI styles (header / divider / age / selection / etc). Tag chip
-# pairs come in two flavors: against the default bg (8..7+N) and against
-# the selection blue bg (8+N..7+2N) so chips keep their color when the row
-# is selected.
+# Tag chip pairs: 8..7+N against default bg, 8+N..7+2N against selection bg.
 TAG_PAIR_BASE = 8
 
 
 def init_styles():
-    # See shared/palette.sh for the canonical hexes. On 256-color terminals
-    # we pick xterm-256 cube indices that approximate each tokyonight color
-    # (TAG_PALETTE_XTERM). Older 8-color terminals fall back to cycling the
-    # four ANSI colors that tokyonight maps exactly; tag indices that share
-    # an ANSI slot collide on this path — acceptable for the fallback.
     use_xterm_cube = curses.COLORS >= 256
     try:
         curses.use_default_colors()
@@ -813,8 +783,6 @@ def init_styles():
             "entry_session": curses.color_pair(6),
             "entry_suffix": curses.color_pair(6),
             "selected": curses.color_pair(4) | curses.A_BOLD,
-            # Yellow on blue + bold for age on selected rows — keeps the
-            # staleness signal during selection without overriding to dark.
             "selected_age": curses.color_pair(7) | curses.A_BOLD,
             "search_prompt": curses.color_pair(6),
             "search_query": curses.color_pair(6) | curses.A_BOLD,

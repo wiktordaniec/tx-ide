@@ -151,13 +151,8 @@ sessions_with_meta() {
         colored_chips+=" $(tag_ansi "$tag_part")[${tag_part}]${R}"
       done
     fi
-    # NAME/STARTED have no ANSI fg — they inherit fzf's fg (DIM_FG) for
-    # unselected rows and fg+ (BG_DEEP on ACCENT) when selected. IDLE keeps
-    # its WARN escape so staleness stays yellow in both states. Chips carry
-    # per-tag colors (tag_ansi) so the same tag value paints the same color
-    # everywhere — fzf's --ansi preserves them through selection too. The
-    # plain $plain_chips column 2 is what fzf's --exact filter searches; the
-    # visual column 4+ shows the colored version.
+    # $plain_chips: column 2 is what fzf's --exact filter searches.
+    # $colored_chips: column 4+ is the visual.
     printf '%s\t%s\t%s\t%s%s%*s   %-7s %b%-6s%b%s\n' \
       "$name" \
       "$plain_chips" \

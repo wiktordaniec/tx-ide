@@ -60,16 +60,6 @@ WARN_ANSI=$'\e[38;2;224;175;104m'
 #   (== WARN_HEX)
 
 # === Tag chip palette ===
-# Deterministic color-per-tag-value: a polynomial hash of the tag string picks
-# one of TAG_PALETTE_SIZE palette indices, so the same tag value (e.g. `llm`)
-# always renders in the same color across tx, mx, and the tmux pane border.
-#
-# The palette uses 12 tokyonight named colors NOT already carrying a semantic
-# role (avoiding ACCENT blue, WARN yellow, and FG/DIM_FG white). Bash and tmux
-# emit the 24-bit hex directly; the curses TUI in lib/tx-mailbox calls
-# `init_color()` against these RGB values so all three surfaces hit the same
-# pixel color. Keep TAG_PALETTE_SIZE in sync with the Python constant of the
-# same name in lib/tx-mailbox.
 TAG_PALETTE_SIZE=12
 
 TAG_HEX_0='#f7768e'   # red
@@ -85,22 +75,20 @@ TAG_HEX_9='#bb9af7'   # magenta
 TAG_HEX_10='#ff007c'  # magenta2
 TAG_HEX_11='#9d7cd8'  # purple
 
-TAG_ANSI_0=$'\e[38;2;247;118;142m'   # red
-TAG_ANSI_1=$'\e[38;2;219;75;75m'     # red1
-TAG_ANSI_2=$'\e[38;2;255;158;100m'   # orange
-TAG_ANSI_3=$'\e[38;2;158;206;106m'   # green
-TAG_ANSI_4=$'\e[38;2;115;218;202m'   # green1
-TAG_ANSI_5=$'\e[38;2;65;166;181m'    # green2
-TAG_ANSI_6=$'\e[38;2;26;188;156m'    # teal
-TAG_ANSI_7=$'\e[38;2;125;207;255m'   # cyan
-TAG_ANSI_8=$'\e[38;2;42;195;222m'    # blue1
-TAG_ANSI_9=$'\e[38;2;187;154;247m'   # magenta
-TAG_ANSI_10=$'\e[38;2;255;0;124m'    # magenta2
-TAG_ANSI_11=$'\e[38;2;157;124;216m'  # purple
+TAG_ANSI_0=$'\e[38;2;247;118;142m'
+TAG_ANSI_1=$'\e[38;2;219;75;75m'
+TAG_ANSI_2=$'\e[38;2;255;158;100m'
+TAG_ANSI_3=$'\e[38;2;158;206;106m'
+TAG_ANSI_4=$'\e[38;2;115;218;202m'
+TAG_ANSI_5=$'\e[38;2;65;166;181m'
+TAG_ANSI_6=$'\e[38;2;26;188;156m'
+TAG_ANSI_7=$'\e[38;2;125;207;255m'
+TAG_ANSI_8=$'\e[38;2;42;195;222m'
+TAG_ANSI_9=$'\e[38;2;187;154;247m'
+TAG_ANSI_10=$'\e[38;2;255;0;124m'
+TAG_ANSI_11=$'\e[38;2;157;124;216m'
 
-# Polynomial hash on the tag string → palette index. Must match the Python
-# implementation in lib/tx-mailbox so the same tag stays the same color
-# across tx and mx.
+# Must match tag_color_index() in lib/tx-mailbox.
 tag_color_index() {
   local s="$1" h=0 i c
   for ((i = 0; i < ${#s}; i++)); do
@@ -110,8 +98,6 @@ tag_color_index() {
   printf '%d' $((h % TAG_PALETTE_SIZE))
 }
 
-# Lookup helpers — indirect-expand TAG_ANSI_$idx / TAG_HEX_$idx by index so
-# they don't have to be touched when TAG_PALETTE_SIZE changes.
 tag_ansi() {
   local var="TAG_ANSI_$(tag_color_index "$1")"
   printf '%s' "${!var}"
