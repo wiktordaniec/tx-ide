@@ -61,26 +61,45 @@ WARN_ANSI=$'\e[38;2;224;175;104m'
 
 # === Tag chip palette ===
 # Deterministic color-per-tag-value: a polynomial hash of the tag string picks
-# one of four palette indices, so the same tag value (e.g. `llm`) always
-# renders in the same color across tx, mx, and the tmux pane border.
+# one of TAG_PALETTE_SIZE palette indices, so the same tag value (e.g. `llm`)
+# always renders in the same color across tx, mx, and the tmux pane border.
 #
-# The four colors are tokyonight ANSI colors NOT already carrying a semantic
-# role (avoiding ACCENT blue, WARN yellow, and FG/DIM_FG white). All four
-# hexes match the iTerm tokyonight preset for COLOR_RED, COLOR_GREEN,
-# COLOR_MAGENTA, COLOR_CYAN — so curses TUIs hit the same color via the
-# COLOR_* constants.
+# The palette uses 12 tokyonight named colors NOT already carrying a semantic
+# role (avoiding ACCENT blue, WARN yellow, and FG/DIM_FG white). Bash and tmux
+# emit the 24-bit hex directly; the curses TUI in lib/tx-mailbox calls
+# `init_color()` against these RGB values so all three surfaces hit the same
+# pixel color. Keep TAG_PALETTE_SIZE in sync with the Python constant of the
+# same name in lib/tx-mailbox.
+TAG_PALETTE_SIZE=12
+
 TAG_HEX_0='#f7768e'   # red
-TAG_HEX_1='#9ece6a'   # green
-TAG_HEX_2='#bb9af7'   # magenta
-TAG_HEX_3='#7dcfff'   # cyan
+TAG_HEX_1='#db4b4b'   # red1
+TAG_HEX_2='#ff9e64'   # orange
+TAG_HEX_3='#9ece6a'   # green
+TAG_HEX_4='#73daca'   # green1
+TAG_HEX_5='#41a6b5'   # green2
+TAG_HEX_6='#1abc9c'   # teal
+TAG_HEX_7='#7dcfff'   # cyan
+TAG_HEX_8='#2ac3de'   # blue1
+TAG_HEX_9='#bb9af7'   # magenta
+TAG_HEX_10='#ff007c'  # magenta2
+TAG_HEX_11='#9d7cd8'  # purple
 
-TAG_ANSI_0=$'\e[38;2;247;118;142m'
-TAG_ANSI_1=$'\e[38;2;158;206;106m'
-TAG_ANSI_2=$'\e[38;2;187;154;247m'
-TAG_ANSI_3=$'\e[38;2;125;207;255m'
+TAG_ANSI_0=$'\e[38;2;247;118;142m'   # red
+TAG_ANSI_1=$'\e[38;2;219;75;75m'     # red1
+TAG_ANSI_2=$'\e[38;2;255;158;100m'   # orange
+TAG_ANSI_3=$'\e[38;2;158;206;106m'   # green
+TAG_ANSI_4=$'\e[38;2;115;218;202m'   # green1
+TAG_ANSI_5=$'\e[38;2;65;166;181m'    # green2
+TAG_ANSI_6=$'\e[38;2;26;188;156m'    # teal
+TAG_ANSI_7=$'\e[38;2;125;207;255m'   # cyan
+TAG_ANSI_8=$'\e[38;2;42;195;222m'    # blue1
+TAG_ANSI_9=$'\e[38;2;187;154;247m'   # magenta
+TAG_ANSI_10=$'\e[38;2;255;0;124m'    # magenta2
+TAG_ANSI_11=$'\e[38;2;157;124;216m'  # purple
 
-# Polynomial hash on the tag string → palette index 0..3. Must match the
-# Python implementation in lib/tx-mailbox so the same tag stays the same color
+# Polynomial hash on the tag string → palette index. Must match the Python
+# implementation in lib/tx-mailbox so the same tag stays the same color
 # across tx and mx.
 tag_color_index() {
   local s="$1" h=0 i c
@@ -88,25 +107,17 @@ tag_color_index() {
     printf -v c '%d' "'${s:$i:1}"
     h=$(((h * 31 + c) % 2147483647))
   done
-  printf '%d' $((h % 4))
+  printf '%d' $((h % TAG_PALETTE_SIZE))
 }
 
-# 24-bit ANSI escape for the tag value's color. Use in fzf/--ansi contexts.
+# Lookup helpers — indirect-expand TAG_ANSI_$idx / TAG_HEX_$idx by index so
+# they don't have to be touched when TAG_PALETTE_SIZE changes.
 tag_ansi() {
-  case "$(tag_color_index "$1")" in
-  0) printf '%s' "$TAG_ANSI_0" ;;
-  1) printf '%s' "$TAG_ANSI_1" ;;
-  2) printf '%s' "$TAG_ANSI_2" ;;
-  3) printf '%s' "$TAG_ANSI_3" ;;
-  esac
+  local var="TAG_ANSI_$(tag_color_index "$1")"
+  printf '%s' "${!var}"
 }
 
-# Bare hex for the tag value's color. Use in tmux #[fg=…] formats.
 tag_hex() {
-  case "$(tag_color_index "$1")" in
-  0) printf '%s' "$TAG_HEX_0" ;;
-  1) printf '%s' "$TAG_HEX_1" ;;
-  2) printf '%s' "$TAG_HEX_2" ;;
-  3) printf '%s' "$TAG_HEX_3" ;;
-  esac
+  local var="TAG_HEX_$(tag_color_index "$1")"
+  printf '%s' "${!var}"
 }
