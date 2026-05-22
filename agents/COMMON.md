@@ -20,7 +20,7 @@ tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]]
 **Naming:** human-readable, says what it's for (e.g. `wrangler-p1-diff`, `auth-review`). The tag does the filtering, not the name.
 
 ```bash
-tx spawn worker-auth --tag llm,auth --cwd ~/proj/auth --cmd "claude --resume"
+tx spawn worker-auth --tag llm,auth --cwd ~/proj/auth --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max'
 tx spawn-nvim wrangler-p1-diff --tag nvim,wrangler-p1 --diff main
 ```
 
