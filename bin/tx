@@ -63,7 +63,7 @@ trunc() {
 
 # True if the named session has @kind set to "view".
 is_view_session() {
-  [[ "$(tmux show-options -vt "$1" -q @kind 2>/dev/null)" == "view" ]]
+  [[ "$(${TX_TMUX:-tmux} show-options -vt "$1" -q @kind 2>/dev/null)" == "view" ]]
 }
 
 # Column width of the surrounding terminal/popup. Inside a tmux popup,
@@ -114,12 +114,12 @@ list_raw() {
   # is `L` (local tmux) or `R` (remote ssh).
   local fmt='#{session_activity}|#{session_name}|#{session_attached}|#{session_created}|#{@tag}|#{@kind}'
   if ((MIX)); then
-    tmux list-sessions -F "L|$fmt" 2>/dev/null
+    ${TX_TMUX:-tmux} list-sessions -F "L|$fmt" 2>/dev/null
     ssh "$MIX_REMOTE_ALIAS" "/opt/homebrew/bin/tmux list-sessions -F 'R|$fmt'" 2>/dev/null
   elif [[ -n "$HOST" ]]; then
     ssh "$HOST" "/opt/homebrew/bin/tmux list-sessions -F 'R|$fmt'" 2>/dev/null
   else
-    tmux list-sessions -F "L|$fmt" 2>/dev/null
+    ${TX_TMUX:-tmux} list-sessions -F "L|$fmt" 2>/dev/null
   fi
 }
 
@@ -209,7 +209,7 @@ cmd_edit_tag() {
     exit 2
   }
   local current outfile new
-  current=$(tmux show-options -vt "$session" @tag 2>/dev/null)
+  current=$(${TX_TMUX:-tmux} show-options -vt "$session" @tag 2>/dev/null)
   outfile=$(mktemp)
   trap 'rm -f "$outfile"' RETURN
   if python3 -c '
@@ -229,9 +229,9 @@ with open(outfile, "w") as f:
 ' "$session" "$current" "$outfile"; then
     new=$(<"$outfile")
     if [[ -z "$new" ]]; then
-      tmux set -t "$session" -u @tag 2>/dev/null || true
+      ${TX_TMUX:-tmux} set -t "$session" -u @tag 2>/dev/null || true
     else
-      tmux set -t "$session" @tag "$new"
+      ${TX_TMUX:-tmux} set -t "$session" @tag "$new"
     fi
   fi
 }
@@ -240,38 +240,38 @@ jump_to_session() {
   local session="${1:-}" target target_session current_session
   local origin_pane origin_cmd
   [[ -z "$session" ]] && return 1
-  if ! tmux has-session -t "=$session" 2>/dev/null; then
+  if ! ${TX_TMUX:-tmux} has-session -t "=$session" 2>/dev/null; then
     printf "tx: session '%s' does not exist\n" "$session" >&2
     return 1
   fi
-  current_session=$(tmux display-message -p '#S' 2>/dev/null)
+  current_session=$(${TX_TMUX:-tmux} display-message -p '#S' 2>/dev/null)
   if [[ "$current_session" == "$session" ]]; then
     return 0
   fi
   # Outside tmux, display-message returns the most-recently-active client's pane.
   origin_pane=""
-  [[ -n "${TMUX:-}" ]] && origin_pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
+  [[ -n "${TMUX:-}" ]] && origin_pane=$(${TX_TMUX:-tmux} display-message -p '#{pane_id}' 2>/dev/null)
   target=$(tmux-pane-for-session "$session" "$current_session" 2>/dev/null)
   if [[ -n "$target" ]]; then
     target_session="${target%%:*}"
     if [[ "$target_session" == "$current_session" ]]; then
-      tmux select-window -t "$target" 2>/dev/null || return 1
-      tmux select-pane -t "$target" 2>/dev/null || return 1
+      ${TX_TMUX:-tmux} select-window -t "$target" 2>/dev/null || return 1
+      ${TX_TMUX:-tmux} select-pane -t "$target" 2>/dev/null || return 1
       return 0
     fi
   fi
   if [[ -n "$origin_pane" ]] && is_view_session "$current_session"; then
-    origin_cmd=$(tmux display-message -t "$origin_pane" -p '#{pane_current_command}' 2>/dev/null)
+    origin_cmd=$(${TX_TMUX:-tmux} display-message -t "$origin_pane" -p '#{pane_current_command}' 2>/dev/null)
     case "$origin_cmd" in
     zsh | bash | sh | fish | dash)
       # Trailing `exec $SHELL` keeps the pane alive after detach.
-      tmux respawn-pane -k -t "$origin_pane" \
-        "TMUX= tmux attach -t $(printf '%q' "$session"); exec \${SHELL:-zsh}"
+      ${TX_TMUX:-tmux} respawn-pane -k -t "$origin_pane" \
+        "TMUX= ${TX_TMUX:-tmux} attach -t $(printf '%q' "$session"); exec \${SHELL:-zsh}"
       return 0
       ;;
     esac
   fi
-  tmux switch-client -t "$session" 2>/dev/null
+  ${TX_TMUX:-tmux} switch-client -t "$session" 2>/dev/null
 }
 
 cmd_pick() {
@@ -341,14 +341,14 @@ cmd_pick() {
   )
   if [[ -z "$HOST" ]] && ((!MIX)); then
     opts+=(
-      --bind="ctrl-t:execute(tmux display-popup -E -h 5 -w 60% \"${self} _edit-tag {1}\")+reload-sync(${self} _list)"
+      --bind="ctrl-t:execute(${TX_TMUX:-tmux} display-popup -E -h 5 -w 60% \"${self} _edit-tag {1}\")+reload-sync(${self} _list)"
       # tmux-style y/N kill: Ctrl-D records the row in $TX_ARM_FILE, swaps line
       # 1 of the header for the yellow prompt, and rebind()s y/n to handle the
       # answer. y kills + reloads. n / cursor-move cancel and restore the
       # normal focus header. After firing or cancelling, y/n unbind themselves.
       # No nested popup.
       --bind="ctrl-d:execute-silent(printf '%s' {1} >\"\$TX_ARM_FILE\")+transform-header($arm_header_cmd)+rebind(y,n)"
-      --bind="y:execute-silent(tmux kill-session -t {1} 2>/dev/null; : >\"\$TX_ARM_FILE\")+reload-sync(${self} _list)+unbind(y,n)"
+      --bind="y:execute-silent(${TX_TMUX:-tmux} kill-session -t {1} 2>/dev/null; : >\"\$TX_ARM_FILE\")+reload-sync(${self} _list)+unbind(y,n)"
       --bind="n:transform-header($focus_cmd)+execute-silent(: >\"\$TX_ARM_FILE\")+unbind(y,n)"
     )
   fi
@@ -370,11 +370,11 @@ cmd_pick() {
     fi
     if [[ "$origin" == "R" ]]; then
       local remote_alias="${HOST:-$MIX_REMOTE_ALIAS}"
-      [[ -n "$pane" ]] && tmux set -p -t "$pane" @remote-session "$name" 2>/dev/null
+      [[ -n "$pane" ]] && ${TX_TMUX:-tmux} set -p -t "$pane" @remote-session "$name" 2>/dev/null
       ssh -t "$remote_alias" /opt/homebrew/bin/tmux a -t "$name"
-      [[ -n "$pane" ]] && tmux set -p -t "$pane" -u @remote-session 2>/dev/null
+      [[ -n "$pane" ]] && ${TX_TMUX:-tmux} set -p -t "$pane" -u @remote-session 2>/dev/null
     else
-      if ! tmux has-session -t "=$name" 2>/dev/null; then
+      if ! ${TX_TMUX:-tmux} has-session -t "=$name" 2>/dev/null; then
         printf "tx: session '%s' does not exist\n" "$name" >&2
         sleep 1.2
         continue
@@ -383,23 +383,23 @@ cmd_pick() {
       origin_pane=""
       current_session=""
       if [[ -n "${TMUX:-}" ]]; then
-        origin_pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
-        current_session=$(tmux display-message -p '#S' 2>/dev/null)
+        origin_pane=$(${TX_TMUX:-tmux} display-message -p '#{pane_id}' 2>/dev/null)
+        current_session=$(${TX_TMUX:-tmux} display-message -p '#S' 2>/dev/null)
       fi
       if [[ -n "$origin_pane" ]] && is_view_session "$current_session"; then
-        origin_cmd=$(tmux display-message -t "$origin_pane" -p '#{pane_current_command}' 2>/dev/null)
+        origin_cmd=$(${TX_TMUX:-tmux} display-message -t "$origin_pane" -p '#{pane_current_command}' 2>/dev/null)
         case "$origin_cmd" in
         zsh | bash | sh | fish | dash)
-          tmux respawn-pane -k -t "$origin_pane" \
-            "TMUX= tmux attach -t $(printf '%q' "$name"); exec \${SHELL:-zsh}"
+          ${TX_TMUX:-tmux} respawn-pane -k -t "$origin_pane" \
+            "TMUX= ${TX_TMUX:-tmux} attach -t $(printf '%q' "$name"); exec \${SHELL:-zsh}"
           return 0
           ;;
         esac
       fi
       if [[ -n "${TMUX:-}" ]]; then
-        tmux switch-client -t "$name"
+        ${TX_TMUX:-tmux} switch-client -t "$name"
       else
-        TMUX= tmux attach -t "$name"
+        TMUX= ${TX_TMUX:-tmux} attach -t "$name"
       fi
     fi
   done
@@ -435,11 +435,11 @@ cmd_start() {
   self_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
   repo_dir=$(cd "$self_dir/.." && pwd)
 
-  if ((restart)) && tmux has-session -t "=tx-assistant" 2>/dev/null; then
-    tmux kill-session -t "tx-assistant"
+  if ((restart)) && ${TX_TMUX:-tmux} has-session -t "=tx-assistant" 2>/dev/null; then
+    ${TX_TMUX:-tmux} kill-session -t "tx-assistant"
   fi
 
-  if tmux has-session -t "=tx-assistant" 2>/dev/null; then
+  if ${TX_TMUX:-tmux} has-session -t "=tx-assistant" 2>/dev/null; then
     echo "tx-assistant already running."
   else
     "$self_dir/tx-assistant" --warm
@@ -451,12 +451,12 @@ cmd_start() {
   # is intentionally filtered out of the tx picker (see list_raw / sessions_with_meta).
   # The initial pane is a plain shell — Views is just a stable surface to
   # nest-attach into; pick a target with `tx attach` once inside.
-  if ! tmux has-session -t "=Views" 2>/dev/null; then
-    tmux new-session -d -s "Views" -c "$repo_dir" \
+  if ! ${TX_TMUX:-tmux} has-session -t "=Views" 2>/dev/null; then
+    ${TX_TMUX:-tmux} new-session -d -s "Views" -c "$repo_dir" \
       -e COLORTERM=truecolor -e TERM=xterm-256color \
       "${SHELL:-zsh}"
-    tmux set -t Views @tag "views"
-    tmux set -t Views @kind "view"
+    ${TX_TMUX:-tmux} set -t Views @tag "views"
+    ${TX_TMUX:-tmux} set -t Views @kind "view"
     echo "Views session created."
   fi
 
@@ -464,16 +464,16 @@ cmd_start() {
   # plain attach. switch-client only works for the calling client; running
   # from a non-tmux shell falls through to attach.
   if [[ -n "${TMUX:-}" ]]; then
-    tmux switch-client -t Views
+    ${TX_TMUX:-tmux} switch-client -t Views
   else
-    tmux attach -t Views
+    ${TX_TMUX:-tmux} attach -t Views
   fi
 }
 
 # Default cwd from the calling pane's pwd (inside tmux) or $PWD.
 spawn_default_cwd() {
   local cwd=""
-  [[ -n "${TMUX:-}" ]] && cwd=$(tmux display-message -p '#{pane_current_path}' 2>/dev/null)
+  [[ -n "${TMUX:-}" ]] && cwd=$(${TX_TMUX:-tmux} display-message -p '#{pane_current_path}' 2>/dev/null)
   [[ -z "$cwd" ]] && cwd="$PWD"
   printf '%s' "$cwd"
 }
@@ -520,17 +520,17 @@ cmd_spawn() {
 
   [[ -z "$name" ]] && { printf 'tx spawn: <name> required\n' >&2; exit 2; }
   [[ -z "$tag" ]] && { printf 'tx spawn: --tag required\n' >&2; exit 2; }
-  if tmux has-session -t "=$name" 2>/dev/null; then
+  if ${TX_TMUX:-tmux} has-session -t "=$name" 2>/dev/null; then
     printf "tx spawn: session '%s' already exists\n" "$name" >&2
     exit 1
   fi
   [[ -z "$cwd" ]] && cwd=$(spawn_default_cwd)
   [[ -z "$cmd_str" ]] && cmd_str="${SHELL:-zsh}"
 
-  tmux new-session -d -s "$name" -c "$cwd" \
+  ${TX_TMUX:-tmux} new-session -d -s "$name" -c "$cwd" \
     -e COLORTERM=truecolor -e TERM=xterm-256color \
     "$cmd_str"
-  tmux set -t "$name" @tag "$tag"
+  ${TX_TMUX:-tmux} set -t "$name" @tag "$tag"
   printf "Spawned '%s' (cwd=%s, tag=%s)\n" "$name" "$cwd" "$tag"
 }
 
@@ -582,7 +582,7 @@ cmd_spawn_nvim() {
 
   [[ -z "$name" ]] && { printf 'tx spawn-nvim: <name> required\n' >&2; exit 2; }
   [[ -z "$tag" ]] && { printf 'tx spawn-nvim: --tag required\n' >&2; exit 2; }
-  if tmux has-session -t "=$name" 2>/dev/null; then
+  if ${TX_TMUX:-tmux} has-session -t "=$name" 2>/dev/null; then
     printf "tx spawn-nvim: session '%s' already exists\n" "$name" >&2
     exit 1
   fi
@@ -593,10 +593,10 @@ cmd_spawn_nvim() {
     nvim_cmd="$nvim_cmd +'DiffviewOpen $diff_base'"
   fi
 
-  tmux new-session -d -s "$name" -c "$cwd" \
+  ${TX_TMUX:-tmux} new-session -d -s "$name" -c "$cwd" \
     -e COLORTERM=truecolor -e TERM=xterm-256color \
     "$nvim_cmd"
-  tmux set -t "$name" @tag "$tag"
+  ${TX_TMUX:-tmux} set -t "$name" @tag "$tag"
   printf "Spawned nvim '%s' (cwd=%s, tag=%s%s)\n" \
     "$name" "$cwd" "$tag" "$( ((has_diff)) && printf ', diff=%s' "$diff_base" )"
 }
