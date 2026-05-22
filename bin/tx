@@ -12,6 +12,7 @@
 #   tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]]
 #                              Spawn a detached nvim companion. --diff defaults BASE to main.
 #   tx mailbox                 Open the mailbox TUI (live + archived inbox).
+#   tx teardown                Per-instance: kill this instance's tmux server + mx-speaker.
 #   tx help                    Show this message (also what `tx` shows with no args).
 #
 # Picker flags (apply to `tx attach`):
@@ -406,7 +407,7 @@ cmd_pick() {
 }
 
 cmd_help() {
-  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # tx start — ensure the Views home-base session exists, warm the tx-assistant,
@@ -619,6 +620,33 @@ cmd_mailbox() {
   exec "$py" "$self_dir/../lib/tx-mailbox" "$@"
 }
 
+# tx teardown — kill the per-instance tmux server + mx-speaker. Refuses unless
+# TX_PREFIX is set to a non-primary dir. Leaves $TX_PREFIX on disk.
+cmd_teardown() {
+  local prefix="${TX_PREFIX:-}"
+  if [[ -z "$prefix" || "$prefix" == "$HOME/.tx-ide" ]]; then
+    printf 'tx teardown: refuses without TX_PREFIX set to a per-instance dir\n' >&2
+    exit 2
+  fi
+  local claude_dir="${CLAUDE_CONFIG_DIR:-$prefix/claude}"
+  local pid_file="$claude_dir/mailbox/mx-speaker.pid"
+  if [[ -f "$pid_file" ]]; then
+    local speaker_pid
+    speaker_pid=$(cat "$pid_file")
+    if kill -0 "$speaker_pid" 2>/dev/null; then
+      kill "$speaker_pid"
+      printf 'mx-speaker killed (pid %s)\n' "$speaker_pid"
+    fi
+    rm -f "$pid_file"
+  fi
+  if ${TX_TMUX:-tmux} info >/dev/null 2>&1; then
+    ${TX_TMUX:-tmux} kill-server 2>/dev/null
+    printf 'tmux server killed (socket dir %s)\n' "${TMUX_TMPDIR:-default}"
+  fi
+  printf 'Prefix preserved for inspection: %s\n' "$prefix"
+  printf 'Remove with: rm -rf %s\n' "$prefix"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
   --all)
@@ -669,6 +697,10 @@ spawn)
 spawn-nvim)
   shift
   cmd_spawn_nvim "$@"
+  ;;
+teardown)
+  shift
+  cmd_teardown "$@"
   ;;
 _list)
   shift
