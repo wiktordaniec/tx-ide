@@ -331,7 +331,7 @@ cmd_pick() {
     fzf --exact --ansi --prompt='  ❯ ' --height=100% --reverse
     --delimiter=$'\t' --with-nth=4..
     --listen --track
-    "--color=fg:${DIM_FG_HEX},pointer:${ACCENT_HEX},fg+:${BG_DEEP_HEX}:bold,bg+:${ACCENT_HEX},hl:${ACCENT_HEX},hl+:${BG_DEEP_HEX},header:${DIM_FG_HEX},footer:${DIM_FG_HEX},prompt:${DIM_FG_HEX},query:${FG_HEX}"
+    "--color=fg:${DIM_FG_HEX},pointer:${ACCENT_HEX},fg+:${DIM_FG_HEX}:regular,bg+:${BG_HIGHLIGHT_HEX}:regular,hl:${ACCENT_HEX},hl+:${ACCENT_HEX},header:${DIM_FG_HEX},footer:${DIM_FG_HEX},prompt:${DIM_FG_HEX},query:${FG_HEX}"
     --header="$header_cols"
     --query="$query"
     # Refresh loop + unbind y/n immediately on start so they fall through to
