@@ -11,6 +11,8 @@
 #                              Spawn a detached tmux session. --tag is mandatory (no inheritance).
 #   tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]]
 #                              Spawn a detached nvim companion. --diff defaults BASE to main.
+#   tx spawn-view <name> [--tag TAGS] [--cwd DIR] [--cmd "CMD"]
+#                              Spawn a detached view session (@kind=view). --tag defaults to "views".
 #   tx mailbox                 Open the mailbox TUI (live + archived inbox).
 #   tx help                    Show this message (also what `tx` shows with no args).
 #
@@ -406,7 +408,7 @@ cmd_pick() {
 }
 
 cmd_help() {
-  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # tx start — ensure the Views home-base session exists, warm the tx-assistant,
@@ -601,6 +603,65 @@ cmd_spawn_nvim() {
     "$name" "$cwd" "$tag" "$( ((has_diff)) && printf ', diff=%s' "$diff_base" )"
 }
 
+# tx spawn-view — detached tmux session marked @kind=view so it surfaces under
+# VIEWS (not PROCESSES) and is filtered out of the picker. --tag defaults to
+# "views" when omitted.
+cmd_spawn_view() {
+  local name="" tag="" cwd="" cmd_str=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    -h | --help)
+      cmd_help
+      exit 0
+      ;;
+    --tag)
+      [[ -z "${2:-}" ]] && { printf 'tx spawn-view: --tag requires a value\n' >&2; exit 2; }
+      tag="$2"
+      shift 2
+      ;;
+    --cwd)
+      [[ -z "${2:-}" ]] && { printf 'tx spawn-view: --cwd requires a value\n' >&2; exit 2; }
+      cwd="$2"
+      shift 2
+      ;;
+    --cmd)
+      [[ -z "${2:-}" ]] && { printf 'tx spawn-view: --cmd requires a value\n' >&2; exit 2; }
+      cmd_str="$2"
+      shift 2
+      ;;
+    -*)
+      printf 'tx spawn-view: unknown flag: %s\n' "$1" >&2
+      exit 2
+      ;;
+    *)
+      if [[ -z "$name" ]]; then
+        name="$1"
+        shift
+      else
+        printf "tx spawn-view: too many positional args: '%s'\n" "$1" >&2
+        exit 2
+      fi
+      ;;
+    esac
+  done
+
+  [[ -z "$name" ]] && { printf 'tx spawn-view: <name> required\n' >&2; exit 2; }
+  [[ -z "$tag" ]] && tag="views"
+  if tmux has-session -t "=$name" 2>/dev/null; then
+    printf "tx spawn-view: session '%s' already exists\n" "$name" >&2
+    exit 1
+  fi
+  [[ -z "$cwd" ]] && cwd=$(spawn_default_cwd)
+  [[ -z "$cmd_str" ]] && cmd_str="${SHELL:-zsh}"
+
+  tmux new-session -d -s "$name" -c "$cwd" \
+    -e COLORTERM=truecolor -e TERM=xterm-256color \
+    "$cmd_str"
+  tmux set -t "$name" @tag "$tag"
+  tmux set -t "$name" @kind "view"
+  printf "Spawned view '%s' (cwd=%s, tag=%s)\n" "$name" "$cwd" "$tag"
+}
+
 # tx mailbox — exec the Python curses TUI in lib/.
 # Prefer /usr/bin/python3 over PATH lookup because the latter usually lands
 # on pyenv's shim, which adds ~60ms per launch — the dominant cost of
@@ -669,6 +730,10 @@ spawn)
 spawn-nvim)
   shift
   cmd_spawn_nvim "$@"
+  ;;
+spawn-view)
+  shift
+  cmd_spawn_view "$@"
   ;;
 _list)
   shift
