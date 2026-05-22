@@ -14,6 +14,7 @@
 #   tx spawn-view <name> [--tag TAGS] [--cwd DIR] [--cmd "CMD"]
 #                              Spawn a detached view session (@kind=view). --tag defaults to "views".
 #   tx mailbox                 Open the mailbox TUI (live + archived inbox).
+#   tx doctor                  Verify the active install (primary or per-instance).
 #   tx help                    Show this message (also what `tx` shows with no args).
 #
 # Picker flags (apply to `tx attach`):
@@ -680,6 +681,155 @@ cmd_mailbox() {
   exec "$py" "$self_dir/../lib/tx-mailbox" "$@"
 }
 
+# tx doctor — verify the active install is wired up.
+#
+# Modes:
+#   per-instance (TX_PREFIX set):
+#     $prefix/{bin,claude,env} are required (in addition to agents/, user-agents/,
+#     tmux.conf). Settings.json hook commands must be absolute paths under
+#     $CLAUDE_CONFIG_DIR (no shell variables left to expand).
+#   primary (TX_PREFIX unset):
+#     $prefix has agents/, user-agents/, tmux.conf only — bin lives under
+#     ~/.local/bin/ and claude under ~/.claude/, neither nested under prefix.
+#     Hook commands may embed $HOME literally — accept either form after expansion.
+#
+# mx-speaker liveness and tmux server reachability are warnings (the install
+# may simply not be started yet) — they don't fail the run.
+cmd_doctor() {
+  local g=$'\e[32m' r=$'\e[31m' y=$'\e[33m' d=$'\e[2m' x=$'\e[0m'
+  local fails=0
+  local per_instance=0
+  [[ -n "${TX_PREFIX:-}" ]] && per_instance=1
+  local prefix="${TX_PREFIX:-$HOME/.tx-ide}"
+  local claude_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  local mode_label="primary"
+  (( per_instance )) && mode_label="per-instance"
+
+  doc_ok()   { printf '  %s→%s %-48s %s%s%s\n' "$g" "$x" "$1" "$g" "${2:-ok}" "$x"; }
+  doc_warn() { printf '  %s→%s %-48s %s%s%s\n' "$y" "$x" "$1" "$y" "$2" "$x"; }
+  doc_fail() { printf '  %s→%s %-48s %s%s%s\n' "$r" "$x" "$1" "$r" "$2" "$x"; fails=$((fails + 1)); }
+
+  printf '%stx doctor%s (%s)\n' $'\e[1m' "$x" "$mode_label"
+  printf '%sprefix:%s     %s\n' "$d" "$x" "$prefix"
+  printf '%sclaude_dir:%s %s\n' "$d" "$x" "$claude_dir"
+  printf '%stmux:%s       %s\n\n' "$d" "$x" "${TX_TMUX:-tmux}"
+
+  local required_subs=(agents user-agents tmux.conf)
+  (( per_instance )) && required_subs+=(bin claude env)
+  for sub in "${required_subs[@]}"; do
+    if [[ -e "$prefix/$sub" ]]; then
+      doc_ok "$prefix/$sub"
+    else
+      doc_fail "$prefix/$sub" "missing"
+    fi
+  done
+
+  local settings="$claude_dir/settings.json"
+  if [[ ! -f "$settings" ]]; then
+    doc_fail "$settings" "missing"
+  else
+    local marker_status
+    marker_status=$(PER_INSTANCE="$per_instance" HOME_DIR="$HOME" \
+      python3 - "$settings" "$claude_dir" <<'PY' 2>&1
+import json, os, sys
+settings_path, claude_dir = sys.argv[1], sys.argv[2]
+per_instance = os.environ.get("PER_INSTANCE") == "1"
+home_dir = os.environ.get("HOME_DIR", "")
+try:
+    with open(settings_path) as fh:
+        data = json.load(fh)
+except Exception as exc:
+    print(f"unparseable: {exc}")
+    sys.exit(1)
+managed = data.get("_tx_ide_managed")
+if not isinstance(managed, dict):
+    print("missing _tx_ide_managed marker")
+    sys.exit(1)
+commands = managed.get("hook_commands", {})
+if not commands:
+    print("marker has no hook_commands")
+    sys.exit(1)
+for event, command in commands.items():
+    resolved = command.replace("$HOME", home_dir)
+    if per_instance and "$" in command:
+        print(f"hook {event} command still contains shell variables: {command}")
+        sys.exit(1)
+    if not resolved.startswith(claude_dir + "/"):
+        print(f"hook {event} command not under claude_dir: {command}")
+        sys.exit(1)
+print("ok")
+PY
+)
+    if [[ "$marker_status" == "ok" ]]; then
+      doc_ok "$settings" "marker + hook paths rooted in claude_dir"
+    else
+      doc_fail "$settings" "$marker_status"
+    fi
+  fi
+
+  if [[ -x "$claude_dir/statusline.sh" ]]; then
+    doc_ok "$claude_dir/statusline.sh" "executable"
+  elif [[ -f "$claude_dir/statusline.sh" ]]; then
+    doc_fail "$claude_dir/statusline.sh" "not executable"
+  else
+    doc_fail "$claude_dir/statusline.sh" "missing"
+  fi
+
+  local mailbox_dir="$claude_dir/mailbox"
+  if mkdir -p "$mailbox_dir" 2>/dev/null && [[ -w "$mailbox_dir" ]]; then
+    doc_ok "$mailbox_dir" "writable"
+  else
+    doc_fail "$mailbox_dir" "not writable"
+  fi
+
+  if [[ -f "$settings" ]]; then
+    while IFS=$'\t' read -r event command; do
+      [[ -z "$command" ]] && continue
+      local script="${command#bash }"
+      script="${script//\$HOME/$HOME}"
+      if [[ -x "$script" ]]; then
+        doc_ok "hook[$event]" "$script"
+      else
+        doc_fail "hook[$event]" "$script not executable"
+      fi
+    done < <(python3 - "$settings" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1]) as fh:
+    data = json.load(fh)
+for event, command in (data.get("_tx_ide_managed") or {}).get("hook_commands", {}).items():
+    print(f"{event}\t{command}")
+PY
+)
+  fi
+
+  local pid_file="$mailbox_dir/mx-speaker.pid"
+  if [[ -f "$pid_file" ]]; then
+    local pid
+    pid=$(cat "$pid_file" 2>/dev/null)
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      doc_ok "mx-speaker" "alive (pid $pid)"
+    else
+      doc_warn "mx-speaker" "pidfile present but pid $pid not running"
+    fi
+  else
+    doc_warn "mx-speaker" "pidfile absent (run claude/hooks/start-speaker.sh)"
+  fi
+
+  if ${TX_TMUX:-tmux} info >/dev/null 2>&1; then
+    doc_ok "tmux server" "reachable"
+  else
+    doc_warn "tmux server" "not running (start with: tx start)"
+  fi
+
+  printf '\n'
+  if (( fails == 0 )); then
+    printf '%sAll checks passed.%s\n' "$g" "$x"
+    return 0
+  fi
+  printf '%s%d check(s) failed.%s\n' "$r" "$fails" "$x"
+  return 1
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
   --all)
@@ -734,6 +884,10 @@ spawn-nvim)
 spawn-view)
   shift
   cmd_spawn_view "$@"
+  ;;
+doctor)
+  shift
+  cmd_doctor "$@"
   ;;
 _list)
   shift
