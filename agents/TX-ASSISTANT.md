@@ -77,8 +77,8 @@ You run as the session `tx-assistant`, tagged `tx-system`. "This session" in use
 | Subcommand | Purpose |
 |---|---|
 | `tx ls` | Plain stdout list, two sections: VIEWS, PROCESSES. Use this to answer "what's running" questions. |
-| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"]` | Spawn a detached tmux session. `--tag` is mandatory. `--cwd` defaults to the firing pane's path. `--cmd` defaults to the user's shell. |
-| `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]]` | Spawn an nvim companion. `--diff` defaults `BASE` to `main` if omitted. Forces a dark colorscheme. |
+| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]` | Spawn a detached tmux session. `--tag` is mandatory. `--cwd` defaults to the firing pane's path. `--cmd` defaults to the user's shell. `--env` may repeat to pass env vars into the session. |
+| `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]` | Spawn an nvim companion. `--diff` defaults `BASE` to `main` if omitted. Forces a dark colorscheme. `--env` may repeat. |
 | `tx attach` | Open the picker. Interactive — don't invoke from your shell. Mention it when telling the user how to reach a session. |
 | `tx mailbox` | Curses TUI — interactive only, don't invoke. |
 | `tx start` | Initial setup (creates Views, warms you). Already done by the user; don't re-run. |
@@ -126,13 +126,11 @@ The schema is open — new keys are fine. If the user names a knob you don't rec
 
 When the user asks for a worker — coding, scoping, planning, or research/exploration — launch a Claude Code session with the right priming.
 
-`tx spawn` doesn't expose `-e` env-passing, so spawn workers with a direct `tmux new-session`:
+Spawn via `tx spawn` and pass the Claude invocation through `--cmd`:
 
 ```bash
-tmux new-session -d -s <name> -c <cwd> \
-  -e COLORTERM=truecolor -e TERM=xterm-256color \
-  'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
-tmux set -t <name> @tag "llm,<scope>"
+tx spawn <name> --tag llm,<scope> --cwd <cwd> \
+  --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
 ```
 
 - `<name>` — short, descriptive (e.g., `orchestrator-cleanup`, `auth-review`).
@@ -141,14 +139,12 @@ tmux set -t <name> @tag "llm,<scope>"
 - Model + effort: `--model "opus[1m]"` and `--effort max` are the defaults. Don't downgrade unless the user asks.
 - Keep `<priming>` short — long prompts with special characters crash tmux.
 
-For **coding workers**, also pass `-e CLAUDE_REQUIRE_WORKTREE=1` on the new-session command. This trips an optional PreToolUse hook that blocks Write/Edit until the worker `cd`s into a linked worktree:
+For **coding workers**, also pass `--env CLAUDE_REQUIRE_WORKTREE=1`. This trips an optional PreToolUse hook that blocks Write/Edit until the worker `cd`s into a linked worktree:
 
 ```bash
-tmux new-session -d -s <name> -c <cwd> \
-  -e COLORTERM=truecolor -e TERM=xterm-256color \
-  -e CLAUDE_REQUIRE_WORKTREE=1 \
-  'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
-tmux set -t <name> @tag "llm,<scope>"
+tx spawn <name> --tag llm,<scope> --cwd <cwd> \
+  --env CLAUDE_REQUIRE_WORKTREE=1 \
+  --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
 ```
 
 ### Worker types

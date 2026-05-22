@@ -7,9 +7,11 @@ These conventions apply to every Claude Code session in this system: the tx-assi
 Use `tx spawn` (bare) and `tx spawn-nvim` (nvim companion). Both require `--tag` and refuse without it — no inheritance, no auto-magic, you pass the tags explicitly.
 
 ```bash
-tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"]
-tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]]
+tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
+tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]
 ```
+
+`--env` may repeat — pass any env vars the spawned process needs (e.g. `CLAUDE_REQUIRE_WORKTREE=1` for coding workers).
 
 **Tag convention** — a scope tag plus a kind tag (`llm` / `nvim`) is the pair:
 - AI worker session: `--tag llm,<scope>` (e.g. `llm,wrangler-p1`)

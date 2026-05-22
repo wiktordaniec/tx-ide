@@ -7,11 +7,11 @@
 #                              existing tx-assistant first.
 #   tx attach                  Open the session picker.
 #   tx ls                      Plain stdout list: VIEWS and PROCESSES sections.
-#   tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"]
+#   tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
 #                              Spawn a detached tmux session. --tag is mandatory (no inheritance).
-#   tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]]
+#   tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]
 #                              Spawn a detached nvim companion. --diff defaults BASE to main.
-#   tx spawn-view <name> [--tag TAGS] [--cwd DIR] [--cmd "CMD"]
+#   tx spawn-view <name> [--tag TAGS] [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
 #                              Spawn a detached view session (@kind=view). --tag defaults to "views".
 #   tx mailbox                 Open the mailbox TUI (live + archived inbox).
 #   tx help                    Show this message (also what `tx` shows with no args).
@@ -485,6 +485,7 @@ spawn_default_cwd() {
 # tx spawn — bare detached tmux session with a mandatory --tag.
 cmd_spawn() {
   local name="" tag="" cwd="" cmd_str=""
+  local -a env_args=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
     -h | --help)
@@ -504,6 +505,12 @@ cmd_spawn() {
     --cmd)
       [[ -z "${2:-}" ]] && { printf 'tx spawn: --cmd requires a value\n' >&2; exit 2; }
       cmd_str="$2"
+      shift 2
+      ;;
+    --env)
+      [[ -z "${2:-}" ]] && { printf 'tx spawn: --env requires a KEY=VALUE\n' >&2; exit 2; }
+      [[ "$2" != *=* ]] && { printf "tx spawn: --env expects KEY=VALUE, got '%s'\n" "$2" >&2; exit 2; }
+      env_args+=("-e" "$2")
       shift 2
       ;;
     -*)
@@ -533,6 +540,7 @@ cmd_spawn() {
 
   tmux new-session -d -s "$name" -c "$cwd" \
     -e COLORTERM=truecolor -e TERM=xterm-256color \
+    ${env_args[@]+"${env_args[@]}"} \
     "$cmd_str"
   tmux set -t "$name" @tag "$tag"
   printf "Spawned '%s' (cwd=%s, tag=%s)\n" "$name" "$cwd" "$tag"
@@ -543,6 +551,7 @@ cmd_spawn() {
 # hint, and nvim's auto-mode would otherwise land on the light variant.
 cmd_spawn_nvim() {
   local name="" tag="" cwd="" diff_base="" has_diff=0
+  local -a env_args=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
     -h | --help)
@@ -567,6 +576,12 @@ cmd_spawn_nvim() {
         shift
       fi
       shift
+      ;;
+    --env)
+      [[ -z "${2:-}" ]] && { printf 'tx spawn-nvim: --env requires a KEY=VALUE\n' >&2; exit 2; }
+      [[ "$2" != *=* ]] && { printf "tx spawn-nvim: --env expects KEY=VALUE, got '%s'\n" "$2" >&2; exit 2; }
+      env_args+=("-e" "$2")
+      shift 2
       ;;
     -*)
       printf 'tx spawn-nvim: unknown flag: %s\n' "$1" >&2
@@ -599,6 +614,7 @@ cmd_spawn_nvim() {
 
   tmux new-session -d -s "$name" -c "$cwd" \
     -e COLORTERM=truecolor -e TERM=xterm-256color \
+    ${env_args[@]+"${env_args[@]}"} \
     "$nvim_cmd"
   tmux set -t "$name" @tag "$tag"
   printf "Spawned nvim '%s' (cwd=%s, tag=%s%s)\n" \
@@ -610,6 +626,7 @@ cmd_spawn_nvim() {
 # "views" when omitted.
 cmd_spawn_view() {
   local name="" tag="" cwd="" cmd_str=""
+  local -a env_args=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
     -h | --help)
@@ -629,6 +646,12 @@ cmd_spawn_view() {
     --cmd)
       [[ -z "${2:-}" ]] && { printf 'tx spawn-view: --cmd requires a value\n' >&2; exit 2; }
       cmd_str="$2"
+      shift 2
+      ;;
+    --env)
+      [[ -z "${2:-}" ]] && { printf 'tx spawn-view: --env requires a KEY=VALUE\n' >&2; exit 2; }
+      [[ "$2" != *=* ]] && { printf "tx spawn-view: --env expects KEY=VALUE, got '%s'\n" "$2" >&2; exit 2; }
+      env_args+=("-e" "$2")
       shift 2
       ;;
     -*)
@@ -658,6 +681,7 @@ cmd_spawn_view() {
 
   tmux new-session -d -s "$name" -c "$cwd" \
     -e COLORTERM=truecolor -e TERM=xterm-256color \
+    ${env_args[@]+"${env_args[@]}"} \
     "$cmd_str"
   tmux set -t "$name" @tag "$tag"
   tmux set -t "$name" @kind "view"
