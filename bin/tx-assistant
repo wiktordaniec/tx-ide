@@ -30,7 +30,8 @@ if [ "$warm_only" -eq 0 ]; then
 fi
 
 session=tx-assistant
-priming='Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/TX-ASSISTANT.md as your first actions. Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.md, ~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/TX-ASSISTANT.md, and ~/.tx-ide/user-agents/TX-ASSISTANT.local.md (any user-agents/X.md replaces the shipped one; any user-agents/X.local.md extends it). Follow all of these for the duration of this session.'
+prefix="${TX_PREFIX:-$HOME/.tx-ide}"
+priming="Read $prefix/agents/COMMON.md and $prefix/agents/TX-ASSISTANT.md as your first actions. Then, if they exist, also read $prefix/user-agents/COMMON.md, $prefix/user-agents/COMMON.local.md, $prefix/user-agents/TX-ASSISTANT.md, and $prefix/user-agents/TX-ASSISTANT.local.md (any user-agents/X.md replaces the shipped one; any user-agents/X.local.md extends it). Follow all of these for the duration of this session."
 
 repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
 
