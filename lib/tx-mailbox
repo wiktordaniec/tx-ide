@@ -18,6 +18,26 @@ VIEW_CYCLE = ("live", "archive")
 LIVE_UNREAD_CAP = 5
 SEARCH_PROMPT = "  ❯ "
 
+# Number of palette colors for tag chips. Mirrors shared/palette.sh:
+#   0 red    1 green    2 magenta    3 cyan
+# A polynomial hash on the tag string picks the index so the same tag value
+# (e.g. `llm`) paints the same color in tx, mx, and the pane border.
+TAG_PALETTE_SIZE = 4
+
+
+def tag_color_index(tag_value):
+    """Polynomial hash mirroring shared/palette.sh::tag_color_index."""
+    hash_value = 0
+    for character in tag_value:
+        hash_value = (hash_value * 31 + ord(character)) % 2147483647
+    return hash_value % TAG_PALETTE_SIZE
+
+
+def tag_style_key(tag_value, selected=False):
+    """Style key for a tag chip — name resolves via init_styles()'s dict."""
+    prefix = "selected_tag" if selected else "entry_tag"
+    return f"{prefix}_{tag_color_index(tag_value)}"
+
 
 def load_entries():
     if not INBOX_FILE.exists():
@@ -428,7 +448,7 @@ def format_entry_segments(entry, name_col_width, loc_col_width):
         for index, tag_part in enumerate(tags.split(",")):
             if index > 0:
                 segments.append((" ", "entry"))
-            segments.append((f"[{tag_part}]", "entry_suffix"))
+            segments.append((f"[{tag_part}]", tag_style_key(tag_part)))
     else:
         segments.append((entry["cwd"].rsplit("/", 1)[-1], "entry_suffix"))
     return segments
@@ -658,9 +678,14 @@ def render(
                 key_overrides = None
                 if row_index == cursor:
                     row_override = styles["selected"]
-                    # Keep age yellow on the blue selection bg; everything else
-                    # falls back to the row-level "selected" override.
+                    # Keep age yellow and tag chips in their own color on the
+                    # blue selection bg; everything else falls back to the
+                    # row-level "selected" override (black-on-blue bold).
                     key_overrides = {"entry_age": styles["selected_age"]}
+                    for palette_index in range(TAG_PALETTE_SIZE):
+                        key_overrides[f"entry_tag_{palette_index}"] = (
+                            styles[f"selected_tag_{palette_index}"]
+                        )
                 elif row["data"].get("read"):
                     row_override = styles["read"]
                 else:
@@ -708,7 +733,19 @@ def init_styles():
     #   COLOR_BLUE   == ACCENT_HEX  (#7aa2f7) — selection bg, divider
     #   COLOR_YELLOW == WARN_HEX    (#e0af68) — age column (staleness)
     #   COLOR_WHITE  == DIM_FG_HEX  (#a9b1d6) — suffix column (muted)
-    #   COLOR_RED                   (#f7768e) — error
+    #   COLOR_RED                   (#f7768e) — tag chip color 0 / error
+    #   COLOR_GREEN                 (#9ece6a) — tag chip color 1
+    #   COLOR_MAGENTA               (#bb9af7) — tag chip color 2
+    #   COLOR_CYAN                  (#7dcfff) — tag chip color 3
+    # Tag chip pairs come in two flavors: against the default bg (8..11) and
+    # against the selection blue bg (12..15) so chips keep their color when
+    # the row is selected.
+    tag_fg_colors = (
+        curses.COLOR_RED,
+        curses.COLOR_GREEN,
+        curses.COLOR_MAGENTA,
+        curses.COLOR_CYAN,
+    )
     try:
         curses.use_default_colors()
         curses.init_pair(1, curses.COLOR_BLACK, -1)
@@ -718,7 +755,10 @@ def init_styles():
         curses.init_pair(5, curses.COLOR_YELLOW, -1)
         curses.init_pair(6, curses.COLOR_WHITE, -1)
         curses.init_pair(7, curses.COLOR_YELLOW, curses.COLOR_BLUE)
-        return {
+        for palette_index, fg in enumerate(tag_fg_colors):
+            curses.init_pair(8 + palette_index, fg, -1)
+            curses.init_pair(12 + palette_index, fg, curses.COLOR_BLUE)
+        styles = {
             "header": curses.color_pair(1) | curses.A_BOLD,
             "divider": curses.color_pair(2) | curses.A_DIM,
             "column_header": curses.color_pair(6),
@@ -737,8 +777,14 @@ def init_styles():
             "clock": curses.A_DIM,
             "error": curses.color_pair(3) | curses.A_BOLD,
         }
+        for palette_index in range(TAG_PALETTE_SIZE):
+            styles[f"entry_tag_{palette_index}"] = curses.color_pair(8 + palette_index)
+            styles[f"selected_tag_{palette_index}"] = (
+                curses.color_pair(12 + palette_index) | curses.A_BOLD
+            )
+        return styles
     except curses.error:
-        return {
+        styles = {
             "header": curses.A_BOLD,
             "divider": curses.A_DIM,
             "column_header": curses.A_NORMAL,
@@ -755,6 +801,10 @@ def init_styles():
             "clock": curses.A_DIM,
             "error": curses.A_BOLD | curses.A_REVERSE,
         }
+        for palette_index in range(TAG_PALETTE_SIZE):
+            styles[f"entry_tag_{palette_index}"] = curses.A_NORMAL
+            styles[f"selected_tag_{palette_index}"] = curses.A_REVERSE | curses.A_BOLD
+        return styles
 
 
 def tui(stdscr):
