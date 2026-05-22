@@ -58,3 +58,55 @@ WARN_ANSI=$'\e[38;2;224;175;104m'
 #   \e[32m green   → #9ece6a   \e[35m magenta → #bb9af7
 #   \e[33m yellow  → #e0af68   \e[36m cyan    → #7dcfff
 #   (== WARN_HEX)
+
+# === Tag chip palette ===
+# Deterministic color-per-tag-value: a polynomial hash of the tag string picks
+# one of four palette indices, so the same tag value (e.g. `llm`) always
+# renders in the same color across tx, mx, and the tmux pane border.
+#
+# The four colors are tokyonight ANSI colors NOT already carrying a semantic
+# role (avoiding ACCENT blue, WARN yellow, and FG/DIM_FG white). All four
+# hexes match the iTerm tokyonight preset for COLOR_RED, COLOR_GREEN,
+# COLOR_MAGENTA, COLOR_CYAN — so curses TUIs hit the same color via the
+# COLOR_* constants.
+TAG_HEX_0='#f7768e'   # red
+TAG_HEX_1='#9ece6a'   # green
+TAG_HEX_2='#bb9af7'   # magenta
+TAG_HEX_3='#7dcfff'   # cyan
+
+TAG_ANSI_0=$'\e[38;2;247;118;142m'
+TAG_ANSI_1=$'\e[38;2;158;206;106m'
+TAG_ANSI_2=$'\e[38;2;187;154;247m'
+TAG_ANSI_3=$'\e[38;2;125;207;255m'
+
+# Polynomial hash on the tag string → palette index 0..3. Must match the
+# Python implementation in lib/tx-mailbox so the same tag stays the same color
+# across tx and mx.
+tag_color_index() {
+  local s="$1" h=0 i c
+  for ((i = 0; i < ${#s}; i++)); do
+    printf -v c '%d' "'${s:$i:1}"
+    h=$(((h * 31 + c) % 2147483647))
+  done
+  printf '%d' $((h % 4))
+}
+
+# 24-bit ANSI escape for the tag value's color. Use in fzf/--ansi contexts.
+tag_ansi() {
+  case "$(tag_color_index "$1")" in
+  0) printf '%s' "$TAG_ANSI_0" ;;
+  1) printf '%s' "$TAG_ANSI_1" ;;
+  2) printf '%s' "$TAG_ANSI_2" ;;
+  3) printf '%s' "$TAG_ANSI_3" ;;
+  esac
+}
+
+# Bare hex for the tag value's color. Use in tmux #[fg=…] formats.
+tag_hex() {
+  case "$(tag_color_index "$1")" in
+  0) printf '%s' "$TAG_HEX_0" ;;
+  1) printf '%s' "$TAG_HEX_1" ;;
+  2) printf '%s' "$TAG_HEX_2" ;;
+  3) printf '%s' "$TAG_HEX_3" ;;
+  esac
+}
