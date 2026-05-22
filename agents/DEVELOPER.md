@@ -20,5 +20,14 @@ You must have already read `agents/COMMON.md` — those conventions apply to you
 3. Never commit directly to main/master.
 4. Make atomic commits with descriptive messages.
 5. Push and open a draft PR when done (`gh pr create --draft`).
+6. **After the PR is open, spawn an nvim companion showing the diff** so the user can review without context-switching:
+
+   ```bash
+   SELF=$(tmux display-message -p '#S')
+   BASE=$(gh pr view --json baseRefName --jq .baseRefName)
+   tx spawn-nvim "$SELF-diff" --tag "nvim,$SELF" --cwd <worktree-path> --diff "$BASE"
+   ```
+
+   The tag pins your worker's session name on the companion so both surface together when the user filters by it in `tx attach`.
 
 Worktree convention: `.claude/worktrees/<session-name>` inside the repo.
