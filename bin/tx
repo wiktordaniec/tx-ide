@@ -142,18 +142,17 @@ sessions_with_meta() {
     name_disp=$(trunc "$name" "$((NAMEW - ${#prefix}))")
     pad=$((NAMEW - ${#name_disp} - ${#prefix}))
     ((pad < 0)) && pad=0
-    local plain_chips=""
+    local plain_chips="" colored_chips=""
     if [[ -n "$tag" ]]; then
       local tag_part
       IFS=',' read -ra tag_parts <<<"$tag"
       for tag_part in "${tag_parts[@]}"; do
         plain_chips+=" [${tag_part}]"
+        colored_chips+=" $(tag_ansi "$tag_part")[${tag_part}]${R}"
       done
     fi
-    # NAME/STARTED/TAGS have no ANSI fg — they inherit fzf's fg (DIM_FG) for
-    # unselected rows and fg+ (BG_DEEP on ACCENT) when selected. IDLE keeps
-    # its WARN escape so the staleness signal stays yellow in both states
-    # (matches mx's age column behavior, just rendered on a different bg).
+    # $plain_chips: column 2 is what fzf's --exact filter searches.
+    # $colored_chips: column 4+ is the visual.
     printf '%s\t%s\t%s\t%s%s%*s   %-7s %b%-6s%b%s\n' \
       "$name" \
       "$plain_chips" \
@@ -161,7 +160,7 @@ sessions_with_meta() {
       "$prefix" "$name_disp" "$pad" "" \
       "$(reltime "$created" "$now")" \
       "$WARN_ANSI" "$(reltime "$activity" "$now")" "$R" \
-      "$plain_chips"
+      "$colored_chips"
   done < <(list_raw |
     awk -F'|' '$7 != "view"' |
     sort -t'|' -k2 -nr |

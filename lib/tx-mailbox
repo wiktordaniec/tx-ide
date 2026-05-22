@@ -18,6 +18,38 @@ VIEW_CYCLE = ("live", "archive")
 LIVE_UNREAD_CAP = 5
 SEARCH_PROMPT = "  ❯ "
 
+TAG_PALETTE_SIZE = 12
+
+# Closest xterm-256 cube index per shared/palette.sh::TAG_HEX_<i>. tmux blocks
+# init_color() so we can't redefine slots; cube approximations are ~5-10% off
+# raw RGB but read as the same hue.
+TAG_PALETTE_XTERM = (
+    210,  # red       #f7768e
+    167,  # red1      #db4b4b
+    215,  # orange    #ff9e64
+    149,  # green     #9ece6a
+    80,   # green1    #73daca
+    73,   # green2    #41a6b5
+    37,   # teal      #1abc9c
+    117,  # cyan      #7dcfff
+    38,   # blue1     #2ac3de
+    141,  # magenta   #bb9af7
+    198,  # magenta2  #ff007c
+    140,  # purple    #9d7cd8
+)
+
+
+def tag_color_index(tag_value):
+    hash_value = 0
+    for character in tag_value:
+        hash_value = (hash_value * 31 + ord(character)) % 2147483647
+    return hash_value % TAG_PALETTE_SIZE
+
+
+def tag_style_key(tag_value, selected=False):
+    prefix = "selected_tag" if selected else "entry_tag"
+    return f"{prefix}_{tag_color_index(tag_value)}"
+
 
 def load_entries():
     if not INBOX_FILE.exists():
@@ -428,7 +460,7 @@ def format_entry_segments(entry, name_col_width, loc_col_width):
         for index, tag_part in enumerate(tags.split(",")):
             if index > 0:
                 segments.append((" ", "entry"))
-            segments.append((f"[{tag_part}]", "entry_suffix"))
+            segments.append((f"[{tag_part}]", tag_style_key(tag_part)))
     else:
         segments.append((entry["cwd"].rsplit("/", 1)[-1], "entry_suffix"))
     return segments
@@ -658,9 +690,11 @@ def render(
                 key_overrides = None
                 if row_index == cursor:
                     row_override = styles["selected"]
-                    # Keep age yellow on the blue selection bg; everything else
-                    # falls back to the row-level "selected" override.
                     key_overrides = {"entry_age": styles["selected_age"]}
+                    for palette_index in range(TAG_PALETTE_SIZE):
+                        key_overrides[f"entry_tag_{palette_index}"] = (
+                            styles[f"selected_tag_{palette_index}"]
+                        )
                 elif row["data"].get("read"):
                     row_override = styles["read"]
                 else:
@@ -702,13 +736,12 @@ def render(
     stdscr.refresh()
 
 
+# Tag chip pairs: 8..7+N against default bg, 8+N..7+2N against selection bg.
+TAG_PAIR_BASE = 8
+
+
 def init_styles():
-    # Colors map to the terminal's ANSI 8-color palette which iTerm renders
-    # via the tokyonight preset. See tmux/palette.sh for the canonical names:
-    #   COLOR_BLUE   == ACCENT_HEX  (#7aa2f7) — selection bg, divider
-    #   COLOR_YELLOW == WARN_HEX    (#e0af68) — age column (staleness)
-    #   COLOR_WHITE  == DIM_FG_HEX  (#a9b1d6) — suffix column (muted)
-    #   COLOR_RED                   (#f7768e) — error
+    use_xterm_cube = curses.COLORS >= 256
     try:
         curses.use_default_colors()
         curses.init_pair(1, curses.COLOR_BLACK, -1)
@@ -718,7 +751,30 @@ def init_styles():
         curses.init_pair(5, curses.COLOR_YELLOW, -1)
         curses.init_pair(6, curses.COLOR_WHITE, -1)
         curses.init_pair(7, curses.COLOR_YELLOW, curses.COLOR_BLUE)
-        return {
+
+        if use_xterm_cube:
+            tag_fg_colors = list(TAG_PALETTE_XTERM)
+        else:
+            ansi_fallback = (
+                curses.COLOR_RED,
+                curses.COLOR_GREEN,
+                curses.COLOR_MAGENTA,
+                curses.COLOR_CYAN,
+            )
+            tag_fg_colors = [
+                ansi_fallback[i % len(ansi_fallback)]
+                for i in range(TAG_PALETTE_SIZE)
+            ]
+
+        for palette_index, fg in enumerate(tag_fg_colors):
+            curses.init_pair(TAG_PAIR_BASE + palette_index, fg, -1)
+            curses.init_pair(
+                TAG_PAIR_BASE + TAG_PALETTE_SIZE + palette_index,
+                fg,
+                curses.COLOR_BLUE,
+            )
+
+        styles = {
             "header": curses.color_pair(1) | curses.A_BOLD,
             "divider": curses.color_pair(2) | curses.A_DIM,
             "column_header": curses.color_pair(6),
@@ -727,8 +783,6 @@ def init_styles():
             "entry_session": curses.color_pair(6),
             "entry_suffix": curses.color_pair(6),
             "selected": curses.color_pair(4) | curses.A_BOLD,
-            # Yellow on blue + bold for age on selected rows — keeps the
-            # staleness signal during selection without overriding to dark.
             "selected_age": curses.color_pair(7) | curses.A_BOLD,
             "search_prompt": curses.color_pair(6),
             "search_query": curses.color_pair(6) | curses.A_BOLD,
@@ -737,8 +791,17 @@ def init_styles():
             "clock": curses.A_DIM,
             "error": curses.color_pair(3) | curses.A_BOLD,
         }
+        for palette_index in range(TAG_PALETTE_SIZE):
+            styles[f"entry_tag_{palette_index}"] = curses.color_pair(
+                TAG_PAIR_BASE + palette_index
+            )
+            styles[f"selected_tag_{palette_index}"] = (
+                curses.color_pair(TAG_PAIR_BASE + TAG_PALETTE_SIZE + palette_index)
+                | curses.A_BOLD
+            )
+        return styles
     except curses.error:
-        return {
+        styles = {
             "header": curses.A_BOLD,
             "divider": curses.A_DIM,
             "column_header": curses.A_NORMAL,
@@ -755,6 +818,10 @@ def init_styles():
             "clock": curses.A_DIM,
             "error": curses.A_BOLD | curses.A_REVERSE,
         }
+        for palette_index in range(TAG_PALETTE_SIZE):
+            styles[f"entry_tag_{palette_index}"] = curses.A_NORMAL
+            styles[f"selected_tag_{palette_index}"] = curses.A_REVERSE | curses.A_BOLD
+        return styles
 
 
 def tui(stdscr):

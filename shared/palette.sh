@@ -58,3 +58,52 @@ WARN_ANSI=$'\e[38;2;224;175;104m'
 #   \e[32m green   → #9ece6a   \e[35m magenta → #bb9af7
 #   \e[33m yellow  → #e0af68   \e[36m cyan    → #7dcfff
 #   (== WARN_HEX)
+
+# === Tag chip palette ===
+TAG_PALETTE_SIZE=12
+
+TAG_HEX_0='#f7768e'   # red
+TAG_HEX_1='#db4b4b'   # red1
+TAG_HEX_2='#ff9e64'   # orange
+TAG_HEX_3='#9ece6a'   # green
+TAG_HEX_4='#73daca'   # green1
+TAG_HEX_5='#41a6b5'   # green2
+TAG_HEX_6='#1abc9c'   # teal
+TAG_HEX_7='#7dcfff'   # cyan
+TAG_HEX_8='#2ac3de'   # blue1
+TAG_HEX_9='#bb9af7'   # magenta
+TAG_HEX_10='#ff007c'  # magenta2
+TAG_HEX_11='#9d7cd8'  # purple
+
+TAG_ANSI_0=$'\e[38;2;247;118;142m'
+TAG_ANSI_1=$'\e[38;2;219;75;75m'
+TAG_ANSI_2=$'\e[38;2;255;158;100m'
+TAG_ANSI_3=$'\e[38;2;158;206;106m'
+TAG_ANSI_4=$'\e[38;2;115;218;202m'
+TAG_ANSI_5=$'\e[38;2;65;166;181m'
+TAG_ANSI_6=$'\e[38;2;26;188;156m'
+TAG_ANSI_7=$'\e[38;2;125;207;255m'
+TAG_ANSI_8=$'\e[38;2;42;195;222m'
+TAG_ANSI_9=$'\e[38;2;187;154;247m'
+TAG_ANSI_10=$'\e[38;2;255;0;124m'
+TAG_ANSI_11=$'\e[38;2;157;124;216m'
+
+# Must match tag_color_index() in lib/tx-mailbox.
+tag_color_index() {
+  local s="$1" h=0 i c
+  for ((i = 0; i < ${#s}; i++)); do
+    printf -v c '%d' "'${s:$i:1}"
+    h=$(((h * 31 + c) % 2147483647))
+  done
+  printf '%d' $((h % TAG_PALETTE_SIZE))
+}
+
+tag_ansi() {
+  local var="TAG_ANSI_$(tag_color_index "$1")"
+  printf '%s' "${!var}"
+}
+
+tag_hex() {
+  local var="TAG_HEX_$(tag_color_index "$1")"
+  printf '%s' "${!var}"
+}

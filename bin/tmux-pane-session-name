@@ -23,14 +23,15 @@ if [[ -n "$override" ]]; then
 fi
 
 print_tags() {
-  local session="$1" tag part
+  local session="$1" tag part color
   local -a parts
   tag=$(tmux show-options -vqt "$session" @tag 2>/dev/null) || return 0
   [[ -z "$tag" ]] && return 0
   IFS=',' read -ra parts <<<"$tag"
   for part in "${parts[@]}"; do
     [[ -z "$part" ]] && continue
-    printf ' #[fg=#{?pane_active,#c0caf5,default},#{?pane_active,bold,nobold}][%s]#[default]' "$part"
+    color=$(tag_hex "$part")
+    printf ' #[fg=%s,#{?pane_active,bold,nobold}][%s]#[default]' "$color" "$part"
   done
 }
 
