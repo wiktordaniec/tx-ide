@@ -5,10 +5,52 @@ set -u
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 HOME_DIR="${HOME%/}"
-LOCAL_BIN="$HOME_DIR/.local/bin"
-CLAUDE_DIR="$HOME_DIR/.claude"
-TX_IDE_DIR="$HOME_DIR/.tx-ide"
 STAMP=$(date +%Y%m%d%H%M%S)
+
+PREFIX_FLAG=""
+SKIP_ITERM=0
+SKIP_SHELL_RC=0
+SKIP_BREW=0
+while (( $# > 0 )); do
+  case "$1" in
+    --prefix)        PREFIX_FLAG="$2"; shift 2 ;;
+    --prefix=*)      PREFIX_FLAG="${1#*=}"; shift ;;
+    --skip-iterm)    SKIP_ITERM=1; shift ;;
+    --skip-shell-rc) SKIP_SHELL_RC=1; shift ;;
+    --skip-brew)     SKIP_BREW=1; shift ;;
+    -h|--help)
+      cat <<'USAGE'
+Usage: install [--prefix DIR] [--skip-iterm] [--skip-shell-rc] [--skip-brew]
+
+  --prefix DIR      Install to DIR as a self-contained instance instead of
+                    the primary layout (~/.tx-ide + ~/.claude + ~/.local/bin).
+                    Activate with: source DIR/env
+  --skip-iterm      Skip iTerm keymap + color preset configuration.
+  --skip-shell-rc   Skip adding the PATH block to ~/.zshrc / ~/.bash_profile.
+                    Implied when --prefix is set.
+  --skip-brew       Skip the brew dependency block (tmux, fzf).
+USAGE
+      exit 0
+      ;;
+    *)
+      printf 'install: unknown flag: %s\n' "$1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -n "$PREFIX_FLAG" ]]; then
+  TX_PREFIX="$PREFIX_FLAG"
+  LOCAL_BIN="$TX_PREFIX/bin"
+  CLAUDE_DIR="$TX_PREFIX/claude"
+  PER_INSTANCE=1
+else
+  TX_PREFIX="${TX_PREFIX:-$HOME_DIR/.tx-ide}"
+  LOCAL_BIN="$HOME_DIR/.local/bin"
+  CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME_DIR/.claude}"
+  PER_INSTANCE=0
+fi
+TX_IDE_DIR="$TX_PREFIX"
 
 B=$'\e[1m'
 G=$'\e[32m'
@@ -73,7 +115,19 @@ link_dir() {
 
 # === Pre-flight ===
 
-cat <<EOF
+if (( PER_INSTANCE )); then
+  cat <<EOF
+${B}=== tx-ide install (per-instance) ===${X}
+
+Repo:    $REPO
+Prefix:  $TX_PREFIX
+
+Self-contained instance install. Writes only under $TX_PREFIX.
+Activate with: source $TX_PREFIX/env
+
+EOF
+else
+  cat <<EOF
 ${B}=== tx-ide install ===${X}
 
 Repo:  $REPO
@@ -112,6 +166,7 @@ After install:
   - run $(tx mailbox) (or prefix+m) to open the inbox
 
 EOF
+fi
 
 confirm "Proceed?" Y || {
   echo "Aborted."
@@ -123,24 +178,28 @@ confirm "Proceed?" Y || {
 # Soft requirements (warn only): python3, claude, gh.
 header "Dependencies"
 
-if ! command -v brew >/dev/null 2>&1; then
-  fail "homebrew" "not installed — install from https://brew.sh, then re-run"
-  exit 1
-fi
-
-for pkg in tmux fzf; do
-  if command -v "$pkg" >/dev/null 2>&1; then
-    ok "$pkg" "already installed"
-  else
-    info "installing $pkg via brew..."
-    if brew install "$pkg" 2>&1 | sed 's/^/    /'; then
-      ok "$pkg" "installed"
-    else
-      fail "$pkg" "brew install failed"
-      exit 1
-    fi
+if (( ! SKIP_BREW )); then
+  if ! command -v brew >/dev/null 2>&1; then
+    fail "homebrew" "not installed — install from https://brew.sh, then re-run"
+    exit 1
   fi
-done
+
+  for pkg in tmux fzf; do
+    if command -v "$pkg" >/dev/null 2>&1; then
+      ok "$pkg" "already installed"
+    else
+      info "installing $pkg via brew..."
+      if brew install "$pkg" 2>&1 | sed 's/^/    /'; then
+        ok "$pkg" "installed"
+      else
+        fail "$pkg" "brew install failed"
+        exit 1
+      fi
+    fi
+  done
+else
+  info "skipping brew block (--skip-brew)"
+fi
 
 # Soft checks — warn but do not block.
 if command -v python3 >/dev/null 2>&1; then
@@ -171,37 +230,39 @@ link "$REPO/bin/tmux-pane-session-name" "$LOCAL_BIN/tmux-pane-session-name"
 # Add a marked block to the user's shell rc so `tx` is callable from a fresh
 # shell. Idempotent: detected via begin/end markers. Skipped if the rc already
 # references the dir some other way (we don't want to duplicate the user's setup).
-header "PATH"
-PATH_BEGIN="# === BEGIN tx-ide PATH ==="
-PATH_END="# === END tx-ide PATH ==="
-case ":${PATH:-}:" in
-*":$LOCAL_BIN:"*) ok "$LOCAL_BIN" "already on PATH in this session" ;;
-*) info "$LOCAL_BIN is not on \$PATH in this shell (new shells will pick it up)" ;;
-esac
-case "${SHELL:-}" in
-*/zsh) rc_file="$HOME_DIR/.zshrc" ;;
-*/bash) rc_file="$HOME_DIR/.bash_profile" ;;
-*) rc_file="" ;;
-esac
-if [[ -z "$rc_file" ]]; then
-  warn "shell rc" "SHELL='${SHELL:-unknown}' — add $LOCAL_BIN to PATH yourself"
-elif [[ -f "$rc_file" ]] && grep -qF "$PATH_BEGIN" "$rc_file"; then
-  ok "$rc_file" "tx-ide PATH block already present"
-elif grep -qsF "$LOCAL_BIN" "$rc_file" 2>/dev/null; then
-  ok "$rc_file" "already references $LOCAL_BIN (left as-is)"
-else
-  if [[ -f "$rc_file" ]]; then
-    cp "$rc_file" "$rc_file.bak.$STAMP"
+if (( ! SKIP_SHELL_RC && ! PER_INSTANCE )); then
+  header "PATH"
+  PATH_BEGIN="# === BEGIN tx-ide PATH ==="
+  PATH_END="# === END tx-ide PATH ==="
+  case ":${PATH:-}:" in
+  *":$LOCAL_BIN:"*) ok "$LOCAL_BIN" "already on PATH in this session" ;;
+  *) info "$LOCAL_BIN is not on \$PATH in this shell (new shells will pick it up)" ;;
+  esac
+  case "${SHELL:-}" in
+  */zsh) rc_file="$HOME_DIR/.zshrc" ;;
+  */bash) rc_file="$HOME_DIR/.bash_profile" ;;
+  *) rc_file="" ;;
+  esac
+  if [[ -z "$rc_file" ]]; then
+    warn "shell rc" "SHELL='${SHELL:-unknown}' — add $LOCAL_BIN to PATH yourself"
+  elif [[ -f "$rc_file" ]] && grep -qF "$PATH_BEGIN" "$rc_file"; then
+    ok "$rc_file" "tx-ide PATH block already present"
+  elif grep -qsF "$LOCAL_BIN" "$rc_file" 2>/dev/null; then
+    ok "$rc_file" "already references $LOCAL_BIN (left as-is)"
   else
-    : >"$rc_file"
-  fi
-  cat >>"$rc_file" <<HEREDOC
+    if [[ -f "$rc_file" ]]; then
+      cp "$rc_file" "$rc_file.bak.$STAMP"
+    else
+      : >"$rc_file"
+    fi
+    cat >>"$rc_file" <<HEREDOC
 
 $PATH_BEGIN
 case ":\$PATH:" in *":\$HOME/.local/bin:"*) ;; *) export PATH="\$HOME/.local/bin:\$PATH" ;; esac
 $PATH_END
 HEREDOC
-  ok "$rc_file" "PATH block added (open a new shell, or: source $rc_file)"
+    ok "$rc_file" "PATH block added (open a new shell, or: source $rc_file)"
+  fi
 fi
 
 # === 2: Claude hooks dir ===
@@ -243,29 +304,33 @@ else
 fi
 
 # === 6: ~/.tmux.conf source-file block ===
-header "~/.tmux.conf source-file"
-USER_TMUX_CONF="$HOME_DIR/.tmux.conf"
-BEGIN_MARKER="# === BEGIN tx-ide ==="
-END_MARKER="# === END tx-ide ==="
+# Per-instance install never edits ~/.tmux.conf; the instance's tmux server
+# loads $TX_PREFIX/tmux.conf via TX_TMUX="tmux -f …".
+if (( ! PER_INSTANCE )); then
+  header "~/.tmux.conf source-file"
+  USER_TMUX_CONF="$HOME_DIR/.tmux.conf"
+  BEGIN_MARKER="# === BEGIN tx-ide ==="
+  END_MARKER="# === END tx-ide ==="
 
-if [[ -f "$USER_TMUX_CONF" ]] && grep -qF "$BEGIN_MARKER" "$USER_TMUX_CONF"; then
-  ok "$USER_TMUX_CONF" "block present"
-else
-  if [[ -f "$USER_TMUX_CONF" ]]; then
-    cp "$USER_TMUX_CONF" "$USER_TMUX_CONF.bak.$STAMP"
-    note="backup: $USER_TMUX_CONF.bak.$STAMP"
+  if [[ -f "$USER_TMUX_CONF" ]] && grep -qF "$BEGIN_MARKER" "$USER_TMUX_CONF"; then
+    ok "$USER_TMUX_CONF" "block present"
   else
-    : >"$USER_TMUX_CONF"
-    note="file created"
-  fi
-  cat >>"$USER_TMUX_CONF" <<EOF
+    if [[ -f "$USER_TMUX_CONF" ]]; then
+      cp "$USER_TMUX_CONF" "$USER_TMUX_CONF.bak.$STAMP"
+      note="backup: $USER_TMUX_CONF.bak.$STAMP"
+    else
+      : >"$USER_TMUX_CONF"
+      note="file created"
+    fi
+    cat >>"$USER_TMUX_CONF" <<EOF
 
 $BEGIN_MARKER
 source-file $TX_IDE_CONF
 $END_MARKER
 EOF
-  ok "$USER_TMUX_CONF" "block added"
-  info "$note"
+    ok "$USER_TMUX_CONF" "block added"
+    info "$note"
+  fi
 fi
 
 # === 7: ~/.claude/settings.json merge ===
@@ -276,16 +341,17 @@ fi
 # detects drift. Claude Code ignores unknown top-level keys.
 header "Claude settings.json"
 SETTINGS_MAIN="$CLAUDE_DIR/settings.json"
-SETTINGS_MAIN="$SETTINGS_MAIN" STAMP="$STAMP" python3 - <<'PY'
+SETTINGS_MAIN="$SETTINGS_MAIN" STAMP="$STAMP" CLAUDE_DIR="$CLAUDE_DIR" python3 - <<'PY'
 import json, os, sys
 
 main_path = os.environ["SETTINGS_MAIN"]
 stamp = os.environ["STAMP"]
+claude_dir = os.environ["CLAUDE_DIR"]
 
-POST = "$HOME/.claude/hooks/mailbox/post.sh"
-PRE  = "$HOME/.claude/hooks/mailbox/pre.sh"
-END  = "$HOME/.claude/hooks/mailbox/end.sh"
-STATUS = "bash $HOME/.claude/statusline.sh"
+POST = f"{claude_dir}/hooks/mailbox/post.sh"
+PRE  = f"{claude_dir}/hooks/mailbox/pre.sh"
+END  = f"{claude_dir}/hooks/mailbox/end.sh"
+STATUS = f"bash {claude_dir}/statusline.sh"
 
 # Single source of truth for what tx-ide manages.
 managed_hook_commands = {
@@ -368,26 +434,28 @@ print(f"  \033[2m_tx_ide_managed marker written (uninstall + doctor use this)\03
 PY
 
 # === 8: iTerm (keymap + tokyonight-night colors) ===
-header "iTerm setup"
-if [[ "${TERM_PROGRAM:-}" == "iTerm.app" ]]; then
-  if pgrep -x iTerm2 >/dev/null 2>&1; then
-    warn "iTerm" "iTerm is running — quit it, then run $REPO/setup/iterm.sh --apply-colors"
+if (( ! SKIP_ITERM )); then
+  header "iTerm setup"
+  if [[ "${TERM_PROGRAM:-}" == "iTerm.app" ]]; then
+    if pgrep -x iTerm2 >/dev/null 2>&1; then
+      warn "iTerm" "iTerm is running — quit it, then run $REPO/setup/iterm.sh --apply-colors"
+    else
+      iterm_flag=""
+      if confirm "Apply tokyonight-night to your Default iTerm profile?" Y; then
+        iterm_flag="--apply-colors"
+      else
+        info "Skipping color apply. The preset is still imported — pick it from"
+        info "iTerm Settings → Profiles → Colors → Color Presets when you want it."
+      fi
+      if "$REPO/setup/iterm.sh" $iterm_flag 2>&1 | sed 's/^/  /'; then
+        ok "iTerm" "keymap + preset configured"
+      else
+        fail "iTerm" "setup script failed; see $REPO/setup/iterm.sh output"
+      fi
+    fi
   else
-    iterm_flag=""
-    if confirm "Apply tokyonight-night to your Default iTerm profile?" Y; then
-      iterm_flag="--apply-colors"
-    else
-      info "Skipping color apply. The preset is still imported — pick it from"
-      info "iTerm Settings → Profiles → Colors → Color Presets when you want it."
-    fi
-    if "$REPO/setup/iterm.sh" $iterm_flag 2>&1 | sed 's/^/  /'; then
-      ok "iTerm" "keymap + preset configured"
-    else
-      fail "iTerm" "setup script failed; see $REPO/setup/iterm.sh output"
-    fi
+    warn "iTerm" "TERM_PROGRAM='${TERM_PROGRAM:-unknown}' — skipping (iTerm only)"
   fi
-else
-  warn "iTerm" "TERM_PROGRAM='${TERM_PROGRAM:-unknown}' — skipping (iTerm only)"
 fi
 
 # === 9: mailbox config ===
@@ -405,7 +473,7 @@ JSON
 }
 
 header "Mailbox config"
-config_file="$HOME_DIR/.claude/mailbox/config.json"
+config_file="$CLAUDE_DIR/mailbox/config.json"
 if [[ -e "$config_file" ]]; then
   ok "$config_file" "exists (preserved)"
 else
@@ -415,21 +483,59 @@ else
 fi
 
 # === 10: mx-speaker daemon ===
-header "mx-speaker daemon"
-"$REPO/claude/hooks/start-speaker.sh" 2>&1 | sed 's/^/  → /'
+# Per-instance install does not launch the daemon — start-speaker.sh still
+# targets ~/.claude until Slice 3 teaches it CLAUDE_CONFIG_DIR. The instance's
+# speaker is launched by `tx start` once the env is active.
+if (( ! PER_INSTANCE )); then
+  header "mx-speaker daemon"
+  "$REPO/claude/hooks/start-speaker.sh" 2>&1 | sed 's/^/  → /'
+fi
 
 # === 11: reload tmux (only if a server is already running) ===
-header "Reload tmux"
-if tmux info >/dev/null 2>&1; then
-  if tmux source-file "$HOME_DIR/.tmux.conf" 2>&1 | sed 's/^/  → /'; then
-    ok "tmux bindings" "reloaded"
+# Per-instance install never sources ~/.tmux.conf; the instance's tmux server
+# picks up $TX_PREFIX/tmux.conf via TX_TMUX on first launch.
+if (( ! PER_INSTANCE )); then
+  header "Reload tmux"
+  if tmux info >/dev/null 2>&1; then
+    if tmux source-file "$HOME_DIR/.tmux.conf" 2>&1 | sed 's/^/  → /'; then
+      ok "tmux bindings" "reloaded"
+    fi
+  else
+    info "no tmux server running — bindings will load when you next start tmux"
   fi
-else
-  info "no tmux server running — bindings will load when you next start tmux"
+fi
+
+# === 12: per-instance env file (per-instance only) ===
+if (( PER_INSTANCE )); then
+  header "Instance env file"
+  mkdir -p "$TX_PREFIX/tmux" "$TX_PREFIX/state"
+  env_file="$TX_PREFIX/env"
+  cat >"$env_file" <<EOF
+# tx-ide instance env — source this to activate
+export TX_PREFIX="$TX_PREFIX"
+export CLAUDE_CONFIG_DIR="$CLAUDE_DIR"
+export TMUX_TMPDIR="$TX_PREFIX/tmux"
+export TX_TMUX="tmux -f $TX_PREFIX/tmux.conf"
+export PATH="$TX_PREFIX/bin:\$PATH"
+EOF
+  ok "$env_file" "written"
 fi
 
 # === Final ===
-cat <<EOF
+if (( PER_INSTANCE )); then
+  cat <<EOF
+
+${B}=== Done ===${X}
+
+${B}Activate this instance:${X}
+  ${D}source $TX_PREFIX/env && tx start${X}
+
+${B}Tear down:${X}
+  ${D}rm -rf $TX_PREFIX${X}  (Slice 3 adds \`tx teardown\` for clean kill)
+
+EOF
+else
+  cat <<EOF
 
 ${B}=== Done ===${X}
 
@@ -443,16 +549,21 @@ ${B}Undo:${X}
   ${D}$REPO/uninstall${X}
 
 EOF
+fi
 
 # If the current shell doesn't have ~/.local/bin on PATH, re-exec it so `tx`
 # is immediately callable. Skipped when PATH is already correct (most common
 # on re-runs) so we don't surprise the user with a "fresh shell" needlessly.
-case ":${PATH:-}:" in
-*":$LOCAL_BIN:"*) : ;;
-*)
-  if [[ -n "${SHELL:-}" && -x "$SHELL" ]]; then
-    printf '%sReloading shell so `tx` is on PATH... (exit to return to your previous shell)%s\n' "$D" "$X"
-    exec "$SHELL" -l
-  fi
-  ;;
-esac
+# Per-instance install never re-execs the shell — activation is explicit via
+# `source $TX_PREFIX/env`.
+if (( ! PER_INSTANCE )); then
+  case ":${PATH:-}:" in
+  *":$LOCAL_BIN:"*) : ;;
+  *)
+    if [[ -n "${SHELL:-}" && -x "$SHELL" ]]; then
+      printf '%sReloading shell so `tx` is on PATH... (exit to return to your previous shell)%s\n' "$D" "$X"
+      exec "$SHELL" -l
+    fi
+    ;;
+  esac
+fi
