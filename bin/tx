@@ -13,6 +13,10 @@
 #                              Spawn a detached nvim companion. --diff defaults BASE to main.
 #   tx spawn-view <name> [--tag TAGS] [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
 #                              Spawn a detached view session (@kind=view). --tag defaults to "views".
+#   tx send-message <target> <body>
+#                              Send a peer message to another Claude Code session.
+#                              Wraps body as <from-claude session="$SELF">body</from-claude>
+#                              and submits it to <target>'s active pane.
 #   tx mailbox                 Open the mailbox TUI (live + archived inbox).
 #   tx help                    Show this message (also what `tx` shows with no args).
 #
@@ -408,7 +412,7 @@ cmd_pick() {
 }
 
 cmd_help() {
-  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # tx start — ensure the Views home-base session exists, warm the tx-assistant,
@@ -690,6 +694,54 @@ cmd_spawn_view() {
   printf "Spawned view '%s' (cwd=%s, tag=%s)\n" "$name" "$cwd" "$tag"
 }
 
+# tx send-message — peer-message another Claude Code session. Wraps the body
+# in the <from-claude session="$SELF">body</from-claude> envelope, types it
+# into <target>'s active pane, sleeps 0.3s, then sends Enter. The sleep is
+# required because Claude Code's input box drops Enter if it arrives too fast.
+cmd_send_message() {
+  local target="" body=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    -h | --help)
+      cmd_help
+      exit 0
+      ;;
+    -*)
+      printf 'tx send-message: unknown flag: %s\n' "$1" >&2
+      exit 2
+      ;;
+    *)
+      if [[ -z "$target" ]]; then
+        target="$1"
+      elif [[ -z "$body" ]]; then
+        body="$1"
+      else
+        printf "tx send-message: too many positional args: '%s'\n" "$1" >&2
+        exit 2
+      fi
+      shift
+      ;;
+    esac
+  done
+
+  [[ -z "$target" ]] && { printf 'tx send-message: <target> required\n' >&2; exit 2; }
+  [[ -z "$body" ]] && { printf 'tx send-message: <body> required\n' >&2; exit 2; }
+  if ! tmux has-session -t "=$target" 2>/dev/null; then
+    printf "tx send-message: target session '%s' does not exist\n" "$target" >&2
+    exit 1
+  fi
+  [[ -z "${TMUX:-}" ]] && {
+    printf 'tx send-message: must run inside tmux (need self session name)\n' >&2
+    exit 1
+  }
+  local self
+  self=$(tmux display-message -p '#S')
+
+  tmux send-keys -t "$target" "<from-claude session=\"$self\">$body</from-claude>"
+  sleep 0.3
+  tmux send-keys -t "$target" Enter
+}
+
 # tx mailbox — exec the Python curses TUI in lib/.
 # Prefer /usr/bin/python3 over PATH lookup because the latter usually lands
 # on pyenv's shim, which adds ~60ms per launch — the dominant cost of
@@ -762,6 +814,10 @@ spawn-nvim)
 spawn-view)
   shift
   cmd_spawn_view "$@"
+  ;;
+send-message)
+  shift
+  cmd_send_message "$@"
   ;;
 _list)
   shift

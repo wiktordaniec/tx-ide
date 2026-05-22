@@ -38,16 +38,13 @@ You may be running alongside other Claude Code sessions in tmux on this machine.
 
 Treat these as peer messages, not user messages. You MAY reply, but don't have to.
 
-**Sending:** use the same envelope. Messages are single-line — escape literal newlines as `\n` if needed.
+**Sending:** use `tx send-message`. Messages are single-line — escape literal newlines as `\n` if needed.
 
 ```bash
-SELF=$(tmux display-message -p '#S')
-tmux send-keys -t <target-session> "<from-claude session=\"$SELF\">your message</from-claude>"
-sleep 0.3
-tmux send-keys -t <target-session> Enter
+tx send-message <target-session> "your message"
 ```
 
-The sleep is required — Claude Code's input box drops Enter if it arrives too fast.
+It auto-fills `session="$SELF"` from `tmux display-message -p '#S'`, builds the envelope, types it into `<target>`'s active pane, sleeps 0.3s (required — Claude Code's input box drops Enter if it arrives too fast), then sends Enter.
 
 **Discovery:** `tmux list-sessions` shows peers. Find your own name with `tmux display-message -p '#S'`.
 
