@@ -20,9 +20,6 @@ SEARCH_PROMPT = "  ❯ "
 
 TAG_PALETTE_SIZE = 12
 
-# Closest xterm-256 cube index per shared/palette.sh::TAG_HEX_<i>. tmux blocks
-# init_color() so we can't redefine slots; cube approximations are ~5-10% off
-# raw RGB but read as the same hue.
 TAG_PALETTE_XTERM = (
     210,  # red       #f7768e
     167,  # red1      #db4b4b
@@ -736,21 +733,22 @@ def render(
     stdscr.refresh()
 
 
-# Tag chip pairs: 8..7+N against default bg, 8+N..7+2N against selection bg.
 TAG_PAIR_BASE = 8
+SELECTION_BG = 236
 
 
 def init_styles():
     use_xterm_cube = curses.COLORS >= 256
+    selection_bg = SELECTION_BG if use_xterm_cube else curses.COLOR_BLUE
     try:
         curses.use_default_colors()
         curses.init_pair(1, curses.COLOR_BLACK, -1)
         curses.init_pair(2, curses.COLOR_BLUE, -1)
         curses.init_pair(3, curses.COLOR_RED, -1)
-        curses.init_pair(4, curses.COLOR_BLACK, curses.COLOR_BLUE)
+        curses.init_pair(4, curses.COLOR_WHITE, selection_bg)
         curses.init_pair(5, curses.COLOR_YELLOW, -1)
         curses.init_pair(6, curses.COLOR_WHITE, -1)
-        curses.init_pair(7, curses.COLOR_YELLOW, curses.COLOR_BLUE)
+        curses.init_pair(7, curses.COLOR_YELLOW, selection_bg)
 
         if use_xterm_cube:
             tag_fg_colors = list(TAG_PALETTE_XTERM)
@@ -771,7 +769,7 @@ def init_styles():
             curses.init_pair(
                 TAG_PAIR_BASE + TAG_PALETTE_SIZE + palette_index,
                 fg,
-                curses.COLOR_BLUE,
+                selection_bg,
             )
 
         styles = {
@@ -782,8 +780,8 @@ def init_styles():
             "entry_age": curses.color_pair(5),
             "entry_session": curses.color_pair(6),
             "entry_suffix": curses.color_pair(6),
-            "selected": curses.color_pair(4) | curses.A_BOLD,
-            "selected_age": curses.color_pair(7) | curses.A_BOLD,
+            "selected": curses.color_pair(4),
+            "selected_age": curses.color_pair(7),
             "search_prompt": curses.color_pair(6),
             "search_query": curses.color_pair(6) | curses.A_BOLD,
             "read": curses.A_DIM,
@@ -795,9 +793,8 @@ def init_styles():
             styles[f"entry_tag_{palette_index}"] = curses.color_pair(
                 TAG_PAIR_BASE + palette_index
             )
-            styles[f"selected_tag_{palette_index}"] = (
-                curses.color_pair(TAG_PAIR_BASE + TAG_PALETTE_SIZE + palette_index)
-                | curses.A_BOLD
+            styles[f"selected_tag_{palette_index}"] = curses.color_pair(
+                TAG_PAIR_BASE + TAG_PALETTE_SIZE + palette_index
             )
         return styles
     except curses.error:

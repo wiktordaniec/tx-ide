@@ -36,6 +36,7 @@ set -u
 
 B=$'\e[1m'
 R=$'\e[0m'
+RFG=$'\e[39m'
 NAMEW=${NAMEW:-18}
 HOST=""
 MIX=0
@@ -148,7 +149,7 @@ sessions_with_meta() {
       IFS=',' read -ra tag_parts <<<"$tag"
       for tag_part in "${tag_parts[@]}"; do
         plain_chips+=" [${tag_part}]"
-        colored_chips+=" $(tag_ansi "$tag_part")[${tag_part}]${R}"
+        colored_chips+=" $(tag_ansi "$tag_part")[${tag_part}]${RFG}"
       done
     fi
     # $plain_chips: column 2 is what fzf's --exact filter searches.
@@ -159,7 +160,7 @@ sessions_with_meta() {
       "$origin" \
       "$prefix" "$name_disp" "$pad" "" \
       "$(reltime "$created" "$now")" \
-      "$WARN_ANSI" "$(reltime "$activity" "$now")" "$R" \
+      "$WARN_ANSI" "$(reltime "$activity" "$now")" "$RFG" \
       "$colored_chips"
   done < <(list_raw |
     awk -F'|' '$7 != "view"' |
@@ -201,7 +202,6 @@ cmd_ls() {
   printf '\nPROCESSES\n'
   [[ -n "$processes_out" ]] && printf '%s' "$processes_out"
 }
-
 
 # Hidden subcommand — invoked from the fzf binding via tmux display-popup.
 # Prompts (with the current value pre-filled via Python's readline since macOS
@@ -331,7 +331,7 @@ cmd_pick() {
     fzf --exact --ansi --prompt='  ❯ ' --height=100% --reverse
     --delimiter=$'\t' --with-nth=4..
     --listen --track
-    "--color=fg:${DIM_FG_HEX},pointer:${ACCENT_HEX},fg+:${BG_DEEP_HEX}:bold,bg+:${ACCENT_HEX},hl:${ACCENT_HEX},hl+:${BG_DEEP_HEX},header:${DIM_FG_HEX},footer:${DIM_FG_HEX},prompt:${DIM_FG_HEX},query:${FG_HEX}"
+    "--color=fg:${DIM_FG_HEX},pointer:${ACCENT_HEX},fg+:${DIM_FG_HEX}:regular,bg+:${SELECTION_BG}:regular,hl:${ACCENT_HEX},hl+:${ACCENT_HEX},header:${DIM_FG_HEX},footer:${DIM_FG_HEX},prompt:${DIM_FG_HEX},query:${FG_HEX}"
     --header="$header_cols"
     --query="$query"
     # Refresh loop + unbind y/n immediately on start so they fall through to
@@ -496,23 +496,38 @@ cmd_spawn() {
       exit 0
       ;;
     --tag)
-      [[ -z "${2:-}" ]] && { printf 'tx spawn: --tag requires a value\n' >&2; exit 2; }
+      [[ -z "${2:-}" ]] && {
+        printf 'tx spawn: --tag requires a value\n' >&2
+        exit 2
+      }
       tag="$2"
       shift 2
       ;;
     --cwd)
-      [[ -z "${2:-}" ]] && { printf 'tx spawn: --cwd requires a value\n' >&2; exit 2; }
+      [[ -z "${2:-}" ]] && {
+        printf 'tx spawn: --cwd requires a value\n' >&2
+        exit 2
+      }
       cwd="$2"
       shift 2
       ;;
     --cmd)
-      [[ -z "${2:-}" ]] && { printf 'tx spawn: --cmd requires a value\n' >&2; exit 2; }
+      [[ -z "${2:-}" ]] && {
+        printf 'tx spawn: --cmd requires a value\n' >&2
+        exit 2
+      }
       cmd_str="$2"
       shift 2
       ;;
     --env)
-      [[ -z "${2:-}" ]] && { printf 'tx spawn: --env requires a KEY=VALUE\n' >&2; exit 2; }
-      [[ "$2" != *=* ]] && { printf "tx spawn: --env expects KEY=VALUE, got '%s'\n" "$2" >&2; exit 2; }
+      [[ -z "${2:-}" ]] && {
+        printf 'tx spawn: --env requires a KEY=VALUE\n' >&2
+        exit 2
+      }
+      [[ "$2" != *=* ]] && {
+        printf "tx spawn: --env expects KEY=VALUE, got '%s'\n" "$2" >&2
+        exit 2
+      }
       env_args+=("-e" "$2")
       shift 2
       ;;
@@ -532,8 +547,14 @@ cmd_spawn() {
     esac
   done
 
-  [[ -z "$name" ]] && { printf 'tx spawn: <name> required\n' >&2; exit 2; }
-  [[ -z "$tag" ]] && { printf 'tx spawn: --tag required\n' >&2; exit 2; }
+  [[ -z "$name" ]] && {
+    printf 'tx spawn: <name> required\n' >&2
+    exit 2
+  }
+  [[ -z "$tag" ]] && {
+    printf 'tx spawn: --tag required\n' >&2
+    exit 2
+  }
   if tmux has-session -t "=$name" 2>/dev/null; then
     printf "tx spawn: session '%s' already exists\n" "$name" >&2
     exit 1
@@ -562,12 +583,18 @@ cmd_spawn_nvim() {
       exit 0
       ;;
     --tag)
-      [[ -z "${2:-}" ]] && { printf 'tx spawn-nvim: --tag requires a value\n' >&2; exit 2; }
+      [[ -z "${2:-}" ]] && {
+        printf 'tx spawn-nvim: --tag requires a value\n' >&2
+        exit 2
+      }
       tag="$2"
       shift 2
       ;;
     --cwd)
-      [[ -z "${2:-}" ]] && { printf 'tx spawn-nvim: --cwd requires a value\n' >&2; exit 2; }
+      [[ -z "${2:-}" ]] && {
+        printf 'tx spawn-nvim: --cwd requires a value\n' >&2
+        exit 2
+      }
       cwd="$2"
       shift 2
       ;;
@@ -581,8 +608,14 @@ cmd_spawn_nvim() {
       shift
       ;;
     --env)
-      [[ -z "${2:-}" ]] && { printf 'tx spawn-nvim: --env requires a KEY=VALUE\n' >&2; exit 2; }
-      [[ "$2" != *=* ]] && { printf "tx spawn-nvim: --env expects KEY=VALUE, got '%s'\n" "$2" >&2; exit 2; }
+      [[ -z "${2:-}" ]] && {
+        printf 'tx spawn-nvim: --env requires a KEY=VALUE\n' >&2
+        exit 2
+      }
+      [[ "$2" != *=* ]] && {
+        printf "tx spawn-nvim: --env expects KEY=VALUE, got '%s'\n" "$2" >&2
+        exit 2
+      }
       env_args+=("-e" "$2")
       shift 2
       ;;
@@ -602,8 +635,14 @@ cmd_spawn_nvim() {
     esac
   done
 
-  [[ -z "$name" ]] && { printf 'tx spawn-nvim: <name> required\n' >&2; exit 2; }
-  [[ -z "$tag" ]] && { printf 'tx spawn-nvim: --tag required\n' >&2; exit 2; }
+  [[ -z "$name" ]] && {
+    printf 'tx spawn-nvim: <name> required\n' >&2
+    exit 2
+  }
+  [[ -z "$tag" ]] && {
+    printf 'tx spawn-nvim: --tag required\n' >&2
+    exit 2
+  }
   if tmux has-session -t "=$name" 2>/dev/null; then
     printf "tx spawn-nvim: session '%s' already exists\n" "$name" >&2
     exit 1
@@ -621,7 +660,7 @@ cmd_spawn_nvim() {
     "$nvim_cmd"
   tmux set -t "$name" @tag "$tag"
   printf "Spawned nvim '%s' (cwd=%s, tag=%s%s)\n" \
-    "$name" "$cwd" "$tag" "$( ((has_diff)) && printf ', diff=%s' "$diff_base" )"
+    "$name" "$cwd" "$tag" "$( ((has_diff)) && printf ', diff=%s' "$diff_base")"
 }
 
 # tx spawn-view — detached tmux session marked @kind=view so it surfaces under
@@ -637,23 +676,38 @@ cmd_spawn_view() {
       exit 0
       ;;
     --tag)
-      [[ -z "${2:-}" ]] && { printf 'tx spawn-view: --tag requires a value\n' >&2; exit 2; }
+      [[ -z "${2:-}" ]] && {
+        printf 'tx spawn-view: --tag requires a value\n' >&2
+        exit 2
+      }
       tag="$2"
       shift 2
       ;;
     --cwd)
-      [[ -z "${2:-}" ]] && { printf 'tx spawn-view: --cwd requires a value\n' >&2; exit 2; }
+      [[ -z "${2:-}" ]] && {
+        printf 'tx spawn-view: --cwd requires a value\n' >&2
+        exit 2
+      }
       cwd="$2"
       shift 2
       ;;
     --cmd)
-      [[ -z "${2:-}" ]] && { printf 'tx spawn-view: --cmd requires a value\n' >&2; exit 2; }
+      [[ -z "${2:-}" ]] && {
+        printf 'tx spawn-view: --cmd requires a value\n' >&2
+        exit 2
+      }
       cmd_str="$2"
       shift 2
       ;;
     --env)
-      [[ -z "${2:-}" ]] && { printf 'tx spawn-view: --env requires a KEY=VALUE\n' >&2; exit 2; }
-      [[ "$2" != *=* ]] && { printf "tx spawn-view: --env expects KEY=VALUE, got '%s'\n" "$2" >&2; exit 2; }
+      [[ -z "${2:-}" ]] && {
+        printf 'tx spawn-view: --env requires a KEY=VALUE\n' >&2
+        exit 2
+      }
+      [[ "$2" != *=* ]] && {
+        printf "tx spawn-view: --env expects KEY=VALUE, got '%s'\n" "$2" >&2
+        exit 2
+      }
       env_args+=("-e" "$2")
       shift 2
       ;;
@@ -673,7 +727,10 @@ cmd_spawn_view() {
     esac
   done
 
-  [[ -z "$name" ]] && { printf 'tx spawn-view: <name> required\n' >&2; exit 2; }
+  [[ -z "$name" ]] && {
+    printf 'tx spawn-view: <name> required\n' >&2
+    exit 2
+  }
   [[ -z "$tag" ]] && tag="views"
   if tmux has-session -t "=$name" 2>/dev/null; then
     printf "tx spawn-view: session '%s' already exists\n" "$name" >&2
@@ -723,8 +780,14 @@ cmd_send_message() {
     esac
   done
 
-  [[ -z "$target" ]] && { printf 'tx send-message: <target> required\n' >&2; exit 2; }
-  [[ -z "$body" ]] && { printf 'tx send-message: <body> required\n' >&2; exit 2; }
+  [[ -z "$target" ]] && {
+    printf 'tx send-message: <target> required\n' >&2
+    exit 2
+  }
+  [[ -z "$body" ]] && {
+    printf 'tx send-message: <body> required\n' >&2
+    exit 2
+  }
   if ! tmux has-session -t "=$target" 2>/dev/null; then
     printf "tx send-message: target session '%s' does not exist\n" "$target" >&2
     exit 1
