@@ -65,31 +65,35 @@ WARN_ANSI=$'\e[38;2;224;175;104m'
 # === Tag chip palette ===
 TAG_PALETTE_SIZE=12
 
-TAG_HEX_0='#f7768e'   # red
-TAG_HEX_1='#db4b4b'   # red1
-TAG_HEX_2='#ff9e64'   # orange
-TAG_HEX_3='#9ece6a'   # green
-TAG_HEX_4='#73daca'   # green1
-TAG_HEX_5='#41a6b5'   # green2
-TAG_HEX_6='#1abc9c'   # teal
-TAG_HEX_7='#7dcfff'   # cyan
-TAG_HEX_8='#2ac3de'   # blue1
-TAG_HEX_9='#bb9af7'   # magenta
-TAG_HEX_10='#ff007c'  # magenta2
-TAG_HEX_11='#9d7cd8'  # purple
+# Colors emit as xterm-256 cube indices so tx, mx, and the pane border all
+# land on the same pixel — mx's curses path can't do init_color() under tmux,
+# so we meet it at the cube. TAG_HEX_<i> matches the cube index used by
+# TAG_PALETTE_XTERM in lib/tx-mailbox.
+TAG_HEX_0='colour210'   # red       (cube #ff8787)
+TAG_HEX_1='colour167'   # red1      (cube #d75f5f)
+TAG_HEX_2='colour215'   # orange    (cube #ffaf5f)
+TAG_HEX_3='colour149'   # green     (cube #afd75f)
+TAG_HEX_4='colour80'    # green1    (cube #5fd7d7)
+TAG_HEX_5='colour73'    # green2    (cube #5fafaf)
+TAG_HEX_6='colour37'    # teal      (cube #00afaf)
+TAG_HEX_7='colour117'   # cyan      (cube #87d7ff)
+TAG_HEX_8='colour38'    # blue1     (cube #00afd7)
+TAG_HEX_9='colour141'   # magenta   (cube #af87ff)
+TAG_HEX_10='colour198'  # magenta2  (cube #ff0087)
+TAG_HEX_11='colour140'  # purple    (cube #af87d7)
 
-TAG_ANSI_0=$'\e[38;2;247;118;142m'
-TAG_ANSI_1=$'\e[38;2;219;75;75m'
-TAG_ANSI_2=$'\e[38;2;255;158;100m'
-TAG_ANSI_3=$'\e[38;2;158;206;106m'
-TAG_ANSI_4=$'\e[38;2;115;218;202m'
-TAG_ANSI_5=$'\e[38;2;65;166;181m'
-TAG_ANSI_6=$'\e[38;2;26;188;156m'
-TAG_ANSI_7=$'\e[38;2;125;207;255m'
-TAG_ANSI_8=$'\e[38;2;42;195;222m'
-TAG_ANSI_9=$'\e[38;2;187;154;247m'
-TAG_ANSI_10=$'\e[38;2;255;0;124m'
-TAG_ANSI_11=$'\e[38;2;157;124;216m'
+TAG_ANSI_0=$'\e[38;5;210m'
+TAG_ANSI_1=$'\e[38;5;167m'
+TAG_ANSI_2=$'\e[38;5;215m'
+TAG_ANSI_3=$'\e[38;5;149m'
+TAG_ANSI_4=$'\e[38;5;80m'
+TAG_ANSI_5=$'\e[38;5;73m'
+TAG_ANSI_6=$'\e[38;5;37m'
+TAG_ANSI_7=$'\e[38;5;117m'
+TAG_ANSI_8=$'\e[38;5;38m'
+TAG_ANSI_9=$'\e[38;5;141m'
+TAG_ANSI_10=$'\e[38;5;198m'
+TAG_ANSI_11=$'\e[38;5;140m'
 
 # Must match tag_color_index() in lib/tx-mailbox.
 tag_color_index() {
