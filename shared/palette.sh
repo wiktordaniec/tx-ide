@@ -35,9 +35,7 @@ BG_HEX='#1a1b26'
 # in tx and mx). Matches tokyonight ANSI 0 / curses.COLOR_BLACK exactly, so the
 # curses path and the fzf path land on the same color.
 BG_DEEP_HEX='#15161e'
-# Selection highlight bg — tokyonight bg_highlight. Neutral enough to not
-# shift chip colors layered on top.
-BG_HIGHLIGHT_HEX='#292e42'
+SELECTION_BG=236
 FG_HEX='#c0caf5'
 FG_ANSI=$'\e[38;2;192;202;245m'
 
@@ -63,37 +61,9 @@ WARN_ANSI=$'\e[38;2;224;175;104m'
 #   (== WARN_HEX)
 
 # === Tag chip palette ===
-TAG_PALETTE_SIZE=12
-
-# Colors emit as xterm-256 cube indices so tx, mx, and the pane border all
-# land on the same pixel — mx's curses path can't do init_color() under tmux,
-# so we meet it at the cube. TAG_HEX_<i> matches the cube index used by
-# TAG_PALETTE_XTERM in lib/tx-mailbox.
-TAG_HEX_0='colour210'   # red       (cube #ff8787)
-TAG_HEX_1='colour167'   # red1      (cube #d75f5f)
-TAG_HEX_2='colour215'   # orange    (cube #ffaf5f)
-TAG_HEX_3='colour149'   # green     (cube #afd75f)
-TAG_HEX_4='colour80'    # green1    (cube #5fd7d7)
-TAG_HEX_5='colour73'    # green2    (cube #5fafaf)
-TAG_HEX_6='colour37'    # teal      (cube #00afaf)
-TAG_HEX_7='colour117'   # cyan      (cube #87d7ff)
-TAG_HEX_8='colour38'    # blue1     (cube #00afd7)
-TAG_HEX_9='colour141'   # magenta   (cube #af87ff)
-TAG_HEX_10='colour198'  # magenta2  (cube #ff0087)
-TAG_HEX_11='colour140'  # purple    (cube #af87d7)
-
-TAG_ANSI_0=$'\e[38;5;210m'
-TAG_ANSI_1=$'\e[38;5;167m'
-TAG_ANSI_2=$'\e[38;5;215m'
-TAG_ANSI_3=$'\e[38;5;149m'
-TAG_ANSI_4=$'\e[38;5;80m'
-TAG_ANSI_5=$'\e[38;5;73m'
-TAG_ANSI_6=$'\e[38;5;37m'
-TAG_ANSI_7=$'\e[38;5;117m'
-TAG_ANSI_8=$'\e[38;5;38m'
-TAG_ANSI_9=$'\e[38;5;141m'
-TAG_ANSI_10=$'\e[38;5;198m'
-TAG_ANSI_11=$'\e[38;5;140m'
+# xterm-256 cube indices. Keep in sync with TAG_PALETTE_XTERM in lib/tx-mailbox.
+TAG_CUBE=(210 167 215 149 80 73 37 117 38 141 198 140)
+TAG_PALETTE_SIZE=${#TAG_CUBE[@]}
 
 # Must match tag_color_index() in lib/tx-mailbox.
 tag_color_index() {
@@ -105,12 +75,15 @@ tag_color_index() {
   printf '%d' $((h % TAG_PALETTE_SIZE))
 }
 
-tag_ansi() {
-  local var="TAG_ANSI_$(tag_color_index "$1")"
-  printf '%s' "${!var}"
+tag_cube() {
+  printf '%s' "${TAG_CUBE[$(tag_color_index "$1")]}"
 }
 
+tag_ansi() {
+  printf '\e[38;5;%sm' "$(tag_cube "$1")"
+}
+
+# tmux color reference (e.g. `colour167`) for #[fg=…] formats.
 tag_hex() {
-  local var="TAG_HEX_$(tag_color_index "$1")"
-  printf '%s' "${!var}"
+  printf 'colour%s' "$(tag_cube "$1")"
 }

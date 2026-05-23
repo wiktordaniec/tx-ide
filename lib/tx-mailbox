@@ -20,9 +20,7 @@ SEARCH_PROMPT = "  ❯ "
 
 TAG_PALETTE_SIZE = 12
 
-# Closest xterm-256 cube index per shared/palette.sh::TAG_HEX_<i>. tmux blocks
-# init_color() so we can't redefine slots; cube approximations are ~5-10% off
-# raw RGB but read as the same hue.
+# Must match TAG_CUBE in shared/palette.sh.
 TAG_PALETTE_XTERM = (
     210,  # red       #f7768e
     167,  # red1      #db4b4b
@@ -736,11 +734,7 @@ def render(
     stdscr.refresh()
 
 
-# Tag chip pairs: 8..7+N against default bg, 8+N..7+2N against selection bg.
 TAG_PAIR_BASE = 8
-
-# Selection background — xterm-256 grayscale index closest to tokyonight
-# bg_highlight (#292e42). Neutral, doesn't shift the chip colors on top.
 SELECTION_BG = 236
 
 
