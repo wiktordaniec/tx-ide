@@ -35,7 +35,7 @@ BG_HEX='#1a1b26'
 # in tx and mx). Matches tokyonight ANSI 0 / curses.COLOR_BLACK exactly, so the
 # curses path and the fzf path land on the same color.
 BG_DEEP_HEX='#15161e'
-SELECTION_BG=236
+BG_HIGHLIGHT_HEX='#292e42'
 FG_HEX='#c0caf5'
 FG_ANSI=$'\e[38;2;192;202;245m'
 
