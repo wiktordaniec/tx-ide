@@ -35,18 +35,6 @@ TAG_PALETTE_XTERM = (
     140,  # purple    #9d7cd8
 )
 
-ANSI_BG_HIGHLIGHT = "\x1b[48;2;41;46;66m"
-ANSI_BG_RESET = "\x1b[49m"
-ANSI_FG_RESET = "\x1b[39m"
-ANSI_FG = {
-    "entry": ANSI_FG_RESET,
-    "entry_session": "\x1b[37m",
-    "entry_suffix": "\x1b[37m",
-    "entry_age": "\x1b[33m",
-}
-for _i, _cube in enumerate(TAG_PALETTE_XTERM):
-    ANSI_FG[f"entry_tag_{_i}"] = f"\x1b[38;5;{_cube}m"
-
 
 def tag_color_index(tag_value):
     hash_value = 0
@@ -567,32 +555,6 @@ def reselect_by_identity(rows, identity, fallback_index=None):
     return first_selectable_index(rows)
 
 
-def draw_selected_row(stdscr, line_y, width, segments):
-    line_width = width - 1
-    stdscr.attrset(0)
-    try:
-        stdscr.move(line_y, 0)
-    except curses.error:
-        return
-    parts = [ANSI_BG_HIGHLIGHT]
-    visible = 0
-    for text, key in segments:
-        remaining = line_width - visible
-        if remaining <= 0:
-            break
-        chunk = text[:remaining]
-        parts.append(ANSI_FG.get(key, ANSI_FG_RESET))
-        parts.append(chunk)
-        visible += len(chunk)
-    if visible < line_width:
-        parts.append(" " * (line_width - visible))
-    parts.append(ANSI_BG_RESET + ANSI_FG_RESET)
-    try:
-        stdscr.addstr("".join(parts))
-    except curses.error:
-        pass
-
-
 def draw_segments(stdscr, line_y, width, segments, styles, override=None, key_overrides=None):
     """Write a list of (text, style_key) segments on `line_y`, padding to width.
     `override` (if set) is applied to every segment AS A DEFAULT for selected/
@@ -722,13 +684,22 @@ def render(
             row = rows[row_index]
             if row["type"] == "entry":
                 segments = format_entry_segments(row["data"], name_col_width, loc_col_width)
+                key_overrides = None
                 if row_index == cursor:
-                    draw_selected_row(stdscr, line_y, width, segments)
+                    row_override = styles["selected"]
+                    key_overrides = {"entry_age": styles["selected_age"]}
+                    for palette_index in range(TAG_PALETTE_SIZE):
+                        key_overrides[f"entry_tag_{palette_index}"] = (
+                            styles[f"selected_tag_{palette_index}"]
+                        )
+                elif row["data"].get("read"):
+                    row_override = styles["read"]
                 else:
-                    row_override = styles["read"] if row["data"].get("read") else None
-                    draw_segments(
-                        stdscr, line_y, width, segments, styles, override=row_override,
-                    )
+                    row_override = None
+                draw_segments(
+                    stdscr, line_y, width, segments, styles,
+                    override=row_override, key_overrides=key_overrides,
+                )
             else:
                 if row["type"] == "separator":
                     text = row["text"]
@@ -763,17 +734,21 @@ def render(
 
 
 TAG_PAIR_BASE = 8
+SELECTION_BG = 236
 
 
 def init_styles():
     use_xterm_cube = curses.COLORS >= 256
+    selection_bg = SELECTION_BG if use_xterm_cube else curses.COLOR_BLUE
     try:
         curses.use_default_colors()
         curses.init_pair(1, curses.COLOR_BLACK, -1)
         curses.init_pair(2, curses.COLOR_BLUE, -1)
         curses.init_pair(3, curses.COLOR_RED, -1)
+        curses.init_pair(4, curses.COLOR_WHITE, selection_bg)
         curses.init_pair(5, curses.COLOR_YELLOW, -1)
         curses.init_pair(6, curses.COLOR_WHITE, -1)
+        curses.init_pair(7, curses.COLOR_YELLOW, selection_bg)
 
         if use_xterm_cube:
             tag_fg_colors = list(TAG_PALETTE_XTERM)
@@ -791,6 +766,11 @@ def init_styles():
 
         for palette_index, fg in enumerate(tag_fg_colors):
             curses.init_pair(TAG_PAIR_BASE + palette_index, fg, -1)
+            curses.init_pair(
+                TAG_PAIR_BASE + TAG_PALETTE_SIZE + palette_index,
+                fg,
+                selection_bg,
+            )
 
         styles = {
             "header": curses.color_pair(1) | curses.A_BOLD,
@@ -800,6 +780,8 @@ def init_styles():
             "entry_age": curses.color_pair(5),
             "entry_session": curses.color_pair(6),
             "entry_suffix": curses.color_pair(6),
+            "selected": curses.color_pair(4),
+            "selected_age": curses.color_pair(7),
             "search_prompt": curses.color_pair(6),
             "search_query": curses.color_pair(6) | curses.A_BOLD,
             "read": curses.A_DIM,
@@ -811,6 +793,9 @@ def init_styles():
             styles[f"entry_tag_{palette_index}"] = curses.color_pair(
                 TAG_PAIR_BASE + palette_index
             )
+            styles[f"selected_tag_{palette_index}"] = curses.color_pair(
+                TAG_PAIR_BASE + TAG_PALETTE_SIZE + palette_index
+            )
         return styles
     except curses.error:
         styles = {
@@ -821,6 +806,8 @@ def init_styles():
             "entry_age": curses.A_NORMAL,
             "entry_session": curses.A_DIM,
             "entry_suffix": curses.A_DIM,
+            "selected": curses.A_REVERSE | curses.A_BOLD,
+            "selected_age": curses.A_REVERSE | curses.A_BOLD,
             "search_prompt": curses.A_NORMAL,
             "search_query": curses.A_BOLD,
             "read": curses.A_DIM,
@@ -830,6 +817,7 @@ def init_styles():
         }
         for palette_index in range(TAG_PALETTE_SIZE):
             styles[f"entry_tag_{palette_index}"] = curses.A_NORMAL
+            styles[f"selected_tag_{palette_index}"] = curses.A_REVERSE | curses.A_BOLD
         return styles
 
 
