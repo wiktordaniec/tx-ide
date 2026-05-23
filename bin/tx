@@ -36,6 +36,9 @@ set -u
 
 B=$'\e[1m'
 R=$'\e[0m'
+# Reset fg only — leaves bg attribute intact so fzf's bg+ persists across
+# segments on selected rows. Used in the picker row output.
+RFG=$'\e[39m'
 NAMEW=${NAMEW:-18}
 HOST=""
 MIX=0
@@ -148,7 +151,7 @@ sessions_with_meta() {
       IFS=',' read -ra tag_parts <<<"$tag"
       for tag_part in "${tag_parts[@]}"; do
         plain_chips+=" [${tag_part}]"
-        colored_chips+=" $(tag_ansi "$tag_part")[${tag_part}]${R}"
+        colored_chips+=" $(tag_ansi "$tag_part")[${tag_part}]${RFG}"
       done
     fi
     # $plain_chips: column 2 is what fzf's --exact filter searches.
@@ -159,7 +162,7 @@ sessions_with_meta() {
       "$origin" \
       "$prefix" "$name_disp" "$pad" "" \
       "$(reltime "$created" "$now")" \
-      "$WARN_ANSI" "$(reltime "$activity" "$now")" "$R" \
+      "$WARN_ANSI" "$(reltime "$activity" "$now")" "$RFG" \
       "$colored_chips"
   done < <(list_raw |
     awk -F'|' '$7 != "view"' |
