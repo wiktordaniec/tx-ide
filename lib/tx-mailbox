@@ -20,7 +20,6 @@ SEARCH_PROMPT = "  ❯ "
 
 TAG_PALETTE_SIZE = 12
 
-# Must match TAG_CUBE in shared/palette.sh.
 TAG_PALETTE_XTERM = (
     210,  # red       #f7768e
     167,  # red1      #db4b4b

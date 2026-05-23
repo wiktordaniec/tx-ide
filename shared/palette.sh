@@ -61,11 +61,9 @@ WARN_ANSI=$'\e[38;2;224;175;104m'
 #   (== WARN_HEX)
 
 # === Tag chip palette ===
-# xterm-256 cube indices. Keep in sync with TAG_PALETTE_XTERM in lib/tx-mailbox.
 TAG_CUBE=(210 167 215 149 80 73 37 117 38 141 198 140)
 TAG_PALETTE_SIZE=${#TAG_CUBE[@]}
 
-# Must match tag_color_index() in lib/tx-mailbox.
 tag_color_index() {
   local s="$1" h=0 i c
   for ((i = 0; i < ${#s}; i++)); do
@@ -83,7 +81,6 @@ tag_ansi() {
   printf '\e[38;5;%sm' "$(tag_cube "$1")"
 }
 
-# tmux color reference (e.g. `colour167`) for #[fg=…] formats.
 tag_hex() {
   printf 'colour%s' "$(tag_cube "$1")"
 }

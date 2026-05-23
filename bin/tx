@@ -36,9 +36,6 @@ set -u
 
 B=$'\e[1m'
 R=$'\e[0m'
-# AINote:remove comment
-# Reset fg only — leaves bg attribute intact so fzf's bg+ persists across
-# segments on selected rows. Used in the picker row output.
 RFG=$'\e[39m'
 NAMEW=${NAMEW:-18}
 HOST=""
