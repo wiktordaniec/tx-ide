@@ -47,7 +47,7 @@ def now_iso():
 
 
 def command_new(arguments):
-    session_id = str(uuid.uuid4())
+    session_id = arguments.id or str(uuid.uuid4())
     record = {
         "id": session_id,
         "name": arguments.name,
@@ -75,11 +75,14 @@ def command_get(arguments):
     if arguments.field is None:
         print(json.dumps(record, indent=2))
         return 0
+    if arguments.field not in record:
+        return 1
     value = record[arguments.field]
     if arguments.field in LIST_FIELDS:
         print(",".join(value))
     elif arguments.field == "env":
-        print(json.dumps(value))
+        for env_key, env_value in value.items():
+            print(f"{env_key}={env_value}")
     else:
         print(value)
     return 0
@@ -147,6 +150,7 @@ def build_parser():
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     new_parser = subparsers.add_parser("new")
+    new_parser.add_argument("--id", default="")
     new_parser.add_argument("--name", required=True)
     new_parser.add_argument("--kind", default="")
     new_parser.add_argument("--tags", default="")
