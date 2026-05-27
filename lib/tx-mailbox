@@ -14,6 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "claude" / "hooks"))
 from paths import INBOX_FILE, RUNNING_DIR
 
+SESSION_STATE = Path(__file__).resolve().parent / "tx-session-state"
+
 VIEW_CYCLE = ("live", "archive")
 LIVE_UNREAD_CAP = 5
 SEARCH_PROMPT = "  ❯ "
@@ -206,11 +208,16 @@ def current_view_members():
                 parent_of.setdefault(inner_session, host_session)
 
     def kind_of(session):
-        result = subprocess.run(
-            ["tmux", "show-options", "-vt", session, "-q", "@kind"],
+        tx_id = subprocess.run(
+            ["tmux", "show-options", "-vqt", session, "@tx_id"],
             capture_output=True, text=True, check=False,
-        )
-        return result.stdout.strip()
+        ).stdout.strip()
+        if not tx_id:
+            return ""
+        return subprocess.run(
+            [str(SESSION_STATE), "get", tx_id, "kind"],
+            capture_output=True, text=True, check=False,
+        ).stdout.strip()
 
     seen = set()
     while current and current not in seen:

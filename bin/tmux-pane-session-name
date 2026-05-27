@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Print the tmux session attached inside the given pane (when the pane is
 # running a nested `tmux attach`), else the pane's own session name. Appends
-# the session's `@tag` user-option as bracketed chips when set.
+# the session's tags (from the durable store, resolved via @tx_id) as bracketed
+# chips when set.
 # Used by the tx-ide tmux fragment for pane-border-format so an aggregator
 # pane shows the program/session it's hosting rather than the outer name.
 #
@@ -12,6 +13,7 @@
 set -e
 
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../shared/palette.sh"
+TX_SESSION_STATE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/tx-session-state"
 
 pane_id="${1:-}"
 [[ -z "$pane_id" ]] && exit 0
@@ -23,9 +25,11 @@ if [[ -n "$override" ]]; then
 fi
 
 print_tags() {
-  local session="$1" tag part color
+  local session="$1" id tag part color
   local -a parts
-  tag=$(tmux show-options -vqt "$session" @tag 2>/dev/null) || return 0
+  id=$(tmux show-options -vqt "$session" @tx_id 2>/dev/null) || return 0
+  [[ -z "$id" ]] && return 0
+  tag=$("$TX_SESSION_STATE" get "$id" tags 2>/dev/null) || return 0
   [[ -z "$tag" ]] && return 0
   IFS=',' read -ra parts <<<"$tag"
   for part in "${parts[@]}"; do

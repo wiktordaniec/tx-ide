@@ -12,7 +12,7 @@
 #   tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]
 #                              Spawn a detached nvim companion. --diff defaults BASE to main.
 #   tx spawn-view <name> [--tag TAGS] [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
-#                              Spawn a detached view session (@kind=view). --tag defaults to "views".
+#                              Spawn a detached view session (kind=view). --tag defaults to "views".
 #   tx send-message <target> <body>
 #                              Send a peer message to another Claude Code session.
 #                              Wraps body as <from-claude session="$SELF">body</from-claude>
@@ -103,9 +103,12 @@ write_session_metadata() {
   [[ -n "$conv" ]] && tmux set-environment -t "$name" TX_CHAT_ID "$conv"
 }
 
-# True if the named session has @kind set to "view".
+# True if the named session is recorded with kind "view" in the durable store.
 is_view_session() {
-  [[ "$(tmux show-options -vt "$1" -q @kind 2>/dev/null)" == "view" ]]
+  local id
+  id=$(tmux show-options -vqt "$1" @tx_id 2>/dev/null) || return 1
+  [[ -n "$id" ]] || return 1
+  [[ "$("$TX_SESSION_STATE" get "$id" kind 2>/dev/null)" == "view" ]]
 }
 
 # Column width of the surrounding terminal/popup. Inside a tmux popup,
@@ -151,23 +154,35 @@ compute_namew() {
   printf '%s' "$namew"
 }
 
+# Each line is `origin|activity|name|attached|created|tag|kind` where origin is
+# `L` (local tmux) or `R` (remote ssh). Local tag/kind come from the durable
+# store, joined on each session's @tx_id; remote rows read the remote tmux
+# options directly since that store is not reachable over ssh.
 list_raw() {
-  # Each line is `origin|activity|name|attached|created|tag|kind` where origin
-  # is `L` (local tmux) or `R` (remote ssh).
-  local fmt='#{session_activity}|#{session_name}|#{session_attached}|#{session_created}|#{@tag}|#{@kind}'
+  local local_fmt='#{session_activity}|#{session_name}|#{session_attached}|#{session_created}|#{@tx_id}'
+  local remote_fmt='#{session_activity}|#{session_name}|#{session_attached}|#{session_created}|#{@tag}|#{@kind}'
   if ((MIX)); then
-    tmux list-sessions -F "L|$fmt" 2>/dev/null
-    ssh "$MIX_REMOTE_ALIAS" "/opt/homebrew/bin/tmux list-sessions -F 'R|$fmt'" 2>/dev/null
+    join_store <(tmux list-sessions -F "L|$local_fmt" 2>/dev/null)
+    ssh "$MIX_REMOTE_ALIAS" "/opt/homebrew/bin/tmux list-sessions -F 'R|$remote_fmt'" 2>/dev/null
   elif [[ -n "$HOST" ]]; then
-    ssh "$HOST" "/opt/homebrew/bin/tmux list-sessions -F 'R|$fmt'" 2>/dev/null
+    ssh "$HOST" "/opt/homebrew/bin/tmux list-sessions -F 'R|$remote_fmt'" 2>/dev/null
   else
-    tmux list-sessions -F "L|$fmt" 2>/dev/null
+    join_store <(tmux list-sessions -F "L|$local_fmt" 2>/dev/null)
   fi
+}
+
+# Rewrite each `origin|activity|name|attached|created|tx_id` line, swapping the
+# trailing tx_id for `tag|kind` looked up from the durable store.
+join_store() {
+  awk 'NR==FNR { split($0, store, "\t"); kind[store[1]]=store[2]; tags[store[1]]=store[4]; next }
+       { split($0, f, "|"); id=f[6]
+         print f[1]"|"f[2]"|"f[3]"|"f[4]"|"f[5]"|"tags[id]"|"kind[id] }' \
+    <("$TX_SESSION_STATE" list) "$1"
 }
 
 # Emit fzf rows. Each row is tab-separated:
 #   $1 name   $2 plain_chips   $3 origin (L|R)   $4+ visual columns
-# Sorted by most recent activity; @kind == view sessions filtered out.
+# Sorted by most recent activity; kind == view sessions filtered out.
 sessions_with_meta() {
   local now
   now=$(date +%s)
@@ -207,7 +222,7 @@ cmd_list() {
   sessions_with_meta
 }
 
-# tx ls — print sessions in two sections, VIEWS (@kind == view) and PROCESSES
+# tx ls — print sessions in two sections, VIEWS (kind == view) and PROCESSES
 # (everything else). Plain stdout: no fzf, no ANSI, pipe-friendly. Columns are
 # name, idle (via reltime), and tag chips.
 cmd_ls() {
@@ -240,16 +255,21 @@ cmd_ls() {
 
 # Hidden subcommand — invoked from the fzf binding via tmux display-popup.
 # Prompts (with the current value pre-filled via Python's readline since macOS
-# bash 3.2 lacks `read -i`) and writes back via `tmux set`. Empty input unsets.
-# Cancel (Ctrl-C / Ctrl-D) leaves the existing tag untouched.
+# bash 3.2 lacks `read -i`) and writes the tags back to the durable store.
+# Empty input clears them. Cancel (Ctrl-C / Ctrl-D) leaves the tags untouched.
 cmd_edit_tag() {
   local session="${1:-}"
   [[ -z "$session" ]] && {
     printf 'tx: _edit-tag requires a session name\n' >&2
     exit 2
   }
-  local current outfile new
-  current=$(tmux show-options -vt "$session" @tag 2>/dev/null)
+  local id current outfile new
+  id=$(tmux show-options -vqt "$session" @tx_id 2>/dev/null)
+  [[ -z "$id" ]] && {
+    printf "tx: session '%s' has no @tx_id (not tx-managed)\n" "$session" >&2
+    exit 1
+  }
+  current=$("$TX_SESSION_STATE" get "$id" tags 2>/dev/null)
   outfile=$(mktemp)
   trap 'rm -f "$outfile"' RETURN
   if python3 -c '
@@ -268,11 +288,7 @@ with open(outfile, "w") as f:
     f.write(line)
 ' "$session" "$current" "$outfile"; then
     new=$(<"$outfile")
-    if [[ -z "$new" ]]; then
-      tmux set -t "$session" -u @tag 2>/dev/null || true
-    else
-      tmux set -t "$session" @tag "$new"
-    fi
+    "$TX_SESSION_STATE" set "$id" tags "$new"
   fi
 }
 
@@ -493,8 +509,6 @@ cmd_start() {
   # nest-attach into; pick a target with `tx attach` once inside.
   if ! tmux has-session -t "=Views" 2>/dev/null; then
     write_session_metadata "Views" "view" "views" "$repo_dir" "" "${SHELL:-zsh}"
-    tmux set -t Views @tag "views"
-    tmux set -t Views @kind "view"
     tmux set -t Views status on
     tmux setw -t Views pane-border-status top
     echo "Views session created."
@@ -605,7 +619,6 @@ cmd_spawn() {
   ((chat)) && conv=$(gen_uuid)
   write_session_metadata "$name" "" "$tag" "$cwd" "$conv" "$cmd_str" \
     ${env_kv[@]+"${env_kv[@]}"}
-  tmux set -t "$name" @tag "$tag"
   printf "Spawned '%s' (cwd=%s, tag=%s)\n" "$name" "$cwd" "$tag"
 }
 
@@ -695,14 +708,13 @@ cmd_spawn_nvim() {
 
   write_session_metadata "$name" "nvim" "$tag" "$cwd" "" "$nvim_cmd" \
     ${env_kv[@]+"${env_kv[@]}"}
-  tmux set -t "$name" @tag "$tag"
   printf "Spawned nvim '%s' (cwd=%s, tag=%s%s)\n" \
     "$name" "$cwd" "$tag" "$( ((has_diff)) && printf ', diff=%s' "$diff_base")"
 }
 
-# tx spawn-view — detached tmux session marked @kind=view so it surfaces under
-# VIEWS (not PROCESSES) and is filtered out of the picker. --tag defaults to
-# "views" when omitted.
+# tx spawn-view — detached tmux session recorded with kind=view so it surfaces
+# under VIEWS (not PROCESSES) and is filtered out of the picker. --tag defaults
+# to "views" when omitted.
 cmd_spawn_view() {
   local name="" tag="" cwd="" cmd_str=""
   local -a env_kv=()
@@ -778,8 +790,6 @@ cmd_spawn_view() {
 
   write_session_metadata "$name" "view" "$tag" "$cwd" "" "$cmd_str" \
     ${env_kv[@]+"${env_kv[@]}"}
-  tmux set -t "$name" @tag "$tag"
-  tmux set -t "$name" @kind "view"
   tmux set -t "$name" status on
   tmux setw -t "$name" pane-border-status top
   printf "Spawned view '%s' (cwd=%s, tag=%s)\n" "$name" "$cwd" "$tag"
