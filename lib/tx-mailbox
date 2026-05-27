@@ -215,7 +215,7 @@ def current_view_members():
         if not tx_id:
             return ""
         record = SessionStore().load(tx_id)
-        return record.kind if record else ""
+        return record.kind.value if record else ""
 
     seen = set()
     while current and current not in seen:

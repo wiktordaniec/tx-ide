@@ -5,6 +5,7 @@ import os
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Set
 
@@ -15,11 +16,20 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+class Kind(str, Enum):
+    PROCESS = "process"
+    VIEW = "view"
+
+    @classmethod
+    def coerce(cls, value: str) -> "Kind":
+        return cls.VIEW if value == cls.VIEW.value else cls.PROCESS
+
+
 @dataclass
 class Session:
     id: str
     name: str
-    kind: str
+    kind: Kind
     tags: List[str]
     cwd: str
     cmd: str
@@ -41,7 +51,7 @@ class Session:
         return cls(
             id=id or str(uuid.uuid4()),
             name=name,
-            kind=kind,
+            kind=Kind.coerce(kind),
             tags=tags,
             cwd=cwd,
             cmd=cmd,
@@ -56,10 +66,14 @@ class Session:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Session":
-        return cls(**data)
+        values = dict(data)
+        values["kind"] = Kind.coerce(values["kind"])
+        return cls(**values)
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        data["kind"] = self.kind.value
+        return data
 
     def bump(self, pid: int, chat: str, handover: str) -> None:
         self.restarts += 1

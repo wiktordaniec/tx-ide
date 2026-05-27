@@ -626,7 +626,7 @@ cmd_spawn() {
 
   local conv=""
   ((chat)) && conv=$(gen_uuid)
-  write_session_metadata "$name" "" "$tag" "$cwd" "$conv" "$cmd_str" \
+  write_session_metadata "$name" "process" "$tag" "$cwd" "$conv" "$cmd_str" \
     ${env_kv[@]+"${env_kv[@]}"}
   printf "Spawned '%s' (cwd=%s, tag=%s)\n" "$name" "$cwd" "$tag"
 }
@@ -715,7 +715,7 @@ cmd_spawn_nvim() {
     nvim_cmd="$nvim_cmd +'DiffviewOpen $diff_base'"
   fi
 
-  write_session_metadata "$name" "nvim" "$tag" "$cwd" "" "$nvim_cmd" \
+  write_session_metadata "$name" "process" "$tag" "$cwd" "" "$nvim_cmd" \
     ${env_kv[@]+"${env_kv[@]}"}
   printf "Spawned nvim '%s' (cwd=%s, tag=%s%s)\n" \
     "$name" "$cwd" "$tag" "$( ((has_diff)) && printf ', diff=%s' "$diff_base")"

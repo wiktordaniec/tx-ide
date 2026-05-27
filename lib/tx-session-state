@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from tx_session import Session, SessionStore
+from tx_session import Kind, Session, SessionStore
 
 store = SessionStore()
 
@@ -68,6 +68,8 @@ def command_set(arguments):
         value = split_comma_values(arguments.value)
     elif arguments.field in Session.NUMERIC_FIELDS:
         value = int(arguments.value)
+    elif arguments.field == "kind":
+        value = Kind.coerce(arguments.value)
     else:
         value = arguments.value
     setattr(session, arguments.field, value)
@@ -82,7 +84,7 @@ def command_bump(arguments):
 
 def command_list(arguments):
     for session in store.all():
-        print("\t".join([session.id, session.kind, session.name, ",".join(session.tags)]))
+        print("\t".join([session.id, session.kind.value, session.name, ",".join(session.tags)]))
 
 
 def command_find_name(arguments):
