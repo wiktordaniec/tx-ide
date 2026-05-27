@@ -13,6 +13,9 @@
 #                              Spawn a detached nvim companion. --diff defaults BASE to main.
 #   tx spawn-view <name> [--tag TAGS] [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
 #                              Spawn a detached view session (kind=view). --tag defaults to "views".
+#   tx restart <name> [--handover PATH] [--cmd CMD]
+#                              Re-spawn a killed session under its stored identity (same id,
+#                              tags, cwd, cmd, kind). --handover injects TX_HANDOVER_FILE.
 #   tx send-message <target> <body>
 #                              Send a peer message to another Claude Code session.
 #                              Wraps body as <from-claude session="$SELF">body</from-claude>
@@ -462,7 +465,7 @@ cmd_pick() {
 }
 
 cmd_help() {
-  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # tx start — ensure the Views home-base session exists, warm the tx-assistant,
@@ -795,6 +798,97 @@ cmd_spawn_view() {
   printf "Spawned view '%s' (cwd=%s, tag=%s)\n" "$name" "$cwd" "$tag"
 }
 
+# tx restart — resurrect a killed session under its original identity. Resolves
+# name -> stored uuid, re-spawns from the recorded tags/cwd/cmd/kind, reuses the
+# same @tx_id, records a fresh chat incarnation (bump), and injects
+# TX_HANDOVER_FILE so the new process can resume from a handover note.
+cmd_restart() {
+  local name="" handover="" cmd_override="" has_cmd=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    -h | --help)
+      cmd_help
+      exit 0
+      ;;
+    --handover)
+      [[ -z "${2:-}" ]] && {
+        printf 'tx restart: --handover requires a path\n' >&2
+        exit 2
+      }
+      handover="$2"
+      shift 2
+      ;;
+    --cmd)
+      [[ -z "${2:-}" ]] && {
+        printf 'tx restart: --cmd requires a value\n' >&2
+        exit 2
+      }
+      cmd_override="$2"
+      has_cmd=1
+      shift 2
+      ;;
+    -*)
+      printf 'tx restart: unknown flag: %s\n' "$1" >&2
+      exit 2
+      ;;
+    *)
+      if [[ -z "$name" ]]; then
+        name="$1"
+        shift
+      else
+        printf "tx restart: too many positional args: '%s'\n" "$1" >&2
+        exit 2
+      fi
+      ;;
+    esac
+  done
+
+  [[ -z "$name" ]] && {
+    printf 'tx restart: <name> required\n' >&2
+    exit 2
+  }
+  local id
+  id=$("$TX_SESSION_STATE" find-name "$name") || {
+    printf "tx restart: no session metadata for '%s'\n" "$name" >&2
+    exit 1
+  }
+  if tmux has-session -t "=$name" 2>/dev/null; then
+    printf "tx restart: session '%s' is live — kill it first\n" "$name" >&2
+    exit 1
+  fi
+
+  local tags cwd kind cmd_str
+  tags=$("$TX_SESSION_STATE" get "$id" tags)
+  cwd=$("$TX_SESSION_STATE" get "$id" cwd)
+  kind=$("$TX_SESSION_STATE" get "$id" kind)
+  if ((has_cmd)); then
+    cmd_str="$cmd_override"
+  else
+    cmd_str=$("$TX_SESSION_STATE" get "$id" cmd)
+  fi
+
+  local conv pid
+  conv=$(gen_uuid)
+  local -a env_flags=(-e "TX_SESSION_ID=$id" -e "TX_CHAT_ID=$conv")
+  [[ -n "$handover" ]] && env_flags+=(-e "TX_HANDOVER_FILE=$handover")
+  pid=$(tmux new-session -d -P -F '#{pane_pid}' -s "$name" -c "$cwd" \
+    -e COLORTERM=truecolor -e TERM=xterm-256color \
+    "${env_flags[@]}" \
+    "$cmd_str")
+  tmux set -t "$name" @tx_id "$id"
+
+  local -a bump_args=(--pid "$pid" --chat "$conv")
+  [[ -n "$handover" ]] && bump_args+=(--handover "$handover")
+  "$TX_SESSION_STATE" bump "$id" "${bump_args[@]}"
+
+  if [[ "$kind" == "view" ]]; then
+    tmux set -t "$name" status on
+    tmux setw -t "$name" pane-border-status top
+  fi
+  printf "Restarted '%s' (id=%s, tags=%s%s)\n" "$name" "$id" "$tags" \
+    "$( [[ -n "$handover" ]] && printf ', handover=%s' "$handover")"
+}
+
 # tx send-message — peer-message another Claude Code session. Wraps the body
 # in the <from-claude session="$SELF">body</from-claude> envelope, types it
 # into <target>'s active pane, sleeps 0.3s, then sends Enter. The sleep is
@@ -921,6 +1015,10 @@ spawn-nvim)
 spawn-view)
   shift
   cmd_spawn_view "$@"
+  ;;
+restart)
+  shift
+  cmd_restart "$@"
   ;;
 send-message)
   shift
