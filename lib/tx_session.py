@@ -3,38 +3,41 @@
 import json
 import os
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, ClassVar, Dict, List, Optional, Set
 
 SESSIONS_DIR = Path.home() / ".tx-ide" / "sessions"
 
 
-def now_iso():
+def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @dataclass
 class Session:
-    id: str = ""
-    name: str = ""
-    kind: str = ""
-    tags: list = field(default_factory=list)
-    cwd: str = ""
-    cmd: str = ""
-    env: dict = field(default_factory=dict)
-    parent: str = ""
-    pid: int = 0
-    created_at: str = ""
-    restarts: int = 0
-    handover: str = ""
-    chats: list = field(default_factory=list)
+    id: str
+    name: str
+    kind: str
+    tags: List[str]
+    cwd: str
+    cmd: str
+    env: Dict[str, str]
+    parent: str
+    pid: int
+    created_at: str
+    restarts: int
+    handover: str
+    chats: List[str]
 
-    LIST_FIELDS = {"tags", "chats"}
-    NUMERIC_FIELDS = {"pid", "restarts"}
+    LIST_FIELDS: ClassVar[Set[str]] = {"tags", "chats"}
+    NUMERIC_FIELDS: ClassVar[Set[str]] = {"pid", "restarts"}
 
     @classmethod
-    def create(cls, id, name, kind, tags, cwd, cmd, env, parent, pid, chat):
+    def create(cls, id: str, name: str, kind: str, tags: List[str], cwd: str,
+               cmd: str, env: Dict[str, str], parent: str, pid: int,
+               chat: str) -> "Session":
         return cls(
             id=id or str(uuid.uuid4()),
             name=name,
@@ -46,17 +49,19 @@ class Session:
             parent=parent,
             pid=pid,
             created_at=now_iso(),
+            restarts=0,
+            handover="",
             chats=[chat] if chat else [],
         )
 
     @classmethod
-    def from_dict(cls, data):
+    def from_dict(cls, data: Dict[str, Any]) -> "Session":
         return cls(**data)
 
-    def to_dict(self):
+    def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
-    def bump(self, pid, chat, handover):
+    def bump(self, pid: int, chat: str, handover: str) -> None:
         self.restarts += 1
         self.pid = pid
         if chat:
@@ -66,26 +71,26 @@ class Session:
 
 
 class SessionStore:
-    def __init__(self, root=SESSIONS_DIR):
+    def __init__(self, root: Path = SESSIONS_DIR) -> None:
         self.root = root
 
-    def session_path(self, session_id):
+    def session_path(self, session_id: str) -> Path:
         return self.root / f"{session_id}.json"
 
-    def load(self, session_id):
+    def load(self, session_id: str) -> Optional[Session]:
         path = self.session_path(session_id)
         if not path.exists():
             return None
         return Session.from_dict(json.loads(path.read_text()))
 
-    def save(self, session):
+    def save(self, session: Session) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         path = self.session_path(session.id)
         temp_path = path.with_name(path.name + ".tmp")
         temp_path.write_text(json.dumps(session.to_dict(), indent=2) + "\n")
         os.replace(temp_path, path)
 
-    def all(self):
+    def all(self) -> List[Session]:
         if not self.root.exists():
             return []
         return [
@@ -93,7 +98,7 @@ class SessionStore:
             for path in sorted(self.root.glob("*.json"))
         ]
 
-    def find_by_name(self, name):
+    def find_by_name(self, name: str) -> Optional[Session]:
         matches = [session for session in self.all() if session.name == name]
         if not matches:
             return None
