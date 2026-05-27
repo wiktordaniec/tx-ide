@@ -1,33 +1,15 @@
 #!/usr/bin/env python3
-"""tx session metadata store — durable per-session records keyed by a stable uuid."""
+"""tx session store CLI — thin wrapper over the tx_session module."""
 
 import argparse
 import json
-import os
 import sys
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
-SESSIONS_DIR = Path.home() / ".tx-ide" / "sessions"
-LIST_FIELDS = {"tags", "chats"}
-NUMERIC_FIELDS = {"pid", "restarts"}
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tx_session import Session, SessionStore
 
-
-def session_path(session_id):
-    return SESSIONS_DIR / f"{session_id}.json"
-
-
-def read_record(session_id):
-    return json.loads(session_path(session_id).read_text())
-
-
-def write_record(record):
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    path = session_path(record["id"])
-    temp_path = path.with_name(path.name + ".tmp")
-    temp_path.write_text(json.dumps(record, indent=2) + "\n")
-    os.replace(temp_path, path)
+store = SessionStore()
 
 
 def split_comma_values(raw):
@@ -42,106 +24,72 @@ def parse_env(pairs):
     return environment
 
 
-def now_iso():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def command_new(arguments):
-    session_id = arguments.id or str(uuid.uuid4())
-    record = {
-        "id": session_id,
-        "name": arguments.name,
-        "kind": arguments.kind,
-        "tags": split_comma_values(arguments.tags),
-        "cwd": arguments.cwd,
-        "cmd": arguments.cmd,
-        "env": parse_env(arguments.env),
-        "parent": arguments.parent,
-        "pid": arguments.pid,
-        "created_at": now_iso(),
-        "restarts": 0,
-        "handover": "",
-        "chats": [arguments.chat] if arguments.chat else [],
-    }
-    write_record(record)
-    print(session_id)
+    session = Session.create(
+        id=arguments.id,
+        name=arguments.name,
+        kind=arguments.kind,
+        tags=split_comma_values(arguments.tags),
+        cwd=arguments.cwd,
+        cmd=arguments.cmd,
+        env=parse_env(arguments.env),
+        parent=arguments.parent,
+        pid=arguments.pid,
+        chat=arguments.chat,
+    )
+    store.save(session)
+    print(session.id)
 
 
 def command_get(arguments):
-    path = session_path(arguments.id)
-    if not path.exists():
+    session = store.load(arguments.id)
+    if session is None:
         return 1
-    record = json.loads(path.read_text())
+    record = session.to_dict()
     if arguments.field is None:
         print(json.dumps(record, indent=2))
         return 0
     if arguments.field not in record:
         return 1
     value = record[arguments.field]
-    if arguments.field in LIST_FIELDS:
+    if arguments.field in Session.LIST_FIELDS:
         print(",".join(value))
     elif arguments.field == "env":
-        for env_key, env_value in value.items():
-            print(f"{env_key}={env_value}")
+        for key, environment_value in value.items():
+            print(f"{key}={environment_value}")
     else:
         print(value)
     return 0
 
 
 def command_set(arguments):
-    record = read_record(arguments.id)
-    if arguments.field in LIST_FIELDS:
-        record[arguments.field] = split_comma_values(arguments.value)
-    elif arguments.field in NUMERIC_FIELDS:
-        record[arguments.field] = int(arguments.value)
+    session = store.load(arguments.id)
+    if arguments.field in Session.LIST_FIELDS:
+        value = split_comma_values(arguments.value)
+    elif arguments.field in Session.NUMERIC_FIELDS:
+        value = int(arguments.value)
     else:
-        record[arguments.field] = arguments.value
-    write_record(record)
-
-
-def command_add_chat(arguments):
-    record = read_record(arguments.id)
-    record["chats"].append(arguments.chat)
-    write_record(record)
+        value = arguments.value
+    setattr(session, arguments.field, value)
+    store.save(session)
 
 
 def command_bump(arguments):
-    record = read_record(arguments.id)
-    if arguments.chat:
-        record["chats"].append(arguments.chat)
-    record["restarts"] += 1
-    record["pid"] = arguments.pid
-    if arguments.handover:
-        record["handover"] = arguments.handover
-    write_record(record)
+    session = store.load(arguments.id)
+    session.bump(arguments.pid, arguments.chat, arguments.handover)
+    store.save(session)
 
 
 def command_list(arguments):
-    if not SESSIONS_DIR.exists():
-        return 0
-    for path in sorted(SESSIONS_DIR.glob("*.json")):
-        record = json.loads(path.read_text())
-        print("\t".join([
-            record["id"],
-            record["kind"],
-            record["name"],
-            ",".join(record["tags"]),
-        ]))
-    return 0
+    for session in store.all():
+        print("\t".join([session.id, session.kind, session.name, ",".join(session.tags)]))
 
 
 def command_find_name(arguments):
-    if not SESSIONS_DIR.exists():
+    session = store.find_by_name(arguments.name)
+    if session is None:
         return 1
-    matches = []
-    for path in SESSIONS_DIR.glob("*.json"):
-        record = json.loads(path.read_text())
-        if record["name"] == arguments.name:
-            matches.append((record["created_at"], record["id"]))
-    if not matches:
-        return 1
-    matches.sort()
-    print(matches[-1][1])
+    print(session.id)
     return 0
 
 
@@ -172,11 +120,6 @@ def build_parser():
     set_parser.add_argument("field")
     set_parser.add_argument("value")
     set_parser.set_defaults(handler=command_set)
-
-    add_chat_parser = subparsers.add_parser("add-chat")
-    add_chat_parser.add_argument("id")
-    add_chat_parser.add_argument("chat")
-    add_chat_parser.set_defaults(handler=command_add_chat)
 
     bump_parser = subparsers.add_parser("bump")
     bump_parser.add_argument("id")
