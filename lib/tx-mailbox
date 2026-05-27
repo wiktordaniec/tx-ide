@@ -12,9 +12,9 @@ from pathlib import Path
 # resolve() follows symlinks so the import works whether mx is invoked via
 # the ~/.local/bin symlink or from the repo directly.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "claude" / "hooks"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paths import INBOX_FILE, RUNNING_DIR
-
-SESSION_STATE = Path(__file__).resolve().parent / "tx-session-state"
+from tx_session import SessionStore
 
 VIEW_CYCLE = ("live", "archive")
 LIVE_UNREAD_CAP = 5
@@ -214,10 +214,8 @@ def current_view_members():
         ).stdout.strip()
         if not tx_id:
             return ""
-        return subprocess.run(
-            [sys.executable, str(SESSION_STATE), "get", tx_id, "kind"],
-            capture_output=True, text=True, check=False,
-        ).stdout.strip()
+        record = SessionStore().load(tx_id)
+        return record.kind if record else ""
 
     seen = set()
     while current and current not in seen:
