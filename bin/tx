@@ -801,8 +801,8 @@ cmd_spawn_view() {
 }
 
 # tx restart — resurrect a killed session under its original identity. Resolves
-# name -> stored uuid, re-spawns from the recorded tags/cwd/cmd/kind, reuses the
-# same @tx_id, records a fresh chat incarnation (bump), and injects
+# name -> stored uuid, re-spawns from the recorded tags/cwd/cmd/kind/env, reuses
+# the same @tx_id, records a fresh chat incarnation (bump), and injects
 # TX_HANDOVER_FILE so the new process can resume from a handover note.
 cmd_restart() {
   local name="" handover="" cmd_override="" has_cmd=0
@@ -869,10 +869,13 @@ cmd_restart() {
     cmd_str=$("$TX_SESSION_STATE" get "$id" cmd)
   fi
 
-  local conv pid
+  local conv pid pair
   conv=$(gen_uuid)
   local -a env_flags=(-e "TX_SESSION_ID=$id" -e "TX_CHAT_ID=$conv")
   [[ -n "$handover" ]] && env_flags+=(-e "TX_HANDOVER_FILE=$handover")
+  while IFS= read -r pair; do
+    [[ -n "$pair" ]] && env_flags+=(-e "$pair")
+  done < <("$TX_SESSION_STATE" get "$id" env)
   pid=$(tmux new-session -d -P -F '#{pane_pid}' -s "$name" -c "$cwd" \
     -e COLORTERM=truecolor -e TERM=xterm-256color \
     "${env_flags[@]}" \
