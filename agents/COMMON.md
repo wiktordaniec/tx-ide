@@ -7,7 +7,7 @@ These conventions apply to every Claude Code session in this system: the tx-assi
 Use `tx spawn` (bare) and `tx spawn-nvim` (nvim companion). Both require `--tag` and refuse without it — no inheritance, no auto-magic, you pass the tags explicitly.
 
 ```bash
-tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
+tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--chat] [--env K=V ...]
 tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]
 ```
 
@@ -17,7 +17,7 @@ tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]
 - AI worker session: `--tag llm,<scope>` (e.g. `llm,wrangler-p1`)
 - Nvim companion: `--tag nvim,<scope>` (use the same `<scope>` as the parent llm session)
 
-`<scope>` describes the task (`wrangler-p1`, `PR-1840`, `auth-review`). The picker reads the `@tag` user-option and chips each comma-separated value; same scope on both makes them surface together when you filter by it.
+`<scope>` describes the task (`wrangler-p1`, `PR-1840`, `auth-review`). The picker reads each session's tags from its durable record and chips each comma-separated value; same scope on both makes them surface together when you filter by it.
 
 **Naming:** human-readable, says what it's for (e.g. `wrangler-p1-diff`, `auth-review`). The tag does the filtering, not the name.
 
@@ -27,6 +27,16 @@ tx spawn-nvim wrangler-p1-diff --tag nvim,wrangler-p1 --diff main
 ```
 
 Both inject `COLORTERM=truecolor` and `TERM=xterm-256color`. `spawn-nvim` also forces `colorscheme tokyonight-moon` via `+CMD` because `tmux new-session -d` strips the OSC11 background hint and nvim's auto-mode would land on the light variant.
+
+## Session metadata
+
+Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` — the single source of truth for its `name`, `kind`, `tags`, `cwd`, `cmd`, `env`, `parent`, `pid`, and `chats`. The session is linked to its record by one opaque tmux pointer, `@tx_id`, set once at spawn; the record outlives a `kill-session` and a tmux restart. Spawning also exports `TX_SESSION_ID` (the record uuid) into the session, plus `TX_CHAT_ID` when you pass `--chat` to `tx spawn` — that mints a conversation uuid so the command can resume its transcript (e.g. `claude --session-id "$TX_CHAT_ID"`).
+
+Tags and kind are **not** tmux options. Don't `tmux set @tag`/`@kind` — change tags through `tx` (the picker's Ctrl-T writes the record); reading them means resolving the session's `@tx_id` to its record.
+
+### Handover restart
+
+Refresh a session's context without losing its identity: have it write a handover note, `tmux kill-session -t <name>`, then `tx restart <name> --handover <path>`. Restart re-spawns from the stored tags/cwd/cmd/kind, reuses the **same** `@tx_id`, records a fresh chat incarnation, and injects `TX_HANDOVER_FILE=<path>` so the new process picks up where the last one left off.
 
 ## Inter-session communication
 
