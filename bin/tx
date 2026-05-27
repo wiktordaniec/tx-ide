@@ -7,7 +7,7 @@
 #                              existing tx-assistant first.
 #   tx attach                  Open the session picker.
 #   tx ls                      Plain stdout list: VIEWS and PROCESSES sections.
-#   tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
+#   tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--chat] [--env K=V ...]
 #                              Spawn a detached tmux session. --tag is mandatory (no inheritance).
 #   tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]
 #                              Spawn a detached nvim companion. --diff defaults BASE to main.
@@ -33,6 +33,7 @@ set -u
 # palette.sh lives at <repo>/shared/palette.sh — one level up from this file.
 # readlink resolves the ~/.local/bin install symlink back to the repo.
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../shared/palette.sh"
+TX_SESSION_STATE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/tx-session-state"
 
 B=$'\e[1m'
 R=$'\e[0m'
@@ -66,6 +67,40 @@ reltime() {
 trunc() {
   local s="$1" w="$2"
   if ((${#s} > w)); then printf '%s…' "${s:0:w-1}"; else printf '%s' "$s"; fi
+}
+
+gen_uuid() {
+  uuidgen | tr '[:upper:]' '[:lower:]'
+}
+
+# Create the detached tmux session, write its durable record, set the @tx_id
+# pointer, and export TX_SESSION_ID (+ TX_CHAT_ID when a chat uuid is given).
+#   write_session_metadata <name> <kind> <tag> <cwd> <conv> <cmd> [K=V ...]
+write_session_metadata() {
+  local name="$1" kind="$2" tag="$3" cwd="$4" conv="$5" cmd_str="$6"
+  shift 6
+  local -a tmux_env=() meta_env=() chat_arg=()
+  local pair
+  for pair in "$@"; do
+    tmux_env+=("-e" "$pair")
+    meta_env+=("--env" "$pair")
+  done
+  if [[ -n "$conv" ]]; then
+    tmux_env+=("-e" "TX_CHAT_ID=$conv")
+    chat_arg=(--chat "$conv")
+  fi
+  local parent pid id
+  parent=$(tmux display-message -p '#S' 2>/dev/null) || parent=""
+  pid=$(tmux new-session -d -P -F '#{pane_pid}' -s "$name" -c "$cwd" \
+    -e COLORTERM=truecolor -e TERM=xterm-256color \
+    ${tmux_env[@]+"${tmux_env[@]}"} \
+    "$cmd_str")
+  id=$("$TX_SESSION_STATE" new --name "$name" --kind "$kind" --tags "$tag" \
+    --cwd "$cwd" --cmd "$cmd_str" --parent "$parent" --pid "$pid" \
+    ${meta_env[@]+"${meta_env[@]}"} ${chat_arg[@]+"${chat_arg[@]}"})
+  tmux set -t "$name" @tx_id "$id"
+  tmux set-environment -t "$name" TX_SESSION_ID "$id"
+  [[ -n "$conv" ]] && tmux set-environment -t "$name" TX_CHAT_ID "$conv"
 }
 
 # True if the named session has @kind set to "view".
@@ -457,9 +492,7 @@ cmd_start() {
   # The initial pane is a plain shell — Views is just a stable surface to
   # nest-attach into; pick a target with `tx attach` once inside.
   if ! tmux has-session -t "=Views" 2>/dev/null; then
-    tmux new-session -d -s "Views" -c "$repo_dir" \
-      -e COLORTERM=truecolor -e TERM=xterm-256color \
-      "${SHELL:-zsh}"
+    write_session_metadata "Views" "view" "views" "$repo_dir" "" "${SHELL:-zsh}"
     tmux set -t Views @tag "views"
     tmux set -t Views @kind "view"
     tmux set -t Views status on
@@ -485,10 +518,12 @@ spawn_default_cwd() {
   printf '%s' "$cwd"
 }
 
-# tx spawn — bare detached tmux session with a mandatory --tag.
+# tx spawn — bare detached tmux session with a mandatory --tag. --chat mints a
+# conversation uuid and exports it as TX_CHAT_ID so the spawned command can
+# resume that transcript (e.g. claude --session-id "$TX_CHAT_ID").
 cmd_spawn() {
-  local name="" tag="" cwd="" cmd_str=""
-  local -a env_args=()
+  local name="" tag="" cwd="" cmd_str="" chat=0
+  local -a env_kv=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
     -h | --help)
@@ -519,6 +554,10 @@ cmd_spawn() {
       cmd_str="$2"
       shift 2
       ;;
+    --chat)
+      chat=1
+      shift
+      ;;
     --env)
       [[ -z "${2:-}" ]] && {
         printf 'tx spawn: --env requires a KEY=VALUE\n' >&2
@@ -528,7 +567,7 @@ cmd_spawn() {
         printf "tx spawn: --env expects KEY=VALUE, got '%s'\n" "$2" >&2
         exit 2
       }
-      env_args+=("-e" "$2")
+      env_kv+=("$2")
       shift 2
       ;;
     -*)
@@ -562,10 +601,10 @@ cmd_spawn() {
   [[ -z "$cwd" ]] && cwd=$(spawn_default_cwd)
   [[ -z "$cmd_str" ]] && cmd_str="${SHELL:-zsh}"
 
-  tmux new-session -d -s "$name" -c "$cwd" \
-    -e COLORTERM=truecolor -e TERM=xterm-256color \
-    ${env_args[@]+"${env_args[@]}"} \
-    "$cmd_str"
+  local conv=""
+  ((chat)) && conv=$(gen_uuid)
+  write_session_metadata "$name" "" "$tag" "$cwd" "$conv" "$cmd_str" \
+    ${env_kv[@]+"${env_kv[@]}"}
   tmux set -t "$name" @tag "$tag"
   printf "Spawned '%s' (cwd=%s, tag=%s)\n" "$name" "$cwd" "$tag"
 }
@@ -575,7 +614,7 @@ cmd_spawn() {
 # hint, and nvim's auto-mode would otherwise land on the light variant.
 cmd_spawn_nvim() {
   local name="" tag="" cwd="" diff_base="" has_diff=0
-  local -a env_args=()
+  local -a env_kv=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
     -h | --help)
@@ -616,7 +655,7 @@ cmd_spawn_nvim() {
         printf "tx spawn-nvim: --env expects KEY=VALUE, got '%s'\n" "$2" >&2
         exit 2
       }
-      env_args+=("-e" "$2")
+      env_kv+=("$2")
       shift 2
       ;;
     -*)
@@ -654,10 +693,8 @@ cmd_spawn_nvim() {
     nvim_cmd="$nvim_cmd +'DiffviewOpen $diff_base'"
   fi
 
-  tmux new-session -d -s "$name" -c "$cwd" \
-    -e COLORTERM=truecolor -e TERM=xterm-256color \
-    ${env_args[@]+"${env_args[@]}"} \
-    "$nvim_cmd"
+  write_session_metadata "$name" "nvim" "$tag" "$cwd" "" "$nvim_cmd" \
+    ${env_kv[@]+"${env_kv[@]}"}
   tmux set -t "$name" @tag "$tag"
   printf "Spawned nvim '%s' (cwd=%s, tag=%s%s)\n" \
     "$name" "$cwd" "$tag" "$( ((has_diff)) && printf ', diff=%s' "$diff_base")"
@@ -668,7 +705,7 @@ cmd_spawn_nvim() {
 # "views" when omitted.
 cmd_spawn_view() {
   local name="" tag="" cwd="" cmd_str=""
-  local -a env_args=()
+  local -a env_kv=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
     -h | --help)
@@ -708,7 +745,7 @@ cmd_spawn_view() {
         printf "tx spawn-view: --env expects KEY=VALUE, got '%s'\n" "$2" >&2
         exit 2
       }
-      env_args+=("-e" "$2")
+      env_kv+=("$2")
       shift 2
       ;;
     -*)
@@ -739,10 +776,8 @@ cmd_spawn_view() {
   [[ -z "$cwd" ]] && cwd=$(spawn_default_cwd)
   [[ -z "$cmd_str" ]] && cmd_str="${SHELL:-zsh}"
 
-  tmux new-session -d -s "$name" -c "$cwd" \
-    -e COLORTERM=truecolor -e TERM=xterm-256color \
-    ${env_args[@]+"${env_args[@]}"} \
-    "$cmd_str"
+  write_session_metadata "$name" "view" "$tag" "$cwd" "" "$cmd_str" \
+    ${env_kv[@]+"${env_kv[@]}"}
   tmux set -t "$name" @tag "$tag"
   tmux set -t "$name" @kind "view"
   tmux set -t "$name" status on

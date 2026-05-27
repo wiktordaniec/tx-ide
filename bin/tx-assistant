@@ -33,6 +33,7 @@ session=tx-assistant
 priming='Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/TX-ASSISTANT.md as your first actions. Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.md, ~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/TX-ASSISTANT.md, and ~/.tx-ide/user-agents/TX-ASSISTANT.local.md (any user-agents/X.md replaces the shipped one; any user-agents/X.local.md extends it). Follow all of these for the duration of this session.'
 
 repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
+tx_session_state="$repo/lib/tx-session-state"
 
 xml_escape() {
   local raw="$1"
@@ -122,9 +123,16 @@ ensure_session() {
     echo existed
     return
   fi
-  tmux new-session -d -s "$session" -c "$repo" \
+  local claude_cmd="claude --model sonnet --effort low --dangerously-skip-permissions"
+  local parent pid id
+  parent=$(tmux display-message -p '#S' 2>/dev/null) || parent=""
+  pid=$(tmux new-session -d -P -F '#{pane_pid}' -s "$session" -c "$repo" \
     -e COLORTERM=truecolor -e TERM=xterm-256color \
-    "claude --model sonnet --effort low --dangerously-skip-permissions"
+    "$claude_cmd")
+  id=$("$tx_session_state" new --name "$session" --kind "" --tags "tx-system" \
+    --cwd "$repo" --cmd "$claude_cmd" --parent "$parent" --pid "$pid")
+  tmux set -t "$session" @tx_id "$id"
+  tmux set-environment -t "$session" TX_SESSION_ID "$id"
   tmux set -t "$session" @tag "tx-system"
   # Wait for claude's input box to render (its prefix char is `❯`, not `>`).
   for _ in $(seq 1 20); do
