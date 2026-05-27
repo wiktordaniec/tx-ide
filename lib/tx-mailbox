@@ -215,7 +215,7 @@ def current_view_members():
         if not tx_id:
             return ""
         return subprocess.run(
-            [str(SESSION_STATE), "get", tx_id, "kind"],
+            [sys.executable, str(SESSION_STATE), "get", tx_id, "kind"],
             capture_output=True, text=True, check=False,
         ).stdout.strip()
 

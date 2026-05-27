@@ -15,7 +15,7 @@ tmux_tags=""
 if [[ -n "$TMUX" ]]; then
   tmux_session_name=$(tmux display-message -p '#S')
   tx_id=$(tmux show-options -v @tx_id 2>/dev/null)
-  [[ -n "$tx_id" ]] && tmux_tags=$("$tx_session_state" get "$tx_id" tags 2>/dev/null)
+  [[ -n "$tx_id" ]] && tmux_tags=$("$tx_python" "$tx_session_state" get "$tx_id" tags 2>/dev/null)
 fi
 working_directory="$PWD"
 

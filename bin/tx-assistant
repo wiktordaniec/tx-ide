@@ -34,6 +34,8 @@ priming='Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/TX-ASSISTANT.md as
 
 repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
 tx_session_state="$repo/lib/tx-session-state"
+# Prefer /usr/bin/python3 over pyenv's slow shim for the store lookups.
+if [ -x /usr/bin/python3 ]; then tx_python=/usr/bin/python3; else tx_python=$(command -v python3); fi
 
 xml_escape() {
   local raw="$1"
@@ -70,8 +72,8 @@ build_envelope() {
   session_kind=""
   session_tag=""
   if [ -n "$session_id" ]; then
-    session_kind=$("$tx_session_state" get "$session_id" kind 2>/dev/null) || session_kind=""
-    session_tag=$("$tx_session_state" get "$session_id" tags 2>/dev/null) || session_tag=""
+    session_kind=$("$tx_python" "$tx_session_state" get "$session_id" kind 2>/dev/null) || session_kind=""
+    session_tag=$("$tx_python" "$tx_session_state" get "$session_id" tags 2>/dev/null) || session_tag=""
   fi
 
   local envelope="<tx-command-prompt"
@@ -103,8 +105,8 @@ build_envelope() {
       inner_kind=""
       inner_tag=""
       if [ -n "$inner_id" ]; then
-        inner_kind=$("$tx_session_state" get "$inner_id" kind 2>/dev/null) || inner_kind=""
-        inner_tag=$("$tx_session_state" get "$inner_id" tags 2>/dev/null) || inner_tag=""
+        inner_kind=$("$tx_python" "$tx_session_state" get "$inner_id" kind 2>/dev/null) || inner_kind=""
+        inner_tag=$("$tx_python" "$tx_session_state" get "$inner_id" tags 2>/dev/null) || inner_tag=""
       fi
       inner_info=$(tmux display-message -t "$inner_session" -p \
         '#{window_index}|#{window_name}|#{pane_id}|#{pane_index}|#{pane_title}|#{pane_current_command}|#{pane_current_path}' \
@@ -141,7 +143,7 @@ ensure_session() {
     -e COLORTERM=truecolor -e TERM=xterm-256color \
     -e "TX_SESSION_ID=$id" \
     "$claude_cmd")
-  "$tx_session_state" new --id "$id" --name "$session" --kind "" --tags "tx-system" \
+  "$tx_python" "$tx_session_state" new --id "$id" --name "$session" --kind "" --tags "tx-system" \
     --cwd "$repo" --cmd "$claude_cmd" --parent "$parent" --pid "$pid" >/dev/null
   tmux set -t "$session" @tx_id "$id"
   # Wait for claude's input box to render (its prefix char is `❯`, not `>`).

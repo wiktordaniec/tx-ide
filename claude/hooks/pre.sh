@@ -12,7 +12,7 @@ source "$(dirname "$0")/paths.sh"
 tmux_session_name=$(tmux display-message -p '#S')
 tx_id=$(tmux show-options -v @tx_id 2>/dev/null)
 tmux_tags=""
-[[ -n "$tx_id" ]] && tmux_tags=$("$tx_session_state" get "$tx_id" tags 2>/dev/null)
+[[ -n "$tx_id" ]] && tmux_tags=$("$tx_python" "$tx_session_state" get "$tx_id" tags 2>/dev/null)
 timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 working_directory="$PWD"
 

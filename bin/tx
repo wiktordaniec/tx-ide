@@ -37,6 +37,10 @@ set -u
 # readlink resolves the ~/.local/bin install symlink back to the repo.
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../shared/palette.sh"
 TX_SESSION_STATE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/tx-session-state"
+# Prefer /usr/bin/python3 — a bare python3 usually resolves to pyenv's shim
+# (~60ms/launch); these store calls run on the picker + pane-border hot paths.
+if [[ -x /usr/bin/python3 ]]; then TX_PYTHON=/usr/bin/python3; else TX_PYTHON=$(command -v python3); fi
+txstate() { "$TX_PYTHON" "$TX_SESSION_STATE" "$@"; }
 
 B=$'\e[1m'
 R=$'\e[0m'
@@ -102,7 +106,7 @@ write_session_metadata() {
     -e COLORTERM=truecolor -e TERM=xterm-256color \
     "${tmux_env[@]}" \
     "$cmd_str")
-  "$TX_SESSION_STATE" new --id "$id" --name "$name" --kind "$kind" --tags "$tag" \
+  txstate new --id "$id" --name "$name" --kind "$kind" --tags "$tag" \
     --cwd "$cwd" --cmd "$cmd_str" --parent "$parent" --pid "$pid" \
     ${meta_env[@]+"${meta_env[@]}"} ${chat_arg[@]+"${chat_arg[@]}"} >/dev/null
   tmux set -t "$name" @tx_id "$id"
@@ -113,7 +117,7 @@ is_view_session() {
   local id
   id=$(tmux show-options -vqt "$1" @tx_id 2>/dev/null) || return 1
   [[ -n "$id" ]] || return 1
-  [[ "$("$TX_SESSION_STATE" get "$id" kind 2>/dev/null)" == "view" ]]
+  [[ "$(txstate get "$id" kind 2>/dev/null)" == "view" ]]
 }
 
 # Column width of the surrounding terminal/popup. Inside a tmux popup,
@@ -182,7 +186,7 @@ join_store() {
   awk 'NR==FNR { split($0, store, "\t"); kind[store[1]]=store[2]; tags[store[1]]=store[4]; next }
        { split($0, f, "|"); id=f[6]
          print f[1]"|"f[2]"|"f[3]"|"f[4]"|"f[5]"|"tags[id]"|"kind[id] }' \
-    <("$TX_SESSION_STATE" list) "$1"
+    <(txstate list) "$1"
 }
 
 # Emit fzf rows. Each row is tab-separated:
@@ -274,7 +278,7 @@ cmd_edit_tag() {
     printf "tx: session '%s' has no @tx_id (not tx-managed)\n" "$session" >&2
     exit 1
   }
-  current=$("$TX_SESSION_STATE" get "$id" tags 2>/dev/null)
+  current=$(txstate get "$id" tags 2>/dev/null)
   outfile=$(mktemp)
   trap 'rm -f "$outfile"' RETURN
   if python3 -c '
@@ -293,7 +297,7 @@ with open(outfile, "w") as f:
     f.write(line)
 ' "$session" "$current" "$outfile"; then
     new=$(<"$outfile")
-    "$TX_SESSION_STATE" set "$id" tags "$new"
+    txstate set "$id" tags "$new"
   fi
 }
 
@@ -850,7 +854,7 @@ cmd_restart() {
     exit 2
   }
   local id
-  id=$("$TX_SESSION_STATE" find-name "$name") || {
+  id=$(txstate find-name "$name") || {
     printf "tx restart: no session metadata for '%s'\n" "$name" >&2
     exit 1
   }
@@ -860,13 +864,13 @@ cmd_restart() {
   fi
 
   local tags cwd kind cmd_str
-  tags=$("$TX_SESSION_STATE" get "$id" tags)
-  cwd=$("$TX_SESSION_STATE" get "$id" cwd)
-  kind=$("$TX_SESSION_STATE" get "$id" kind)
+  tags=$(txstate get "$id" tags)
+  cwd=$(txstate get "$id" cwd)
+  kind=$(txstate get "$id" kind)
   if ((has_cmd)); then
     cmd_str="$cmd_override"
   else
-    cmd_str=$("$TX_SESSION_STATE" get "$id" cmd)
+    cmd_str=$(txstate get "$id" cmd)
   fi
 
   local conv pid pair
@@ -875,7 +879,7 @@ cmd_restart() {
   [[ -n "$handover" ]] && env_flags+=(-e "TX_HANDOVER_FILE=$handover")
   while IFS= read -r pair; do
     [[ -n "$pair" ]] && env_flags+=(-e "$pair")
-  done < <("$TX_SESSION_STATE" get "$id" env)
+  done < <(txstate get "$id" env)
   pid=$(tmux new-session -d -P -F '#{pane_pid}' -s "$name" -c "$cwd" \
     -e COLORTERM=truecolor -e TERM=xterm-256color \
     "${env_flags[@]}" \
@@ -884,7 +888,7 @@ cmd_restart() {
 
   local -a bump_args=(--pid "$pid" --chat "$conv")
   [[ -n "$handover" ]] && bump_args+=(--handover "$handover")
-  "$TX_SESSION_STATE" bump "$id" "${bump_args[@]}"
+  txstate bump "$id" "${bump_args[@]}"
 
   if [[ "$kind" == "view" ]]; then
     tmux set -t "$name" status on
