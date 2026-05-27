@@ -76,13 +76,17 @@ gen_uuid() {
   uuidgen | tr '[:upper:]' '[:lower:]'
 }
 
-# Create the detached tmux session, write its durable record, set the @tx_id
-# pointer, and export TX_SESSION_ID (+ TX_CHAT_ID when a chat uuid is given).
+# Create the detached tmux session, write its durable record, and set the
+# @tx_id pointer. The session uuid is minted here and threaded through -e
+# TX_SESSION_ID, the record id (--id), and @tx_id, so all three agree;
+# TX_CHAT_ID is injected the same way when a chat uuid is given.
 #   write_session_metadata <name> <kind> <tag> <cwd> <conv> <cmd> [K=V ...]
 write_session_metadata() {
   local name="$1" kind="$2" tag="$3" cwd="$4" conv="$5" cmd_str="$6"
   shift 6
-  local -a tmux_env=() meta_env=() chat_arg=()
+  local id
+  id=$(gen_uuid)
+  local -a tmux_env=("-e" "TX_SESSION_ID=$id") meta_env=() chat_arg=()
   local pair
   for pair in "$@"; do
     tmux_env+=("-e" "$pair")
@@ -92,18 +96,16 @@ write_session_metadata() {
     tmux_env+=("-e" "TX_CHAT_ID=$conv")
     chat_arg=(--chat "$conv")
   fi
-  local parent pid id
+  local parent pid
   parent=$(tmux display-message -p '#S' 2>/dev/null) || parent=""
   pid=$(tmux new-session -d -P -F '#{pane_pid}' -s "$name" -c "$cwd" \
     -e COLORTERM=truecolor -e TERM=xterm-256color \
-    ${tmux_env[@]+"${tmux_env[@]}"} \
+    "${tmux_env[@]}" \
     "$cmd_str")
-  id=$("$TX_SESSION_STATE" new --name "$name" --kind "$kind" --tags "$tag" \
+  "$TX_SESSION_STATE" new --id "$id" --name "$name" --kind "$kind" --tags "$tag" \
     --cwd "$cwd" --cmd "$cmd_str" --parent "$parent" --pid "$pid" \
-    ${meta_env[@]+"${meta_env[@]}"} ${chat_arg[@]+"${chat_arg[@]}"})
+    ${meta_env[@]+"${meta_env[@]}"} ${chat_arg[@]+"${chat_arg[@]}"} >/dev/null
   tmux set -t "$name" @tx_id "$id"
-  tmux set-environment -t "$name" TX_SESSION_ID "$id"
-  [[ -n "$conv" ]] && tmux set-environment -t "$name" TX_CHAT_ID "$conv"
 }
 
 # True if the named session is recorded with kind "view" in the durable store.

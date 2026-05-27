@@ -135,14 +135,15 @@ ensure_session() {
   fi
   local claude_cmd="claude --model sonnet --effort low --dangerously-skip-permissions"
   local parent pid id
+  id=$(uuidgen | tr '[:upper:]' '[:lower:]')
   parent=$(tmux display-message -p '#S' 2>/dev/null) || parent=""
   pid=$(tmux new-session -d -P -F '#{pane_pid}' -s "$session" -c "$repo" \
     -e COLORTERM=truecolor -e TERM=xterm-256color \
+    -e "TX_SESSION_ID=$id" \
     "$claude_cmd")
-  id=$("$tx_session_state" new --name "$session" --kind "" --tags "tx-system" \
-    --cwd "$repo" --cmd "$claude_cmd" --parent "$parent" --pid "$pid")
+  "$tx_session_state" new --id "$id" --name "$session" --kind "" --tags "tx-system" \
+    --cwd "$repo" --cmd "$claude_cmd" --parent "$parent" --pid "$pid" >/dev/null
   tmux set -t "$session" @tx_id "$id"
-  tmux set-environment -t "$session" TX_SESSION_ID "$id"
   # Wait for claude's input box to render (its prefix char is `❯`, not `>`).
   for _ in $(seq 1 20); do
     tmux capture-pane -p -t "$session" 2>/dev/null | grep -q '❯ ' && break
