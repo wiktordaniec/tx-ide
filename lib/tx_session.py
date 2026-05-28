@@ -37,12 +37,10 @@ class Session:
     parent: str
     pid: int
     created_at: str
-    restarts: int
-    handover: str
     chats: List[str]
 
     LIST_FIELDS: ClassVar[Set[str]] = {"tags", "chats"}
-    NUMERIC_FIELDS: ClassVar[Set[str]] = {"pid", "restarts"}
+    NUMERIC_FIELDS: ClassVar[Set[str]] = {"pid"}
 
     @classmethod
     def create(cls, id: str, name: str, kind: str, tags: List[str], cwd: str,
@@ -59,8 +57,6 @@ class Session:
             parent=parent,
             pid=pid,
             created_at=now_iso(),
-            restarts=0,
-            handover="",
             chats=[chat] if chat else [],
         )
 
@@ -72,14 +68,6 @@ class Session:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
-
-    def bump(self, pid: int, chat: str, handover: str) -> None:
-        self.restarts += 1
-        self.pid = pid
-        if chat:
-            self.chats.append(chat)
-        if handover:
-            self.handover = handover
 
 
 class SessionStore:

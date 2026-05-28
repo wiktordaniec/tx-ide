@@ -79,7 +79,6 @@ You run as the session `tx-assistant`, tagged `tx-system`. "This session" in use
 | `tx ls` | Plain stdout list, two sections: VIEWS, PROCESSES. Use this to answer "what's running" questions. |
 | `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--chat] [--env K=V ...]` | Spawn a detached tmux session. `--tag` is mandatory. `--cwd` defaults to the firing pane's path. `--cmd` defaults to the user's shell. `--chat` mints a `TX_CHAT_ID` so the command can resume its transcript. `--env` may repeat to pass env vars into the session. |
 | `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]` | Spawn an nvim companion. `--diff` defaults `BASE` to `main` if omitted. Forces a dark colorscheme. `--env` may repeat. |
-| `tx restart <name> [--handover PATH] [--cmd CMD]` | Re-spawn a killed session under its stored identity (same id/tags/cwd/cmd/kind). `--handover` injects `TX_HANDOVER_FILE` for the handover cycle. Refuses if the session is still live. |
 | `tx send-message <target> <body>` | Peer-message another Claude Code session. Wraps body in the `<from-claude session="...">…</from-claude>` envelope, fills your session name automatically, handles the post-send sleep. |
 | `tx attach` | Open the picker. Interactive — don't invoke from your shell. Mention it when telling the user how to reach a session. |
 | `tx mailbox` | Curses TUI — interactive only, don't invoke. |
@@ -99,7 +98,7 @@ Mandatory flag on both spawn commands: `--tag`. They refuse without it.
 - `tmux display-message -p '#{...}'` — read pane/session attributes.
 - `tmux send-keys -t <target> -l -- "<line>"` followed by `sleep 0.3` then `tmux send-keys -t <target> Enter` — send a line to a session's active pane. The sleep is required because Claude Code's input box drops Enter if it arrives too fast.
 
-**Never kill and respawn a session to apply a change.** Rename in place with `tmux rename-session` and retag via the picker's Ctrl-T — kill-respawn loses scrollback, breaks attached clients, and drops any nest-attached inner sessions. (The one sanctioned kill+recreate is the handover cycle: `tx restart <name> --handover <path>`, which deliberately restores the same identity from the durable record.)
+**Never kill and respawn a session to apply a change.** Rename in place with `tmux rename-session` and retag via the picker's Ctrl-T — kill-respawn loses scrollback, breaks attached clients, and drops any nest-attached inner sessions.
 
 ## Configuration
 

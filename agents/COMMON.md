@@ -30,13 +30,9 @@ Both inject `COLORTERM=truecolor` and `TERM=xterm-256color`. `spawn-nvim` also f
 
 ## Session metadata
 
-Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` — the single source of truth for its `name`, `kind`, `tags`, `cwd`, `cmd`, `env`, `parent`, `pid`, and `chats`. The session is linked to its record by one opaque tmux pointer, `@tx_id`, set once at spawn; the record outlives a `kill-session` and a tmux restart. Spawning also exports `TX_SESSION_ID` (the record uuid) into the session, plus `TX_CHAT_ID` when you pass `--chat` to `tx spawn` — that mints a conversation uuid so the command can resume its transcript (e.g. `claude --session-id "$TX_CHAT_ID"`).
+Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` holding its `name`, `kind`, `tags`, `cwd`, `cmd`, `env`, `parent`, `pid`, and `chats`. One tmux pointer, `@tx_id` (set once at spawn), links the live session to its record, so the record survives a `kill-session` or a tmux restart. Spawning exports `TX_SESSION_ID` into the session; passing `--chat` to `tx spawn` also mints `TX_CHAT_ID` so the command can resume its transcript (e.g. `claude --session-id "$TX_CHAT_ID"`).
 
-Tags and kind are **not** tmux options. Don't `tmux set @tag`/`@kind` — change tags through `tx` (the picker's Ctrl-T writes the record); reading them means resolving the session's `@tx_id` to its record.
-
-### Handover restart
-
-Refresh a session's context without losing its identity: have it write a handover note, `tmux kill-session -t <name>`, then `tx restart <name> --handover <path>`. Restart re-spawns from the stored tags/cwd/cmd/kind, reuses the **same** `@tx_id`, records a fresh chat incarnation, and injects `TX_HANDOVER_FILE=<path>` so the new process picks up where the last one left off.
+Tags and kind live in the record, not tmux options — read them by resolving `@tx_id`, and change tags through `tx` (the picker's Ctrl-T), never `tmux set @tag`/`@kind`.
 
 ## Inter-session communication
 

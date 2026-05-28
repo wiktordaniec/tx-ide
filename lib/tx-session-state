@@ -76,12 +76,6 @@ def command_set(arguments):
     store.save(session)
 
 
-def command_bump(arguments):
-    session = store.load(arguments.id)
-    session.bump(arguments.pid, arguments.chat, arguments.handover)
-    store.save(session)
-
-
 def command_list(arguments):
     for session in store.all():
         print("\t".join([session.id, session.kind, session.name, ",".join(session.tags)]))
@@ -122,13 +116,6 @@ def build_parser():
     set_parser.add_argument("field")
     set_parser.add_argument("value")
     set_parser.set_defaults(handler=command_set)
-
-    bump_parser = subparsers.add_parser("bump")
-    bump_parser.add_argument("id")
-    bump_parser.add_argument("--pid", type=int, required=True)
-    bump_parser.add_argument("--chat", default="")
-    bump_parser.add_argument("--handover", default="")
-    bump_parser.set_defaults(handler=command_bump)
 
     list_parser = subparsers.add_parser("list")
     list_parser.set_defaults(handler=command_list)
