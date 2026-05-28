@@ -37,9 +37,7 @@ set -u
 # readlink resolves the ~/.local/bin install symlink back to the repo.
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../shared/palette.sh"
 TX_SESSION_STATE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/tx-session-state"
-# Prefer /usr/bin/python3 — a bare python3 usually resolves to pyenv's shim
-# (~60ms/launch); these store calls run on the picker + pane-border hot paths.
-if [[ -x /usr/bin/python3 ]]; then TX_PYTHON=/usr/bin/python3; else TX_PYTHON=$(command -v python3); fi
+TX_PYTHON=$(command -v python3.14)
 txstate() { "$TX_PYTHON" "$TX_SESSION_STATE" "$@"; }
 
 B=$'\e[1m'
@@ -953,21 +951,10 @@ cmd_send_message() {
 }
 
 # tx mailbox — exec the Python curses TUI in lib/.
-# Prefer /usr/bin/python3 over PATH lookup because the latter usually lands
-# on pyenv's shim, which adds ~60ms per launch — the dominant cost of
-# prefix+m. Fall back to PATH only if system python is missing.
 cmd_mailbox() {
-  local self_dir py
+  local self_dir
   self_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
-  if [[ -x /usr/bin/python3 ]]; then
-    py=/usr/bin/python3
-  else
-    py=$(command -v python3) || {
-      printf 'tx: python3 not found\n' >&2
-      exit 1
-    }
-  fi
-  exec "$py" "$self_dir/../lib/tx-mailbox" "$@"
+  exec "$TX_PYTHON" "$self_dir/../lib/tx-mailbox" "$@"
 }
 
 while [[ $# -gt 0 ]]; do

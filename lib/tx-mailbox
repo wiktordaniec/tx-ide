@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """Mailbox CLI — interactive TUI to view live activity and archived inbox."""
 
 import curses
@@ -215,7 +215,7 @@ def current_view_members():
         if not tx_id:
             return ""
         record = SessionStore().load(tx_id)
-        return record.kind.value if record else ""
+        return record.kind if record else ""
 
     seen = set()
     while current and current not in seen:

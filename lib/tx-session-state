@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.14
 """tx session store CLI — thin wrapper over the tx_session module."""
 
 import argparse
@@ -84,7 +84,7 @@ def command_bump(arguments):
 
 def command_list(arguments):
     for session in store.all():
-        print("\t".join([session.id, session.kind.value, session.name, ",".join(session.tags)]))
+        print("\t".join([session.id, session.kind, session.name, ",".join(session.tags)]))
 
 
 def command_find_name(arguments):

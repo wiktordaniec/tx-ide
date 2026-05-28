@@ -79,7 +79,7 @@ ${B}=== tx-ide install ===${X}
 Repo:  $REPO
 
 I will:
-  - check dependencies and brew-install tmux + fzf if missing
+  - check dependencies and brew-install tmux + fzf + python@3.14 if missing
       (also warn if python3 / claude / gh are not on PATH)
   - symlink CLIs into ~/.local/bin/
       tx, tx-assistant, tmux-pane-for-session, tmux-pane-session-name
@@ -119,7 +119,7 @@ confirm "Proceed?" Y || {
 }
 
 # === 0: Dependencies ===
-# Hard requirements (auto-installed via brew): tmux, fzf.
+# Hard requirements (auto-installed via brew): tmux, fzf, python@3.14.
 # Soft requirements (warn only): python3, claude, gh.
 header "Dependencies"
 
@@ -141,6 +141,19 @@ for pkg in tmux fzf; do
     fi
   fi
 done
+
+# Hard requirement: the session store runs under python3.14.
+if command -v python3.14 >/dev/null 2>&1; then
+  ok "python3.14" "found"
+else
+  info "installing python@3.14 via brew..."
+  if brew install python@3.14 2>&1 | sed 's/^/    /'; then
+    ok "python3.14" "installed"
+  else
+    fail "python3.14" "required — install with: brew install python@3.14"
+    exit 1
+  fi
+fi
 
 # Soft checks — warn but do not block.
 if command -v python3 >/dev/null 2>&1; then

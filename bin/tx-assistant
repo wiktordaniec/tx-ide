@@ -34,8 +34,7 @@ priming='Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/TX-ASSISTANT.md as
 
 repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
 tx_session_state="$repo/lib/tx-session-state"
-# Prefer /usr/bin/python3 over pyenv's slow shim for the store lookups.
-if [ -x /usr/bin/python3 ]; then tx_python=/usr/bin/python3; else tx_python=$(command -v python3); fi
+tx_python=$(command -v python3.14)
 
 xml_escape() {
   local raw="$1"

@@ -5,7 +5,7 @@ import os
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Set
 
@@ -16,7 +16,7 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-class Kind(str, Enum):
+class Kind(StrEnum):
     PROCESS = "process"
     VIEW = "view"
 
@@ -71,9 +71,7 @@ class Session:
         return cls(**values)
 
     def to_dict(self) -> Dict[str, Any]:
-        data = asdict(self)
-        data["kind"] = self.kind.value
-        return data
+        return asdict(self)
 
     def bump(self, pid: int, chat: str, handover: str) -> None:
         self.restarts += 1

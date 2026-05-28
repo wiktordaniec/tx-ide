@@ -14,9 +14,7 @@ set -e
 
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../shared/palette.sh"
 TX_SESSION_STATE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/tx-session-state"
-# Prefer /usr/bin/python3 — this runs once per pane-border render, and a bare
-# python3 usually resolves to pyenv's slow shim.
-if [[ -x /usr/bin/python3 ]]; then TX_PYTHON=/usr/bin/python3; else TX_PYTHON=$(command -v python3); fi
+TX_PYTHON=$(command -v python3.14)
 
 pane_id="${1:-}"
 [[ -z "$pane_id" ]] && exit 0
