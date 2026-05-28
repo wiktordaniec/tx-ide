@@ -13,6 +13,8 @@
 #                              Spawn a detached nvim companion. --diff defaults BASE to main.
 #   tx spawn-view <name> [--tag TAGS] [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
 #                              Spawn a detached view session (kind=view). --tag defaults to "views".
+#   tx tag <name> [tags]       Read or set a session's tags in the durable store.
+#                              With [tags] (comma-separated) set them; without, print them.
 #   tx send-message <target> <body>
 #                              Send a peer message to another Claude Code session.
 #                              Wraps body as <from-claude session="$SELF">body</from-claude>
@@ -113,6 +115,16 @@ is_view_session() {
   id=$(tmux show-options -vqt "$1" @tx_id 2>/dev/null) || return 1
   [[ -n "$id" ]] || return 1
   [[ "$(txstate get "$id" kind 2>/dev/null)" == "view" ]]
+}
+
+# Resolve a session <name> to its record id: live @tx_id first, else a store
+# name lookup for a session no longer live. Prints the id; returns 1 if neither.
+resolve_session_id() {
+  local name="$1" id
+  id=$(tmux show-options -vqt "$name" @tx_id 2>/dev/null)
+  [[ -z "$id" ]] && id=$(txstate find-name "$name" 2>/dev/null)
+  [[ -n "$id" ]] || return 1
+  printf '%s' "$id"
 }
 
 # Column width of the surrounding terminal/popup. Inside a tmux popup,
@@ -466,7 +478,7 @@ cmd_pick() {
 }
 
 cmd_help() {
-  sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # tx start — ensure the Views home-base session exists, warm the tx-assistant,
@@ -853,6 +865,52 @@ cmd_send_message() {
   tmux send-keys -t "$target" Enter
 }
 
+cmd_tag() {
+  local name="" tag="" have_tag=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    -h | --help)
+      cmd_help
+      exit 0
+      ;;
+    -*)
+      printf 'tx tag: unknown flag: %s\n' "$1" >&2
+      exit 2
+      ;;
+    *)
+      if [[ -z "$name" ]]; then
+        name="$1"
+      elif ((!have_tag)); then
+        tag="$1"
+        have_tag=1
+      else
+        printf "tx tag: too many positional args: '%s'\n" "$1" >&2
+        exit 2
+      fi
+      shift
+      ;;
+    esac
+  done
+
+  [[ -z "$name" ]] && {
+    printf 'tx tag: <name> required\n' >&2
+    exit 2
+  }
+
+  local id
+  id=$(resolve_session_id "$name") || {
+    printf "tx tag: session '%s' not found (no live @tx_id, no store record)\n" "$name" >&2
+    exit 1
+  }
+
+  if ((have_tag)); then
+    txstate set "$id" tags "$tag"
+    printf "Tagged '%s' (tag=%s)\n" "$name" "$tag"
+  else
+    txstate get "$id" tags
+  fi
+}
+
 # tx mailbox — exec the Python curses TUI in lib/.
 cmd_mailbox() {
   local self_dir
@@ -918,6 +976,10 @@ spawn-view)
 send-message)
   shift
   cmd_send_message "$@"
+  ;;
+tag)
+  shift
+  cmd_tag "$@"
   ;;
 _list)
   shift
