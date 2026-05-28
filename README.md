@@ -112,6 +112,35 @@ Drop files in `~/.tx-ide/user-agents/`:
 
 Every prompt template (in `bin/tx-assistant` and `agents/TX-ASSISTANT.md`'s worker-spawn recipe) reads `~/.tx-ide/agents/<ROLE>.md` followed by both `~/.tx-ide/user-agents/<ROLE>.md` and `~/.tx-ide/user-agents/<ROLE>.local.md` if they exist.
 
+## Sandbox (isolated testing)
+
+`./tx-sandbox` brings up the whole tx view in **complete isolation** so you can
+try spawning, the `tx attach` picker, retagging (Ctrl-T), pane-border tag chips,
+and `--chat` without touching your real tmux server or your real `~/.tx-ide`.
+
+It runs a private tmux server on its own socket under a throwaway `$HOME`,
+symlinks this checkout's `bin/`/`lib/` first on `PATH` (so you exercise the
+working tree, not the installed `~/.local` copies), ports the tmux integration
+(prefix `C-a`, the `prefix+t` / `prefix+m` / `prefix+/` popups, pane-border
+chips), and seeds a view plus three workers. Everything is destroyed on exit.
+
+```bash
+./tx-sandbox            # interactive — drops you into the sandboxed view
+./tx-sandbox --check    # non-interactive smoke test: seed, verify, tear down
+```
+
+- **Prefix:** `C-a` (same as the real install).
+- **Quit + destroy everything:** press the prefix, then `d` (detach) — an exit
+  trap kills the private server and removes the temp dir.
+- **Seeded:** `home` (a view) plus `api` / `web` / `worker` (`worker` carries
+  `--chat`), all tagged so the picker renders chips.
+
+`--check` is the CI/sanity entry point: it seeds the sessions, runs `tx ls`,
+asserts the ported config (prefix, `pane-border-format`, the popup binds) and
+that `tx` resolves to this checkout, then tears down — exiting non-zero on any
+failure. A hard isolation guard aborts the run if the private server can ever
+see an existing session.
+
 ## Requirements
 
 - macOS (iTerm2 + `say` + `defaults write` are macOS-only; Linux support is a future PR)
