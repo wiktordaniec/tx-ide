@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# tx-sandbox — exercise the full tx flow (spawn, the `tx attach` picker, retag
+# via Ctrl-T, pane-border tag chips, --chat) in COMPLETE isolation.
+#
+# It spins up a PRIVATE tmux server (its own socket) under a throwaway $HOME — so
+# the durable store lands in a sandbox ~/.tx-ide — ports the repo's tmux
+# integration into it, seeds a view plus a few worker sessions, and drops you in.
+# Your real tmux server and your real ~/.tx-ide are NEVER read or written, and
+# everything created is destroyed on exit.
+#
+#   ./tx-sandbox            interactive — attaches you to the sandbox
+#   ./tx-sandbox --check    non-interactive smoke: seed, `tx ls`, verify the
+#                           ported config, tear down. Exits non-zero on failure.
+#
+# Prefix is C-a (mirrors the real install). Quit + destroy everything: press the
+# prefix, then  d  (detach) — the trap kills the private server and removes the
+# temp dir.
+set -uo pipefail
+
+# --- Repo root, resolved from THIS script's own location (never hardcoded) so it
+# works from any checkout. readlink -f follows a symlink (e.g. an install shim)
+# back to the real file; the script lives at the repo root, so its dirname is the
+# root. Mirrors how bin/tx and the tmux fragment resolve themselves.
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+REPO_ROOT="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+
+# --- The REAL tmux binary, resolved BEFORE we shadow PATH with the sandbox
+# wrapper — so resolution can never pick up our own private-socket wrapper — and
+# without hardcoding a brew/distro path. readlink -f collapses any symlink to the
+# actual executable.
+REAL_TMUX="$(command -v tmux || true)"
+[[ -n "$REAL_TMUX" ]] && REAL_TMUX="$(readlink -f "$REAL_TMUX")"
+if [[ -z "$REAL_TMUX" || ! -x "$REAL_TMUX" ]]; then
+  echo "tx-sandbox: no tmux binary found on PATH — install tmux first." >&2
+  exit 1
+fi
+
+CHECK_MODE=0
+[[ "${1:-}" == "--check" ]] && CHECK_MODE=1
+
+if [[ -n "${TMUX:-}" && $CHECK_MODE -eq 0 ]]; then
+  echo "Note: you're already inside tmux — the sandbox will nest (prefix keys may clash)."
+  echo "      For the cleanest experience, run this from a plain terminal tab."
+fi
+
+# --- One throwaway directory holds everything: the private socket, the fake
+# $HOME (so the store is $HOME/.tx-ide), and the sandbox bin/. Deleted on exit.
+SANDBOX_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tx-sandbox.XXXXXX")"
+SOCKET="$SANDBOX_DIR/sock"
+export HOME="$SANDBOX_DIR/home"
+mkdir -p "$HOME"
+export TMUX_TMPDIR="$SANDBOX_DIR"
+unset TMUX || true
+
+cleanup() {
+  "$REAL_TMUX" -S "$SOCKET" kill-server 2>/dev/null || true
+  rm -rf "$SANDBOX_DIR"
+  echo "tx-sandbox destroyed."
+}
+trap cleanup EXIT INT TERM HUP
+
+# --- Sandbox bin/, FIRST on PATH, so every tmux/tx/helper call resolves to the
+# private socket and to the repo's OWN working-tree binaries — never the
+# installed ~/.local/bin copies. This is what makes the sandbox test the working
+# tree.
+mkdir -p "$SANDBOX_DIR/bin"
+
+# Shadow every installed CLI with the repo's working-tree copy. tx, the
+# pane-border helpers, and tx-assistant each resolve their own real path via
+# readlink -f, so the symlinks correctly point them back at the repo's lib/ and
+# shared/.
+for binary in "$REPO_ROOT"/bin/*; do
+  [[ -f "$binary" && -x "$binary" ]] && ln -sf "$binary" "$SANDBOX_DIR/bin/$(basename "$binary")"
+done
+
+# tmux wrapper: pin every tmux call (ours, tx's, and the fragment's) to the
+# private socket. Written after the symlink sweep so nothing can shadow it.
+cat >"$SANDBOX_DIR/bin/tmux" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_TMUX" -S "$SOCKET" "\$@"
+EOF
+# txstate convenience: raw store inspector, straight from the repo's lib (honors
+# its own python shebang — no interpreter hardcoded here).
+cat >"$SANDBOX_DIR/bin/txstate" <<EOF
+#!/usr/bin/env bash
+exec "$REPO_ROOT/lib/tx-session-state" "\$@"
+EOF
+chmod +x "$SANDBOX_DIR/bin/tmux" "$SANDBOX_DIR/bin/txstate"
+export PATH="$SANDBOX_DIR/bin:$PATH"
+
+# --- Port the tx-ide tmux integration into the sandbox $HOME: the real prefix
+# (C-a) plus a run-shell of the working-tree fragment (prefix+t/+m/+/ popups,
+# pane-border-format chips, colors). Written before the server starts so it loads
+# on the first session create.
+cat >"$HOME/.tmux.conf" <<EOF
+set -g prefix C-a
+bind C-a send-prefix
+run-shell 'bash "$REPO_ROOT/tmux/tx-ide.tmux"'
+EOF
+
+echo "tx-sandbox: repo   = $REPO_ROOT"
+echo "tx-sandbox: socket = $SOCKET"
+echo "tx-sandbox: \$HOME  = $HOME  (store → \$HOME/.tx-ide/sessions)"
+
+# --- ISOLATION GUARD. The whole guarantee of this tool is that it never reads or
+# writes your real tmux server or real ~/.tx-ide. Assert it and ABORT loudly if
+# ever violated:
+#   1. the socket and the fake $HOME must live inside our temp dir, and
+#   2. the private server must be EMPTY before we seed — if `tmux` (now our
+#      wrapper) can already see any session, we are talking to a populated server
+#      (i.e. the real one), so we refuse to create or touch anything.
+if [[ "$SOCKET" != "$SANDBOX_DIR"/* || "$HOME" != "$SANDBOX_DIR"/* ]]; then
+  echo "tx-sandbox: isolation guard — socket or \$HOME escaped the sandbox dir; aborting." >&2
+  exit 1
+fi
+preexisting_sessions="$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)"
+if [[ -n "$preexisting_sessions" ]]; then
+  echo "tx-sandbox: ISOLATION GUARD TRIPPED — the private tmux server is not empty:" >&2
+  printf '  %s\n' $preexisting_sessions >&2
+  echo "tx-sandbox: refusing to continue so we never touch real sessions." >&2
+  exit 1
+fi
+
+# --- Seed a realistic set (interactive shells so you can poke around). worker
+# carries --chat so its record gets a chat uuid, exercising that path too.
+tx spawn-view home   --tag views          --cwd "$HOME" --cmd "${SHELL:-/bin/zsh}" >/dev/null
+tx spawn      api    --tag llm,backend,api --cwd /tmp    --cmd "${SHELL:-/bin/zsh}" >/dev/null
+tx spawn      web    --tag llm,frontend    --cwd /tmp    --cmd "${SHELL:-/bin/zsh}" >/dev/null
+tx spawn      worker --tag llm,backend,db  --cwd /tmp --chat --cmd "${SHELL:-/bin/zsh}" >/dev/null
+
+if [[ $CHECK_MODE -eq 1 ]]; then
+  failures=0
+  check() { # check <label> <command...>
+    local label="$1"
+    shift
+    if "$@" >/dev/null 2>&1; then
+      printf '  ok    %s\n' "$label"
+    else
+      printf '  FAIL  %s\n' "$label"
+      failures=$((failures + 1))
+    fi
+  }
+
+  echo "--- tx ls ---"
+  tx ls
+  echo "--- store ($HOME/.tx-ide/sessions) ---"
+  ls -1 "$HOME/.tx-ide/sessions/"
+
+  echo "--- verifications ---"
+  prefix="$(tmux show-option -gv prefix 2>/dev/null)"
+  pane_format="$(tmux show-option -gv pane-border-format 2>/dev/null)"
+  echo "  prefix             : $prefix"
+  echo "  pane-border-format : $pane_format"
+  echo "  tmux-pane helper   : $(command -v tmux-pane-session-name)"
+  echo
+
+  # Seeding + chips.
+  check "store holds 4 seeded sessions"   test "$(ls -1 "$HOME/.tx-ide/sessions/" | wc -l | tr -d ' ')" = 4
+  check "tx ls shows the view (home)"     bash -c 'tx ls | grep -qw home'
+  check "tx ls shows a worker (api)"      bash -c 'tx ls | grep -qw api'
+  check "tag chips render in tx ls"       bash -c 'tx ls | grep -qF "[backend]"'
+  # Ported tmux config.
+  check "prefix is C-a"                   test "$prefix" = "C-a"
+  check "pane-border-format uses helper"  bash -c '[[ "$(tmux show-option -gv pane-border-format)" == *tmux-pane-session-name* ]]'
+  check "popup bind prefix+t (tx)"        bash -c 'tmux list-keys -T prefix t | grep -q "tx attach"'
+  check "popup bind prefix+m (mailbox)"   bash -c 'tmux list-keys -T prefix m | grep -q "tx mailbox"'
+  check "popup bind prefix+/ (assistant)" bash -c "tmux list-keys -T prefix '/' | grep -q tx-assistant"
+  # Working tree, not the installed copies.
+  check "tx resolves to this checkout"    bash -c '[[ "$(readlink "$(command -v tx)")" == "'"$REPO_ROOT"'/bin/tx" ]]'
+
+  echo "---"
+  if [[ $failures -eq 0 ]]; then
+    echo "tx-sandbox --check: PASS"
+    exit 0
+  fi
+  echo "tx-sandbox --check: FAIL ($failures)"
+  exit 1
+fi
+
+# --- Visible marker so you never confuse the sandbox with your real tmux.
+tmux set -g status-right " TX SANDBOX — C-a d to quit (auto-cleanup) "
+tmux set -t home pane-border-status top 2>/dev/null || true
+
+cat >"$SANDBOX_DIR/help.txt" <<EOF
+
+  -- tx sandbox -------------------------------------------------
+  Isolated: nothing here touches your real tmux or ~/.tx-ide.
+  Prefix is C-a.  prefix+t = picker popup, prefix+m = mailbox,
+  prefix+/ = tx-assistant prompt (no Claude wired up in here).
+
+    tx ls                 list (VIEWS / PROCESSES)
+    tx attach             the picker — Enter jump, Ctrl-T retag, type to filter
+    tx spawn NAME --tag llm,scope --cwd /tmp --cmd "\$SHELL"
+    tx spawn NAME --tag llm,scope --chat --cmd "\$SHELL"
+    tx spawn-nvim NAME --tag nvim,scope --cwd "$REPO_ROOT"
+    txstate list          raw store rows;  txstate get <id>   full JSON
+
+  Seeded: home (view), api, web, worker(--chat).
+  Quit + destroy everything:  press  C-a  then  d
+  ---------------------------------------------------------------
+EOF
+sleep 0.5
+tmux send-keys -t home "clear; cat '$SANDBOX_DIR/help.txt'" Enter
+
+# Enter the sandbox (blocking). On detach we fall through to cleanup.
+tmux attach -t home
