@@ -16,6 +16,8 @@
 # own tmux.conf wins, since tmux is last-write-wins.
 set -u
 
+TX_SESSION_STATE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/tx-session-state"
+
 option() {
   tmux show-option -gv "$1" 2>/dev/null || printf '%s' "$2"
 }
@@ -64,7 +66,9 @@ set -g pane-border-lines heavy
 set -g pane-border-indicators both
 set -g pane-border-status off
 set -g pane-border-format " [#P] #(tmux-pane-session-name #D) "
-set-hook -g after-new-window "if-shell -F '#{==:#{@kind},view}' 'setw pane-border-status top'"
+EOF
+  cat >>"$CONF" <<EOF
+set-hook -g after-new-window "if-shell 'test \"\$($TX_SESSION_STATE get \"#{@tx_id}\" kind)\" = view' 'setw pane-border-status top'"
 EOF
 fi
 

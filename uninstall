@@ -38,6 +38,7 @@ I will remove:
 I will NOT touch:
   - ~/.claude/mailbox/ (your inbox + running state)
   - ~/.tx-ide/user-agents/ (your role overrides)
+  - ~/.tx-ide/sessions/ (your durable session metadata)
   - any settings.json entry not in _tx_ide_managed
   - ~/.claude/CLAUDE.md
   - the iTerm GlobalKeyMap or your Default profile colors
@@ -133,6 +134,9 @@ if [[ -f "$TX_IDE_DIR/tmux.conf" ]]; then
 fi
 if [[ -d "$TX_IDE_DIR/user-agents" ]]; then
   skip "$TX_IDE_DIR/user-agents" "user data, left alone"
+fi
+if [[ -d "$TX_IDE_DIR/sessions" ]]; then
+  skip "$TX_IDE_DIR/sessions" "session metadata, left alone"
 fi
 if [[ -d "$TX_IDE_DIR" ]]; then
   rmdir "$TX_IDE_DIR" 2>/dev/null && ok "$TX_IDE_DIR" "removed (empty)" || skip "$TX_IDE_DIR" "not empty, left alone"
@@ -233,6 +237,7 @@ ${B}=== Done ===${X}
 ${B}Remaining user data (left in place):${X}
   ${D}~/.claude/mailbox/${X}        inbox, running state, speaker log
   ${D}~/.tx-ide/user-agents/${X}    your role overrides (if any)
+  ${D}~/.tx-ide/sessions/${X}       durable session metadata
 
 ${B}Tmux:${X} reload to drop the bindings:
   ${D}tmux source-file ~/.tmux.conf${X}

@@ -42,23 +42,23 @@ If no envelope is present, treat the request as context-free. Don't guess focus 
 
 ### Sessions
 
-Every tmux session has a name and optionally:
+Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json`, linked to the live session by one tmux pointer, `@tx_id`. The record is the single source of truth for the session's fields, including:
 
-- `@tag` — comma-separated chips rendered by the `tx` picker.
-- `@kind` — a categorical label; the only value in use today is `view`.
+- `tags` — comma-separated chips rendered by the `tx` picker.
+- `kind` — a categorical label; the only value in use today is `view`.
 
-`@tag` and `@kind` are separate tmux options.
+These are **fields in the record**, not tmux options — resolve the session's `@tx_id` to read them, change them through `tx` (never `tmux set @tag`/`@kind`). The record outlives a `kill-session` and a tmux restart.
 
 ### Views vs Processes
 
 `tx ls` splits the world into two buckets:
 
-- **Views** (`@kind=view`) — home-base outer sessions the user lives in. They nest-attach inner sessions (`TMUX= tmux attach -t <inner>`) and act as a stable surface. Views are filtered out of the `tx attach` picker.
+- **Views** (record `kind=view`) — home-base outer sessions the user lives in. They nest-attach inner sessions (`TMUX= tmux attach -t <inner>`) and act as a stable surface. Views are filtered out of the `tx attach` picker.
 - **Processes** — everything else. The tx-assistant itself, AI workers (`llm,...`), nvim companions (`nvim,...`), ad-hoc shells. These are what the user picks from in `tx attach`.
 
 ### Tag convention
 
-The first chip in `@tag` is the kind hint; the rest is more specific (a scope, a role, etc.). Common kinds:
+The first chip in a session's tags is the kind hint; the rest is more specific (a scope, a role, etc.). Common kinds:
 
 - `llm` — Claude Code AI sessions (workers). Scope is the work scope: `llm,wrangler-p1`, `llm,PR-1840`, `llm,auth-review`.
 - `nvim` — nvim companions paired to an `llm` session. Scope matches the parent: parent `llm,wrangler-p1` → companion `nvim,wrangler-p1`.
@@ -77,7 +77,7 @@ You run as the session `tx-assistant`, tagged `tx-system`. "This session" in use
 | Subcommand | Purpose |
 |---|---|
 | `tx ls` | Plain stdout list, two sections: VIEWS, PROCESSES. Use this to answer "what's running" questions. |
-| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]` | Spawn a detached tmux session. `--tag` is mandatory. `--cwd` defaults to the firing pane's path. `--cmd` defaults to the user's shell. `--env` may repeat to pass env vars into the session. |
+| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--chat] [--env K=V ...]` | Spawn a detached tmux session. `--tag` is mandatory. `--cwd` defaults to the firing pane's path. `--cmd` defaults to the user's shell. `--chat` mints a `TX_CHAT_ID` so the command can resume its transcript. `--env` may repeat to pass env vars into the session. |
 | `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]` | Spawn an nvim companion. `--diff` defaults `BASE` to `main` if omitted. Forces a dark colorscheme. `--env` may repeat. |
 | `tx send-message <target> <body>` | Peer-message another Claude Code session. Wraps body in the `<from-claude session="...">…</from-claude>` envelope, fills your session name automatically, handles the post-send sleep. |
 | `tx attach` | Open the picker. Interactive — don't invoke from your shell. Mention it when telling the user how to reach a session. |
@@ -94,12 +94,11 @@ Mandatory flag on both spawn commands: `--tag`. They refuse without it.
 - `tmux select-window -t <session>:<window>` / `tmux select-pane -t <pane-id>` — navigate within a session.
 - `tmux kill-session -t <name>` — terminate. See **Guarded sessions** below.
 - `tmux rename-session -t <old> <new>` — rename in place.
-- `tmux set -t <session> @tag "kind,scope"` — set or change a tag. Pass a single comma-separated string.
-- `tmux show-options -vqt <session> @tag` / `@kind` — read.
+- Tags/kind are not tmux options — set them at spawn via `--tag`; to retag a live session, use the picker's Ctrl-T (`tx attach`). `tmux show-options -vqt <session> @tx_id` resolves a session to its record.
 - `tmux display-message -p '#{...}'` — read pane/session attributes.
 - `tmux send-keys -t <target> -l -- "<line>"` followed by `sleep 0.3` then `tmux send-keys -t <target> Enter` — send a line to a session's active pane. The sleep is required because Claude Code's input box drops Enter if it arrives too fast.
 
-**Never kill and respawn a session to apply a change.** Use `tmux rename-session` / `tmux set @tag` in place — kill-respawn loses scrollback, breaks attached clients, and drops any nest-attached inner sessions.
+**Never kill and respawn a session to apply a change.** Rename in place with `tmux rename-session` and retag via the picker's Ctrl-T — kill-respawn loses scrollback, breaks attached clients, and drops any nest-attached inner sessions.
 
 ## Configuration
 

@@ -33,6 +33,8 @@ session=tx-assistant
 priming='Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/TX-ASSISTANT.md as your first actions. Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.md, ~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/TX-ASSISTANT.md, and ~/.tx-ide/user-agents/TX-ASSISTANT.local.md (any user-agents/X.md replaces the shipped one; any user-agents/X.local.md extends it). Follow all of these for the duration of this session.'
 
 repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
+tx_session_state="$repo/lib/tx-session-state"
+tx_python=$(command -v python3.14)
 
 xml_escape() {
   local raw="$1"
@@ -64,9 +66,14 @@ build_envelope() {
   IFS='|' read -r session_name window_index window_name pane_index pane_title pane_command pane_path pane_tty <<<"$line"
   local pane_id="$target_pane"
 
-  local session_kind session_tag
-  session_kind=$(tmux show-options -vqt "$session_name" @kind 2>/dev/null) || session_kind=""
-  session_tag=$(tmux show-options -vqt "$session_name" @tag 2>/dev/null) || session_tag=""
+  local session_id session_kind session_tag
+  session_id=$(tmux show-options -vqt "$session_name" @tx_id 2>/dev/null) || session_id=""
+  session_kind=""
+  session_tag=""
+  if [ -n "$session_id" ]; then
+    session_kind=$("$tx_python" "$tx_session_state" get "$session_id" kind 2>/dev/null) || session_kind=""
+    session_tag=$("$tx_python" "$tx_session_state" get "$session_id" tags 2>/dev/null) || session_tag=""
+  fi
 
   local envelope="<tx-command-prompt"
   envelope+=$(attr session-name "$session_name")
@@ -92,9 +99,14 @@ build_envelope() {
     inner_session=$(tmux list-clients -F '#{client_tty} #{client_session}' 2>/dev/null |
       awk -v t="$pane_tty" '$1==t {print $2; exit}')
     if [ -n "$inner_session" ]; then
-      local inner_kind inner_tag inner_info
-      inner_kind=$(tmux show-options -vqt "$inner_session" @kind 2>/dev/null) || inner_kind=""
-      inner_tag=$(tmux show-options -vqt "$inner_session" @tag 2>/dev/null) || inner_tag=""
+      local inner_id inner_kind inner_tag inner_info
+      inner_id=$(tmux show-options -vqt "$inner_session" @tx_id 2>/dev/null) || inner_id=""
+      inner_kind=""
+      inner_tag=""
+      if [ -n "$inner_id" ]; then
+        inner_kind=$("$tx_python" "$tx_session_state" get "$inner_id" kind 2>/dev/null) || inner_kind=""
+        inner_tag=$("$tx_python" "$tx_session_state" get "$inner_id" tags 2>/dev/null) || inner_tag=""
+      fi
       inner_info=$(tmux display-message -t "$inner_session" -p \
         '#{window_index}|#{window_name}|#{pane_id}|#{pane_index}|#{pane_title}|#{pane_current_command}|#{pane_current_path}' \
         2>/dev/null) || inner_info=""
@@ -122,10 +134,17 @@ ensure_session() {
     echo existed
     return
   fi
-  tmux new-session -d -s "$session" -c "$repo" \
+  local claude_cmd="claude --model sonnet --effort low --dangerously-skip-permissions"
+  local parent pid id
+  id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+  parent=$(tmux display-message -p '#S' 2>/dev/null) || parent=""
+  pid=$(tmux new-session -d -P -F '#{pane_pid}' -s "$session" -c "$repo" \
     -e COLORTERM=truecolor -e TERM=xterm-256color \
-    "claude --model sonnet --effort low --dangerously-skip-permissions"
-  tmux set -t "$session" @tag "tx-system"
+    -e "TX_SESSION_ID=$id" \
+    "$claude_cmd")
+  "$tx_python" "$tx_session_state" new --id "$id" --name "$session" --kind "" --tags "tx-system" \
+    --cwd "$repo" --cmd "$claude_cmd" --parent "$parent" --pid "$pid" >/dev/null
+  tmux set -t "$session" @tx_id "$id"
   # Wait for claude's input box to render (its prefix char is `❯`, not `>`).
   for _ in $(seq 1 20); do
     tmux capture-pane -p -t "$session" 2>/dev/null | grep -q '❯ ' && break

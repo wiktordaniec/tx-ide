@@ -7,7 +7,7 @@ These conventions apply to every Claude Code session in this system: the tx-assi
 Use `tx spawn` (bare) and `tx spawn-nvim` (nvim companion). Both require `--tag` and refuse without it — no inheritance, no auto-magic, you pass the tags explicitly.
 
 ```bash
-tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
+tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--chat] [--env K=V ...]
 tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]
 ```
 
@@ -17,7 +17,7 @@ tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]
 - AI worker session: `--tag llm,<scope>` (e.g. `llm,wrangler-p1`)
 - Nvim companion: `--tag nvim,<scope>` (use the same `<scope>` as the parent llm session)
 
-`<scope>` describes the task (`wrangler-p1`, `PR-1840`, `auth-review`). The picker reads the `@tag` user-option and chips each comma-separated value; same scope on both makes them surface together when you filter by it.
+`<scope>` describes the task (`wrangler-p1`, `PR-1840`, `auth-review`). The picker reads each session's tags from its durable record and chips each comma-separated value; same scope on both makes them surface together when you filter by it.
 
 **Naming:** human-readable, says what it's for (e.g. `wrangler-p1-diff`, `auth-review`). The tag does the filtering, not the name.
 
@@ -27,6 +27,12 @@ tx spawn-nvim wrangler-p1-diff --tag nvim,wrangler-p1 --diff main
 ```
 
 Both inject `COLORTERM=truecolor` and `TERM=xterm-256color`. `spawn-nvim` also forces `colorscheme tokyonight-moon` via `+CMD` because `tmux new-session -d` strips the OSC11 background hint and nvim's auto-mode would land on the light variant.
+
+## Session metadata
+
+Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` holding its `name`, `kind`, `tags`, `cwd`, `cmd`, `env`, `parent`, `pid`, and `chats`. One tmux pointer, `@tx_id` (set once at spawn), links the live session to its record, so the record survives a `kill-session` or a tmux restart. Spawning exports `TX_SESSION_ID` into the session; passing `--chat` to `tx spawn` also mints `TX_CHAT_ID` so the command can resume its transcript (e.g. `claude --session-id "$TX_CHAT_ID"`).
+
+Tags and kind live in the record, not tmux options — read them by resolving `@tx_id`, and change tags through `tx` (the picker's Ctrl-T), never `tmux set @tag`/`@kind`.
 
 ## Inter-session communication
 

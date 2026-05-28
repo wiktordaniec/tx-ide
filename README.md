@@ -40,7 +40,7 @@ tx start    # create Views + warm the tx-assistant
 ./uninstall
 ```
 
-Reverses every change `./install` made. Leaves your inbox data (`~/.claude/mailbox/`), your role overrides (`~/.tx-ide/user-agents/`), and the repo itself in place.
+Reverses every change `./install` made. Leaves your inbox data (`~/.claude/mailbox/`), your role overrides (`~/.tx-ide/user-agents/`), your session metadata (`~/.tx-ide/sessions/`), and the repo itself in place.
 
 ## What install actually changes
 
@@ -50,6 +50,7 @@ Reverses every change `./install` made. Leaves your inbox data (`~/.claude/mailb
 - `~/.claude/statusline.sh` — symlink to `claude/statusline.sh`
 - `~/.tx-ide/agents/` — symlink to `agents/` (shipped role files; updates with `git pull`)
 - `~/.tx-ide/user-agents/` — empty directory for your role overrides + `.local.md` companions
+- `~/.tx-ide/sessions/` — durable per-session metadata, one `<uuid>.json` per tx-created session (created on first spawn, not by install; preserved on uninstall)
 - `~/.tx-ide/tmux.conf` — one-line shim that `run-shell`s the view
 - `~/.claude/settings.local.json` — Claude Code merges this with your `settings.json`
 
