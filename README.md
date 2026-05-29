@@ -9,12 +9,13 @@ Layered as an additive install: nothing you've configured in tmux, Claude Code, 
 | Command | What it does |
 |---|---|
 | `tx start` | Set up the tx-ide view: create the `Views` home-base session and warm the `tx-assistant` Claude Code session. `--restart` recreates the assistant. |
-| `tx attach` | Fuzzy-pick a tmux session and nest-attach in the current pane. Filters by `@tag` user-options rendered as chips. Supports local + remote (`tx attach --all`, `tx attach --host`). Bound to `prefix + t` as a centered popup. |
+| `tx attach` | Fuzzy-pick a tmux session and nest-attach in the current pane. Filters by each session's tags (from its durable record) rendered as chips. Supports local + remote (`tx attach --all`, `tx attach --host`). Bound to `prefix + t` as a centered popup. |
+| `tx tag <name> [tags]` | Read or set a session's tags in the durable store — the chips shown in the picker and pane borders. With `tags` (comma-separated): set them; without: print them. The same store is written by `tx spawn --tag` and the picker's Ctrl-T; tags are never `tmux set @tag` options. |
 | `tx mailbox` | Curses TUI mailbox. Shows unread Claude Code Stop events + active sessions, grouped by tmux session and tagged. `Enter` jumps to the hosting pane. Bound to `prefix + m`. |
 | `prefix + /` | Open a one-line `tx-assistant>` prompt. Whatever you type is forwarded to the persistent `tx-assistant` Claude session (Haiku, low effort) that runs tmux/tx operations and spawns Claude Code workers on your behalf. Fire and forget — attach via `tx attach` (filter `tx-assistant`) to see what it did. |
 | `tx` / `tx help` | Show the command summary. |
 | Statusline | Two-line Claude Code statusline: repo / worktree / branch · model · tokens · 5h-rate-limit · 7d-rate-limit. |
-| Pane border integration | Pane borders show inner attached session name + `@tag` chips. Remote ssh-attached panes are prefixed `(r)`. |
+| Pane border integration | Pane borders show inner attached session name + tag chips (from the durable record). Remote ssh-attached panes are prefixed `(r)`. |
 | Claude scroll intercept | `C-u` / `C-d` scroll Claude Code's TUI (PageUp / PageDown). Pass through everywhere else. |
 | `M-1..9` / `User0..8` | Pane and window quick-switch. Requires your terminal to emit the matching escape sequences (`setup/iterm.sh` configures iTerm2). |
 

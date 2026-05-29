@@ -32,7 +32,7 @@ Both inject `COLORTERM=truecolor` and `TERM=xterm-256color`. `spawn-nvim` also f
 
 Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` holding its `name`, `kind`, `tags`, `cwd`, `cmd`, `env`, `parent`, `pid`, and `chats`. One tmux pointer, `@tx_id` (set once at spawn), links the live session to its record, so the record survives a `kill-session` or a tmux restart. Spawning exports `TX_SESSION_ID` into the session; passing `--chat` to `tx spawn` also mints `TX_CHAT_ID` so the command can resume its transcript (e.g. `claude --session-id "$TX_CHAT_ID"`).
 
-Tags and kind live in the record, not tmux options — read them by resolving `@tx_id`, and change tags through `tx` (the picker's Ctrl-T), never `tmux set @tag`/`@kind`.
+Tags and kind live in the record, not tmux options — read them by resolving `@tx_id`, and change tags through `tx tag <name> [tags]` (or the picker's Ctrl-T), never `tmux set @tag`/`@kind`.
 
 ## Inter-session communication
 
