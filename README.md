@@ -2,7 +2,7 @@
 
 A tmux + Claude Code "view" — one CLI (`tx`) for picking sessions, opening the mailbox, and spawning Claude Code workers (via the `tx-assistant` popup), plus a repo/branch/model statusline.
 
-Layered as an additive install: nothing you've configured in tmux, Claude Code, or your shell gets overwritten. Everything goes into files **tx-ide owns** (`~/.tx-ide/`, `~/.claude/settings.local.json`) or into clearly-marked blocks of your existing config (`~/.tmux.conf`). `./uninstall` puts it all back.
+Layered as an additive install: nothing you've configured in Claude Code or your shell gets overwritten. Everything goes into files **tx-ide owns** (`~/.tx-ide/`, `~/.claude/settings.local.json`) or into clearly-marked blocks of your existing config. For `~/.tmux.conf` specifically: a fresh machine gets the tx-ide default config, and an existing one is only ever replaced if you confirm (always backed up). `./uninstall` puts it all back.
 
 ## What you get
 
@@ -55,13 +55,14 @@ Reverses every change `./install` made. Leaves your inbox data (`~/.claude/mailb
 - `~/.tx-ide/tmux.conf` — one-line shim that `run-shell`s the view
 - `~/.claude/settings.local.json` — Claude Code merges this with your `settings.json`
 
-**Adds one marked block** to (with backup):
-- `~/.tmux.conf` — three lines: `# === BEGIN tx-ide ===`, a `source-file` line, `# === END tx-ide ===`
+**Sets up** `~/.tmux.conf` (with backup):
+- No existing file → installs the tx-ide default ([`tmux/tmux.conf`](tmux/tmux.conf))
+- Existing file → adds a marked block (`# === BEGIN tx-ide ===`, a `source-file` line, `# === END tx-ide ===`), or — with a `[y/N]` confirm — replaces it with the default
 
 **Does not touch**:
 - `~/.claude/settings.json` (Claude Code concatenates `hooks` from `settings.local.json` automatically)
 - `~/.claude/CLAUDE.md`
-- Any tmux config outside the marked block
+- Your existing `~/.tmux.conf`, unless you confirm a replace (`[y/N]`, backed up)
 - iTerm preferences if iTerm is currently running (you get a hint to re-run `setup/iterm.sh` later)
 
 ## Customizing the view
@@ -78,6 +79,8 @@ set -g @tx-ide-palette         tokyonight-night   # or 'off' to skip color overr
 ```
 
 tmux's "last write wins" means anything you bind *after* the source-file line wins over tx-ide's defaults.
+
+The installer ships a full default `~/.tmux.conf` ([`tmux/tmux.conf`](tmux/tmux.conf)) — prefix, copy-mode, status bar, splits, resize keys, TPM, all layered over the tx-ide view. It's installed automatically if you have no `~/.tmux.conf`; if you already have one, the installer offers to replace it (`[y/N]`, backed up first) or just appends the `source-file` block.
 
 ### Theme
 

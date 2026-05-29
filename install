@@ -89,7 +89,9 @@ I will:
   - symlink agents dir: ~/.tx-ide/agents/ → repo (orchestration role files)
   - create ~/.tx-ide/user-agents/ (empty; drop overrides + .local.md here)
   - write ~/.tx-ide/tmux.conf (a one-line file I own)
-  - add one source-file block to ~/.tmux.conf (with markers + backup)
+  - install the tx-ide default ~/.tmux.conf if you have none; if you
+      already have one, add a source-file block (or, with a [y/N]
+      confirm, replace it with the default) — backup either way
   - add hooks + statusLine to ~/.claude/settings.json (with backup)
       (4 mailbox hook entries + statusLine, tracked via a _tx_ide_managed
        marker so uninstall removes only ours. Your existing hooks,
@@ -102,7 +104,7 @@ I will:
 I will NOT touch:
   - any settings.json entry I didn't add (permissions, theme, plugins, other hooks)
   - ~/.claude/CLAUDE.md
-  - any tmux config outside the marked source-file block
+  - your existing ~/.tmux.conf, unless you confirm a replace ([y/N], backed up)
   - any iTerm preference if iTerm is currently running (you'll get a hint)
   - ~/.tx-ide/user-agents/ contents (your overrides survive re-runs)
 
@@ -255,30 +257,43 @@ else
   ok "$TX_IDE_CONF" "written"
 fi
 
-# === 6: ~/.tmux.conf source-file block ===
-header "~/.tmux.conf source-file"
+# === 6: ~/.tmux.conf default + source-file block ===
+# The tx-ide default IS the example config at tmux/tmux.conf (a full personal
+# setup that already ends with the source-file block). Behavior:
+#   - no ~/.tmux.conf       → install the default
+#   - has one, block present → leave it (idempotent re-run)
+#   - has one, no block      → confirm replace-with-default [y/N]; on no,
+#                              just append the source-file block. Backup either way.
+header "~/.tmux.conf"
 USER_TMUX_CONF="$HOME_DIR/.tmux.conf"
+EXAMPLE_TMUX_CONF="$REPO/tmux/tmux.conf"
 BEGIN_MARKER="# === BEGIN tx-ide ==="
 END_MARKER="# === END tx-ide ==="
 
-if [[ -f "$USER_TMUX_CONF" ]] && grep -qF "$BEGIN_MARKER" "$USER_TMUX_CONF"; then
-  ok "$USER_TMUX_CONF" "block present"
-else
-  if [[ -f "$USER_TMUX_CONF" ]]; then
-    cp "$USER_TMUX_CONF" "$USER_TMUX_CONF.bak.$STAMP"
-    note="backup: $USER_TMUX_CONF.bak.$STAMP"
-  else
-    : >"$USER_TMUX_CONF"
-    note="file created"
-  fi
+append_block() {
   cat >>"$USER_TMUX_CONF" <<EOF
 
 $BEGIN_MARKER
 source-file $TX_IDE_CONF
 $END_MARKER
 EOF
-  ok "$USER_TMUX_CONF" "block added"
-  info "$note"
+}
+
+if [[ ! -f "$USER_TMUX_CONF" ]]; then
+  cp "$EXAMPLE_TMUX_CONF" "$USER_TMUX_CONF"
+  ok "$USER_TMUX_CONF" "installed tx-ide default"
+elif grep -qF "$BEGIN_MARKER" "$USER_TMUX_CONF"; then
+  ok "$USER_TMUX_CONF" "block present"
+else
+  cp "$USER_TMUX_CONF" "$USER_TMUX_CONF.bak.$STAMP"
+  if confirm "Replace your ~/.tmux.conf with the tx-ide default?" N; then
+    cp "$EXAMPLE_TMUX_CONF" "$USER_TMUX_CONF"
+    ok "$USER_TMUX_CONF" "replaced with tx-ide default"
+  else
+    append_block
+    ok "$USER_TMUX_CONF" "block added"
+  fi
+  info "backup: $USER_TMUX_CONF.bak.$STAMP"
 fi
 
 # === 7: ~/.claude/settings.json merge ===
