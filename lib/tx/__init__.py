@@ -1,22 +1,30 @@
 """tx-ide — an object-oriented Python core for tmux + Claude Code session management.
 
-Stage **S0 (Foundation)**: the data model, persistence, and adapter skeletons that every later
-stage depends on and that the interface freeze locks. See `.claude/plans/execution-plan.md` (S0)
-and `.claude/plans/tx-service-redesign.md`.
+Stages **S0 (Foundation)** + **S1a (Service + non-interactive CLI)**: the data model, persistence,
+adapters, and the application core that every later stage depends on and that the interface freeze
+locks. See `.claude/plans/execution-plan.md` (S0/S1a) and `.claude/plans/tx-service-redesign.md`.
 
 Public API frozen here:
-  - `Session` + `ChatRef` / `Origin` / `Location` + `Kind` / `Role` / `State` (session.py)
-  - `SessionStore` — filesystem-direct repository (store.py)
-  - `Storage` / `LocalStorage` / `S3Storage` + the `$TX_IDE_HOME` layout helpers (storage.py)
-  - `EventLog` — the D8 provenance log (events.py)
-  - the `claude` module — Claude paths / launch flags / bundle layout (claude.py)
+  - S0 data model: `Session` + `ChatRef` / `Origin` / `Location` + `Kind` / `Role` / `State`
+  - S0 persistence: `SessionStore` (filesystem-direct), `Storage` / `LocalStorage` / `S3Storage`
+    + the `$TX_IDE_HOME` layout helpers, `EventLog` (D8 log), the `claude` module
+  - S1a core: `SessionService` (the mutation chokepoint), `Tmux` (the tmux adapter, attachment
+    reads are S6 placeholders), `Reconciler` (no-daemon liveness), `SpawnSpec` (+ `infer_role`)
 
-Later stages add (not in S0): service.py, reconcile.py, tmux.py, spawn.py, cli.py, render.py,
-history.py, chat.py, hooks.py.
+Later stages add: history.py (S3), chat.py (S4), hooks.py (S2). cli.py / render.py are the
+presentation layer (not part of the frozen import surface).
 """
 
 from . import claude
 from .events import EventLog
+from .reconcile import Reconciler
+from .service import (
+    NotInsideTmux,
+    ServiceError,
+    SessionExists,
+    SessionNotFound,
+    SessionService,
+)
 from .session import (
     SCHEMA_VERSION,
     ChatRef,
@@ -28,6 +36,7 @@ from .session import (
     State,
     UnsupportedRecordError,
 )
+from .spawn import SpawnSpec, infer_role
 from .storage import (
     DEFAULT_HOME,
     LocalStorage,
@@ -43,8 +52,9 @@ from .storage import (
     user_agents_dir,
 )
 from .store import SessionStore
+from .tmux import Tmux, TmuxError
 
-__version__ = "0.0.0-s0"
+__version__ = "0.0.0-s1a"
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -54,13 +64,22 @@ __all__ = [
     "Kind",
     "Location",
     "LocalStorage",
+    "NotInsideTmux",
     "Origin",
+    "Reconciler",
     "Role",
     "S3Storage",
+    "ServiceError",
     "Session",
+    "SessionExists",
+    "SessionNotFound",
+    "SessionService",
     "SessionStore",
+    "SpawnSpec",
     "State",
     "Storage",
+    "Tmux",
+    "TmuxError",
     "UnsupportedRecordError",
     "claude",
     "config_path",
@@ -68,6 +87,7 @@ __all__ = [
     "ensure_home",
     "history_dir",
     "hooks_dir",
+    "infer_role",
     "log_path",
     "sessions_dir",
     "tx_ide_home",
