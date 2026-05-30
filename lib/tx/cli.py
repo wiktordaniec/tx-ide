@@ -1,13 +1,14 @@
-"""CLI command registry (stage S1a) — `tx <verb>` → a small command object.
+"""CLI command registry (stages S1a + S1b) — `tx <verb>` → a small command object.
 
 A thin façade per the design: each command parses its own argv (boundary validation lives here)
-and renders `SessionService` results — ZERO business logic. Objects are instantiated fresh per
-invocation (no daemon). Out of scope here: the interactive `attach` picker (S1b), `hook` (S2), and
-history / resume / fork / handover / rollover (S3/S4). This stage ships the **non-interactive
-verbs at parity** plus the internal `_session-closed` / `_list` / `_init-home` seams (and the S0
-`selfcheck` smoke test, kept hidden).
+and renders `SessionService` results — ZERO business logic for the non-interactive verbs. The S1b
+`attach` picker is the one interactive front-end (§1): it builds the fzf UI, feeds rows from the
+service (`tx _list`), and drives the post-selection nest-attach through the `Tmux` adapter. Objects
+are instantiated fresh per invocation (no daemon). Still out of scope: `hook` (S2) and history /
+resume / fork / handover / rollover (S3/S4). Hidden seams: `_session-closed` / `_list` / `_edit-tag`
+/ `_init-home` (and the S0 `selfcheck` smoke test).
 
-See tx-service-redesign.md §6 (CLI surface) + §1 ("CLI parses argv + renders; zero business logic").
+See tx-service-redesign.md §6 (CLI surface) + §1 ("CLI parses argv + renders") + C12 (picker keys).
 """
 
 from __future__ import annotations
@@ -15,18 +16,21 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
 
-from . import claude, hooks
+from . import claude, hooks, palette
 from .events import EventLog
-from .render import picker_rows, render_ls
+from .render import picker_display_rows, picker_namew, render_ls
 from .service import ServiceError, SessionService
 from .session import SCHEMA_VERSION, ChatRef, Kind, Origin, Role, Session, State
-from .spawn import SpawnSpec
+from .spawn import SHELL_COMMANDS, SpawnSpec
 from .storage import ensure_home, tx_ide_home
 from .store import SessionStore
 from .tmux import TmuxError
@@ -60,6 +64,24 @@ def _repo_root() -> Path:
     """The cloned repo root (for `start` to find `bin/tx-assistant`). `cli.py` → `lib/tx` → `lib`
     → repo."""
     return Path(__file__).resolve().parents[2]
+
+
+def detect_term_cols() -> int:
+    """Width of the surrounding terminal/popup (port of the bash `detect_term_cols`). Inside a tmux
+    popup, `/dev/tty` is the popup's pty so this returns the popup width; falls back to $COLUMNS / 80
+    when there is no controlling terminal (e.g. a non-interactive `tx _list`)."""
+    try:
+        with open("/dev/tty") as tty:
+            return os.get_terminal_size(tty.fileno()).columns
+    except OSError:
+        return shutil.get_terminal_size(fallback=(80, 24)).columns
+
+
+def _env_namew() -> int:
+    """The NAME column width the picker exported as `$NAMEW` so a `reload-sync` subshell (`tx _list`)
+    renders at the same width as the initial paint. Default 18 when run standalone (matches bash)."""
+    raw = os.environ.get("NAMEW", "")
+    return int(raw) if raw.isdigit() else 18
 
 
 class Command:
@@ -171,13 +193,15 @@ class LsCommand(Command):
 
 class ListCommand(Command):
     name = "_list"
-    summary = "Internal: tab-separated picker feed (consumed by the S1b fzf picker)."
+    summary = "Internal: ANSI fzf picker feed (the initial paint + each reload-sync of `tx attach`)."
 
     def run(self, argv: list[str]) -> int:
-        # Lenient on argv: the S1b picker layers global flags (--all/--host) on top of this seam.
+        # Lenient on argv (the picker is the only caller). Reconcile-on-read (~1 Hz from the picker's
+        # refresh loop) keeps the list fresh: vanished sessions drop out below, new ones appear. The
+        # NAME width comes from $NAMEW so this matches the picker's initial paint width.
         self.service.reconcile()
         live = [session for session in self.service.store.all() if session.is_alive()]
-        print(picker_rows(live))
+        print(picker_display_rows(live, _env_namew()))
         return 0
 
 
@@ -322,6 +346,253 @@ class StartCommand(Command):
         return 0
 
 
+# ----- interactive picker (S1b) ------------------------------------------------------------
+
+
+class AttachCommand(Command):
+    """`tx attach` — the interactive fzf picker (a faithful port of the old bash `cmd_pick`).
+
+    The fzf machinery is preserved exactly: `--listen` + a ~1 Hz `reload-sync` refresh loop
+    (reconcile-on-read), the `TX_ARM_FILE` two-press Ctrl-D kill, Ctrl-T retag-in-popup, the focus /
+    armed headers, `--jump`, and `-f` prefill (C12). Rows are fed from the Python service (`tx
+    _list`); the post-selection action nest-attaches the chosen session into the launching Views
+    pane (else switch-client / foreground attach), preserving today's behavior (the real
+    attachment-topology join is S6). Views are filtered out (§7); only CURRENT live sessions list.
+    """
+
+    name = "attach"
+    summary = "Open the interactive session picker (fzf)."
+
+    def run(self, argv: list[str]) -> int:
+        parser = self._parser()
+        parser.add_argument("-f", "--filter", dest="query", default="", metavar="QUERY",
+                            help="pre-fill the search with QUERY")
+        parser.add_argument("-j", "--jump", action="store_true",
+                            help="Enter focuses the existing pane hosting the session instead of "
+                                 "nest-attaching here (popup-friendly)")
+        parser.add_argument("--host", nargs="?", const="personal", metavar="ALIAS",
+                            help="pick from remote tmux on ssh ALIAS (not wired in S1b — C11/S1a)")
+        parser.add_argument("--all", dest="mix", action="store_true",
+                            help="pick from local + remote (not wired in S1b — C11/S1a)")
+        args = parser.parse_args(argv)
+
+        if args.host or args.mix:
+            print("tx attach: the remote picker (--host/--all) is a C11 non-store passthrough "
+                  "owned by S1a; it is not wired into the S1b local picker yet.", file=sys.stderr)
+            return 2
+
+        # Size the NAME column once (terminal width + longest live name) and export it so each
+        # reload-sync subshell (`tx _list`) renders at the same width as the initial paint.
+        self.service.reconcile()
+        live = [s for s in self.service.store.all() if s.is_alive() and s.kind != Kind.VIEW]
+        namew = picker_namew(detect_term_cols(), max((len(s.name) for s in live), default=0))
+        os.environ["NAMEW"] = str(namew)
+
+        # Arm file for the two-press Ctrl-D kill: holds the row armed by the last Ctrl-D (empty =
+        # not armed). Cleared on every cursor move and on confirm/cancel; removed when we exit.
+        handle, arm_file = tempfile.mkstemp(prefix="tx-kill-arm.")
+        os.close(handle)
+        os.environ["TX_ARM_FILE"] = arm_file
+        try:
+            return self._loop(args.jump, self._fzf_opts(namew, args.query), namew)
+        finally:
+            Path(arm_file).unlink(missing_ok=True)
+
+    # ----- fzf invocation ------------------------------------------------------------------
+
+    def _fzf_opts(self, namew: int, query: str) -> list[str]:
+        """Build the fzf argv — a 1:1 port of the bash `opts` array. The `{1}` / `{2}` placeholders
+        and `$TX_ARM_FILE` / `$FZF_PORT` stay literal (fzf / its child shell expand them); palette
+        escapes, the column header, and the `bin/tx` path are interpolated here."""
+        bin_tx = str(_repo_root() / "bin" / "tx")
+        reload = f"reload-sync({bin_tx} _list)"
+        bold, reset = palette.BOLD, palette.RESET
+        header_cols = f"{'NAME':<{namew}}   STARTED IDLE   TAGS"
+
+        # Focus header: bold-accent name + bold-fg tag chips on line 1 (mirrors the active-pane
+        # title), the column header on line 2. {1}=name, {2}=plain chips. `\n` stays literal so the
+        # popup printf makes two lines.
+        focus_cmd = (
+            f"printf '{palette.ACCENT_ANSI}{bold}%s{reset} "
+            f"{palette.FG_ANSI}{bold}%s{reset}\\n%s' {{1}} {{2}} '{header_cols}'"
+        )
+        # Armed header: line 1 swapped for a bold-yellow kill prompt — `[y/N]` (NOT `(y/N)`: a `)`
+        # would close the fzf action arg); line 2 keeps the column header so the layout is stable.
+        arm_cmd = (
+            f"printf '{palette.WARN_ANSI}{bold} ⚠  Kill \"%s\"? [y/N]{reset}\\n%s' "
+            f"{{1}} '{header_cols}'"
+        )
+        color = (
+            f"fg:{palette.DIM_FG_HEX},pointer:{palette.ACCENT_HEX},fg+:{palette.DIM_FG_HEX}:regular,"
+            f"bg+:{palette.SELECTION_BG}:regular,hl:{palette.ACCENT_HEX},hl+:{palette.ACCENT_HEX},"
+            f"header:{palette.DIM_FG_HEX},footer:{palette.DIM_FG_HEX},prompt:{palette.DIM_FG_HEX},"
+            f"query:{palette.FG_HEX}"
+        )
+        return [
+            "fzf", "--exact", "--ansi", "--prompt=  ❯ ", "--height=100%", "--reverse",
+            "--delimiter=\t", "--with-nth=4..", "--listen", "--track",
+            f"--color={color}", f"--header={header_cols}", f"--query={query}",
+            # Refresh loop (reconcile-on-read) + unbind y/n on start so they fall through to query
+            # input until Ctrl-D arms a row. ESC is left untouched so it always aborts.
+            f'--bind=start:execute-silent(( while sleep 1; do '
+            f'curl -fsS -XPOST "localhost:$FZF_PORT" -d "{reload}" >/dev/null 2>&1 || exit 0; '
+            f'done ) &)+unbind(y,n)',
+            f'--bind=ctrl-r:{reload}',
+            # Cursor move re-renders the focus header, clears the arm file, unbinds the confirm keys.
+            f'--bind=focus:transform-header({focus_cmd})+execute-silent(: >"$TX_ARM_FILE")'
+            f'+unbind(y,n)',
+            # Ctrl-T: edit tags in a popup (readline pre-fill), then reload to show the new chips.
+            f'--bind=ctrl-t:execute(tmux display-popup -E -h 5 -w 60% "{bin_tx} _edit-tag {{1}}")'
+            f'+{reload}',
+            # Two-press Ctrl-D kill: arm the row, swap in the prompt header, rebind y/n. `y` drives
+            # `tx kill` (record → EXITED + logged, not a raw kill-session) then reloads; `n` /
+            # cursor-move cancel and restore the focus header. y/n unbind themselves after firing.
+            f'--bind=ctrl-d:execute-silent(printf \'%s\' {{1}} >"$TX_ARM_FILE")'
+            f'+transform-header({arm_cmd})+rebind(y,n)',
+            f'--bind=y:execute-silent({bin_tx} kill {{1}} >/dev/null 2>&1; : >"$TX_ARM_FILE")'
+            f'+{reload}+unbind(y,n)',
+            f'--bind=n:transform-header({focus_cmd})+execute-silent(: >"$TX_ARM_FILE")+unbind(y,n)',
+        ]
+
+    def _loop(self, jump: bool, opts: list[str], namew: int) -> int:
+        """Re-render the feed, run fzf, act on the selection — looping only on a recoverable miss
+        (a vanished session / a failed jump), exactly like the bash `while :` loop."""
+        while True:
+            result = subprocess.run(opts, input=self._render_feed(namew),
+                                    stdout=subprocess.PIPE, text=True)
+            if result.returncode != 0 or not result.stdout.strip():
+                return 0  # ESC / abort / empty list
+            name = result.stdout.rstrip("\n").split("\t")[0]
+            if jump:
+                if self._jump_to_session(name):
+                    return 0
+                print(f"tx: could not jump to or switch to session {name}", file=sys.stderr)
+                time.sleep(1.2)
+                continue
+            if self._nest_attach(name):
+                return 0
+            time.sleep(1.2)
+
+    def _render_feed(self, namew: int) -> str:
+        self.service.reconcile()
+        live = [s for s in self.service.store.all() if s.is_alive()]
+        return picker_display_rows(live, namew)
+
+    # ----- post-selection action -----------------------------------------------------------
+
+    def _nest_attach(self, name: str) -> bool:
+        """Attach the chosen LOCAL session (cmd_pick's loop body): nest-attach into the launching
+        Views pane when applicable, else switch-client / foreground attach. False = the session
+        vanished (re-loop)."""
+        if not self.service.tmux.has_session(name):
+            print(f"tx: session '{name}' does not exist", file=sys.stderr)
+            return False
+        if self._respawn_into_view_pane(name):
+            return True
+        return self._switch_or_attach(name)
+
+    def _jump_to_session(self, name: str) -> bool:
+        """`--jump`: focus the existing pane already hosting `name` instead of nest-attaching here
+        (port of `jump_to_session`). Falls back to nest-attach-into-view, then switch-client."""
+        tmux = self.service.tmux
+        if not tmux.has_session(name):
+            print(f"tx: session '{name}' does not exist", file=sys.stderr)
+            return False
+        current_session = tmux.current_session_name() or ""
+        if current_session == name:
+            return True
+        target = tmux.pane_for_session(name, current_session)
+        if target and target.split(":")[0] == current_session:
+            return tmux.select_window(target) and tmux.select_pane(target)
+        if self._respawn_into_view_pane(name):
+            return True
+        try:
+            tmux.switch_client(name)
+            return True
+        except TmuxError:
+            return False
+
+    def _respawn_into_view_pane(self, name: str) -> bool:
+        """If the picker was launched from a shell pane inside a Views home, nest-attach `name` INTO
+        that pane via `respawn-pane -k` (the `TMUX= tmux attach …; exec $SHELL` keeps the pane alive
+        after the inner session detaches). Returns True when it did, False to fall through."""
+        tmux = self.service.tmux
+        if not os.environ.get("TMUX"):
+            return False
+        origin_pane = tmux.current_pane_id()
+        current_session = tmux.current_session_name() or ""
+        if not origin_pane or not self._is_view_session(current_session):
+            return False
+        origin_cmd = tmux.display_message("#{pane_current_command}", target=origin_pane)
+        if origin_cmd not in SHELL_COMMANDS:
+            return False
+        quoted = shlex.quote(name)
+        tmux.respawn_pane(origin_pane, f"TMUX= tmux attach -t {quoted}; exec ${{SHELL:-zsh}}")
+        return True
+
+    def _switch_or_attach(self, name: str) -> bool:
+        """Switch the calling client to `name` (inside tmux) or foreground-attach (outside). A
+        failed switch-client (the client may be gone) is tolerated — cmd_pick ignores its status."""
+        tmux = self.service.tmux
+        if os.environ.get("TMUX"):
+            try:
+                tmux.switch_client(name)
+            except TmuxError:
+                pass
+        else:
+            tmux.attach_session(name)
+        return True
+
+    def _is_view_session(self, name: str) -> bool:
+        """Whether `name` is recorded with kind=view — gates the nest-attach (only a Views pane
+        hosts nested sessions). Port of `is_view_session`, resolved through the service."""
+        if not name:
+            return False
+        session = self.service.get(name)
+        return session is not None and session.kind == Kind.VIEW
+
+
+def _prompt_with_default(prompt: str, default: str) -> str | None:
+    """Read a line with `default` pre-inserted and editable (the old `_edit-tag` readline hook —
+    macOS bash 3.2 lacked `read -i`). Returns the line, or None on cancel (Ctrl-C / Ctrl-D)."""
+    import readline
+
+    def preinsert() -> None:
+        readline.insert_text(default)
+        readline.redisplay()
+
+    readline.set_pre_input_hook(preinsert)
+    try:
+        return input(prompt)
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+    finally:
+        readline.set_pre_input_hook(None)
+
+
+class EditTagCommand(Command):
+    name = "_edit-tag"
+    summary = "Internal: readline tag editor for the picker's Ctrl-T popup."
+
+    def run(self, argv: list[str]) -> int:
+        """Invoked from the Ctrl-T `tmux display-popup`. Pre-fills the current tags, lets the user
+        edit them, and writes back through `SessionService.tag` (empty input clears; cancel leaves
+        them untouched)."""
+        parser = self._parser()
+        parser.add_argument("session")
+        args = parser.parse_args(argv)
+        session = self.service.get(args.session)
+        if session is None:
+            print(f"tx: session '{args.session}' not found (not tx-managed)", file=sys.stderr)
+            return 1
+        edited = _prompt_with_default(f"Tags for {args.session}: ", ",".join(session.tags))
+        if edited is None:
+            return 1  # cancelled — leave the tags untouched
+        self.service.tag(session.name, _split_tags(edited))
+        return 0
+
+
 # ----- internal seams ----------------------------------------------------------------------
 
 
@@ -418,11 +689,13 @@ class SelfCheckCommand(Command):
 
 
 PUBLIC_COMMANDS: list[type[Command]] = [
-    StartCommand, LsCommand, SpawnCommand, SpawnNvimCommand, SpawnViewCommand, TagCommand,
-    RenameCommand, SendMessageCommand, KillCommand, ArchiveCommand, RmCommand, ShowCommand,
+    StartCommand, AttachCommand, LsCommand, SpawnCommand, SpawnNvimCommand, SpawnViewCommand,
+    TagCommand, RenameCommand, SendMessageCommand, KillCommand, ArchiveCommand, RmCommand,
+    ShowCommand,
 ]
 HIDDEN_COMMANDS: list[type[Command]] = [
-    ListCommand, SessionClosedCommand, HookCommand, InitHomeCommand, SelfCheckCommand,
+    ListCommand, EditTagCommand, SessionClosedCommand, HookCommand, InitHomeCommand,
+    SelfCheckCommand,
 ]
 
 
