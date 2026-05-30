@@ -21,7 +21,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import claude
+from . import claude, hooks
 from .events import EventLog
 from .render import picker_rows, render_ls
 from .service import ServiceError, SessionService
@@ -338,6 +338,16 @@ class SessionClosedCommand(Command):
         return 0
 
 
+class HookCommand(Command):
+    name = "hook"
+    summary = "Internal: Claude/tmux hook entry — drive session state (S2)."
+
+    def run(self, argv: list[str]) -> int:
+        # The frozen contract is `tx hook <event>` (prompt-submit / stop / session-end /
+        # session-closed). All mapping + no-op rules (D4/C6) live in hooks.py; this just routes.
+        return hooks.dispatch(self.service, argv)
+
+
 class InitHomeCommand(Command):
     name = "_init-home"
     summary = "Internal: create the $TX_IDE_HOME skeleton (idempotent) — the installer's seam."
@@ -412,7 +422,7 @@ PUBLIC_COMMANDS: list[type[Command]] = [
     RenameCommand, SendMessageCommand, KillCommand, ArchiveCommand, RmCommand, ShowCommand,
 ]
 HIDDEN_COMMANDS: list[type[Command]] = [
-    ListCommand, SessionClosedCommand, InitHomeCommand, SelfCheckCommand,
+    ListCommand, SessionClosedCommand, HookCommand, InitHomeCommand, SelfCheckCommand,
 ]
 
 
