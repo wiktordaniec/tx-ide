@@ -33,8 +33,6 @@ session=tx-assistant
 priming='Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/TX-ASSISTANT.md as your first actions. Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.md, ~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/TX-ASSISTANT.md, and ~/.tx-ide/user-agents/TX-ASSISTANT.local.md (any user-agents/X.md replaces the shipped one; any user-agents/X.local.md extends it). Follow all of these for the duration of this session.'
 
 repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
-tx_session_state="$repo/lib/tx-session-state"
-tx_python=$(command -v python3.14)
 
 build_envelope() {
   [ -z "${TMUX:-}" ] && return 0
@@ -45,9 +43,9 @@ build_envelope() {
   [ -z "$target_pane" ] && return 0
 
   # S6: the envelope is now built by the Python package's unified attachment join (M-focus,
-  # attachment-topology §6) — this replaces the old inline client_tty→session awk and the
-  # tx-session-state kind/tag lookups. Call this checkout's tx (repo-relative) so it tracks the
-  # installed code regardless of $PATH during coexistence; stdout is the <tx-command-prompt/>.
+  # attachment-topology §6) — this replaces the old inline client_tty→session awk and the v1
+  # store's kind/tag lookups. Call this checkout's tx (repo-relative) so it tracks the installed
+  # code regardless of $PATH during coexistence; stdout is the <tx-command-prompt/>.
   "$repo/bin/tx" focus-envelope "$target_pane" 2>/dev/null || true
 }
 
@@ -57,16 +55,12 @@ ensure_session() {
     return
   fi
   local claude_cmd="claude --model sonnet --effort low --dangerously-skip-permissions"
-  local parent pid id
-  id=$(uuidgen | tr '[:upper:]' '[:lower:]')
-  parent=$(tmux display-message -p '#S' 2>/dev/null) || parent=""
-  pid=$(tmux new-session -d -P -F '#{pane_pid}' -s "$session" -c "$repo" \
-    -e COLORTERM=truecolor -e TERM=xterm-256color \
-    -e "TX_SESSION_ID=$id" \
-    "$claude_cmd")
-  "$tx_python" "$tx_session_state" new --id "$id" --name "$session" --kind "" --tags "tx-system" \
-    --cwd "$repo" --cmd "$claude_cmd" --parent "$parent" --pid "$pid" >/dev/null
-  tmux set -t "$session" @tx_id "$id"
+  # Register through the new python tx: `tx spawn` creates the detached session, mints the uuid,
+  # sets @tx_id + TX_SESSION_ID + the truecolor env, writes the v2 record, and logs once (replaces
+  # the old manual `tmux new-session` + v1 record registration). Role is inferred from the command
+  # (claude → llm); parent is the firing session. Call this checkout's tx so it tracks the
+  # installed code regardless of $PATH.
+  "$repo/bin/tx" spawn "$session" --tag tx-system --cwd "$repo" --cmd "$claude_cmd" >/dev/null
   # Wait for claude's input box to render (its prefix char is `❯`, not `>`).
   for _ in $(seq 1 20); do
     tmux capture-pane -p -t "$session" 2>/dev/null | grep -q '❯ ' && break

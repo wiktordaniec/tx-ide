@@ -12,9 +12,11 @@
 # refresh).
 set -e
 
-. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../shared/palette.sh"
-TX_SESSION_STATE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/tx-session-state"
-TX_PYTHON=$(command -v python3.14)
+SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+. "$SCRIPT_DIR/../shared/palette.sh"
+# The python shim, resolved repo-relative so it tracks the installed code regardless of $PATH.
+# It resolves $TX_IDE_HOME (default ~/.tx-ide) and reads the v2 store (post-Flip records).
+TX="$SCRIPT_DIR/tx"
 
 pane_id="${1:-}"
 [[ -z "$pane_id" ]] && exit 0
@@ -30,7 +32,7 @@ print_tags() {
   local -a parts
   id=$(tmux show-options -vqt "$session" @tx_id 2>/dev/null) || return 0
   [[ -z "$id" ]] && return 0
-  tag=$("$TX_PYTHON" "$TX_SESSION_STATE" get "$id" tags 2>/dev/null) || return 0
+  tag=$("$TX" _pane-tags "$id" 2>/dev/null) || return 0
   [[ -z "$tag" ]] && return 0
   IFS=',' read -ra parts <<<"$tag"
   for part in "${parts[@]}"; do

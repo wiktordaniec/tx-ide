@@ -3,7 +3,7 @@
 # which is sourced from the user's ~/.tmux.conf by install.sh.
 #
 # Reads @tx-ide-* options to decide which view features to enable:
-#   @tx-ide-popups          on|off   prefix+t (tx), prefix+m (mx), prefix+/ (tx-assistant)
+#   @tx-ide-popups          on|off   prefix+t (tx), prefix+/ (tx-assistant)
 #   @tx-ide-pane-borders    on|off   pane-border-format integration + colors
 #   @tx-ide-claude-scroll   on|off   C-u/C-d → PageUp/PageDown in Claude panes
 #   @tx-ide-pane-keys       on|off   M-1..9 → select-pane
@@ -16,7 +16,9 @@
 # own tmux.conf wins, since tmux is last-write-wins.
 set -u
 
-TX_SESSION_STATE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/tx-session-state"
+# The python shim (repo-relative), used by the after-new-window hook to read a session's kind
+# from the v2 store. Resolves $TX_IDE_HOME (default ~/.tx-ide) inside the package.
+TX="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tx"
 
 option() {
   tmux show-option -gv "$1" 2>/dev/null || printf '%s' "$2"
@@ -32,16 +34,14 @@ palette=$(option @tx-ide-palette tokyonight-night)
 CONF=$(mktemp -t tx-ide-bindings.XXXXXX)
 trap 'rm -f "$CONF"' EXIT
 
-# --- Popups (prefix+t / prefix+m / prefix+/) ---
-# prefix+t opens the tx picker, prefix+m the mailbox. tx attach figures out the
-# pane to glue into by asking tmux directly (`display-message -p #{pane_id}`),
-# so the bind doesn't need to plumb anything through. prefix+M re-homes the
-# default `select-pane -m` that prefix+m used to do.
+# --- Popups (prefix+t / prefix+/) ---
+# prefix+t opens the tx picker; prefix+/ forwards a line to the tx-assistant. tx attach figures
+# out the pane to glue into by asking tmux directly (`display-message -p #{pane_id}`), so the bind
+# doesn't need to plumb anything through. There is no mailbox anymore, so prefix+m is left bound to
+# its native `select-pane -m` (tx-ide no longer overrides it).
 if [ "$popups" = on ]; then
   cat >>"$CONF" <<'EOF'
 bind t display-popup -E -w 100 -h 30 -x C -y 1 -T " tx " "tx attach"
-bind m display-popup -E -w 100 -h 30 -x C -y 1 -T " mailbox " "tx mailbox"
-bind M select-pane -m
 bind '/' command-prompt -p "tx-assistant>" {
   set-buffer -b tx-assistant-input "%%"
   run-shell -b "tx-assistant --from-buffer"
@@ -68,7 +68,7 @@ set -g pane-border-status off
 set -g pane-border-format " [#P] #(tmux-pane-session-name #D) "
 EOF
   cat >>"$CONF" <<EOF
-set-hook -g after-new-window "if-shell 'test \"\$($TX_SESSION_STATE get \"#{@tx_id}\" kind)\" = view' 'setw pane-border-status top'"
+set-hook -g after-new-window "if-shell 'test \"\$($TX _pane-kind \"#{@tx_id}\")\" = view' 'setw pane-border-status top'"
 EOF
 fi
 

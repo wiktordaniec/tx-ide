@@ -1,15 +1,36 @@
 #!/usr/bin/env bash
-# Reverse everything install.sh did. Leaves user data alone:
-#   ~/.claude/mailbox/        (inbox.jsonl, running.d/, mx-speaker.log)
-#   ~/.tx-ide/user-agents/    (any role overrides you wrote)
+# Reverse the tx-ide install (install-flip.md §9). The core uninstall is independent of the
+# per-agent (Claude) registration:
+#   ./uninstall                reverse everything (calls setup/agents/claude.sh uninstall)
+#   ./uninstall --keep-agent   leave the Claude hooks + statusline + marker in place
+#   ./uninstall --purge        also remove sessions/, history/, user-agents/ (your state)
+#
+# Leaves user state alone by default:
+#   $TX_IDE_HOME/sessions/      (durable session metadata)
+#   $TX_IDE_HOME/history/       (ingested chat bundles)
+#   $TX_IDE_HOME/user-agents/   (your role overrides)
 #   the tx-ide repo itself
 set -u
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 HOME_DIR="${HOME%/}"
 LOCAL_BIN="$HOME_DIR/.local/bin"
-CLAUDE_DIR="$HOME_DIR/.claude"
-TX_IDE_DIR="$HOME_DIR/.tx-ide"
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME_DIR/.claude}"
+TX_IDE_DIR="${TX_IDE_HOME:-$HOME_DIR/.tx-ide}"
+TX_IDE_DIR="${TX_IDE_DIR/#\~/$HOME_DIR}"
+export TX_IDE_HOME="$TX_IDE_DIR"
+STAMP=$(date +%Y%m%d%H%M%S)
+
+KEEP_AGENT=0
+PURGE=0
+for arg in "$@"; do
+  case "$arg" in
+    --keep-agent) KEEP_AGENT=1 ;;
+    --purge) PURGE=1 ;;
+    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+    *) printf 'uninstall: unknown argument: %s\n' "$arg" >&2; exit 2 ;;
+  esac
+done
 
 B=$'\e[1m'
 G=$'\e[32m'
@@ -22,28 +43,32 @@ skip() { printf '  %s→%s %-48s %s%s%s\n' "$Y" "$X" "$1" "$Y" "$2" "$X"; }
 cat <<EOF
 ${B}=== tx-ide uninstall ===${X}
 
+Repo:  $REPO
+Home:  $TX_IDE_DIR
+
 I will remove:
   - the CLI symlinks in ~/.local/bin/ (only if they still point at this repo)
-  - ~/.claude/hooks/mailbox/ (symlink)
-  - ~/.claude/statusline.sh (symlink)
-  - ~/.tx-ide/agents (symlink) and ~/.tx-ide/tmux.conf
-  - the empty ~/.tx-ide/ directory (only if nothing user-owned remains)
+  - $TX_IDE_DIR/agents (symlink) and $TX_IDE_DIR/tmux.conf
+  - the empty $TX_IDE_DIR/ directory (only if nothing user-owned remains)
   - the tx-ide block from ~/.tmux.conf (matched by markers)
   - the tx-ide PATH block from ~/.zshrc / ~/.bash_profile (matched by markers)
-  - from ~/.claude/settings.json: only the entries listed in the
-    _tx_ide_managed marker key (with backup; your other hooks,
-    permissions, plugins, theme are untouched)
-  - the mx-speaker daemon (if running) + its PID file
+$( ((KEEP_AGENT)) && echo "  - (--keep-agent) leaving the Claude hooks + statusline + marker in place" || cat <<INNER
+  - the Claude integration via setup/agents/claude.sh uninstall:
+      the 4 tx hook entries + marker + the baked \$TX_IDE_HOME/hooks shims
+  - the statusLine entry + $TX_IDE_DIR/statusline.sh (only if it is ours)
+INNER
+)
 
 I will NOT touch:
-  - ~/.claude/mailbox/ (your inbox + running state)
-  - ~/.tx-ide/user-agents/ (your role overrides)
-  - ~/.tx-ide/sessions/ (your durable session metadata)
-  - any settings.json entry not in _tx_ide_managed
+  - any settings.json entry not recorded in the _tx_ide_managed marker
+      (peon-ping / require-worktree / discord / theme / plugins / permissions)
   - ~/.claude/CLAUDE.md
-  - the iTerm GlobalKeyMap or your Default profile colors
-      (we leave iTerm prefs alone; backups live at ~/Library/Preferences/com.googlecode.iterm2.plist.bak.*
-       if you need to revert manually)
+$( ((PURGE)) && echo "  - (--purge) sessions/, history/, user-agents/ WILL be removed" || cat <<INNER
+  - $TX_IDE_DIR/sessions/ (durable session metadata)
+  - $TX_IDE_DIR/history/ (ingested chat bundles)
+  - $TX_IDE_DIR/user-agents/ (your role overrides)
+INNER
+)
 
 EOF
 read -r -p "Proceed? [y/N] " reply
@@ -52,9 +77,71 @@ read -r -p "Proceed? [y/N] " reply
   exit 0
 }
 
-# === Symlinks ===
+# === Claude integration (per-agent) ===
+# Remove the statusLine FIRST (while the marker still records its command), then hand the hooks +
+# marker + shims to claude.sh. claude.sh owns the hook surgery; it does not touch the statusLine
+# (C10 is install/flip-only), so the statusLine removal is ours.
+if [[ $KEEP_AGENT -eq 0 ]]; then
+  printf '\n%sClaude statusLine (C10 reverse)%s\n' "$B" "$X"
+  SETTINGS_MAIN="$CLAUDE_DIR/settings.json"
+  if [[ -f "$SETTINGS_MAIN" ]]; then
+    SETTINGS_MAIN="$SETTINGS_MAIN" STAMP="$STAMP" python3.14 - <<'PY'
+import json, os, tempfile
+
+path  = os.environ["SETTINGS_MAIN"]
+stamp = os.environ["STAMP"]
+G, Y, D, X = "\033[32m", "\033[33m", "\033[2m", "\033[0m"
+
+real = os.path.realpath(path)
+with open(real) as fh:
+    data = json.load(fh)
+before = json.loads(json.dumps(data))
+
+marker = data.get("_tx_ide_managed")
+status_command = (marker or {}).get("statusLine_command")
+existing = data.get("statusLine")
+removed = False
+if status_command and isinstance(existing, dict) and existing.get("command") == status_command:
+    del data["statusLine"]
+    removed = True
+
+if removed:
+    with open(f"{real}.bak.{stamp}", "w") as fh:
+        json.dump(before, fh, indent=2); fh.write("\n")
+    directory = os.path.dirname(real) or "."
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".tx-settings.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(data, indent=2) + "\n")
+        os.replace(tmp, real)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    print(f"  {G}→{X} statusLine removed  {D}({status_command}){X}")
+    print(f"  {D}backup: {real}.bak.{stamp}{X}")
+else:
+    print(f"  {Y}→{X} statusLine not ours / absent — left alone")
+PY
+  else
+    skip "$SETTINGS_MAIN" "not present"
+  fi
+
+  printf '\n%sClaude hooks (setup/agents/claude.sh uninstall)%s\n' "$B" "$X"
+  "$REPO/setup/agents/claude.sh" uninstall
+
+  if [[ -f "$TX_IDE_DIR/statusline.sh" ]]; then
+    rm -f "$TX_IDE_DIR/statusline.sh"
+    ok "$TX_IDE_DIR/statusline.sh"
+  fi
+else
+  printf '\n%sClaude integration%s\n' "$B" "$X"
+  skip "claude.sh uninstall" "--keep-agent — hooks + statusline left in place"
+fi
+
+# === CLI symlinks ===
 printf '\n%sCLI symlinks%s\n' "$B" "$X"
-for tool in tx tx-assistant tmux-pane-for-session tmux-pane-session-name; do
+for tool in tx tx-assistant tmux-pane-session-name; do
   target="$LOCAL_BIN/$tool"
   if [[ -L "$target" ]] && [[ "$(readlink "$target")" == "$REPO/bin/$tool" ]]; then
     rm "$target"
@@ -66,30 +153,43 @@ for tool in tx tx-assistant tmux-pane-for-session tmux-pane-session-name; do
   fi
 done
 
-printf '\n%sClaude links%s\n' "$B" "$X"
-mailbox_link="$CLAUDE_DIR/hooks/mailbox"
-if [[ -L "$mailbox_link" ]] && [[ "$(readlink "$mailbox_link")" == "$REPO/claude/hooks" ]]; then
-  rm "$mailbox_link"
-  ok "$mailbox_link"
-elif [[ -L "$mailbox_link" ]]; then
-  skip "$mailbox_link" "points elsewhere, left alone"
+# === $TX_IDE_HOME scaffolding ===
+printf '\n%s%s%s\n' "$B" "$TX_IDE_DIR" "$X"
+agents_link="$TX_IDE_DIR/agents"
+if [[ -L "$agents_link" ]] && [[ "$(readlink "$agents_link")" == "$REPO/agents" ]]; then
+  rm "$agents_link"
+  ok "$agents_link"
+elif [[ -L "$agents_link" ]]; then
+  skip "$agents_link" "points elsewhere, left alone"
+elif [[ -e "$agents_link" ]]; then
+  skip "$agents_link" "not a symlink, left alone"
+fi
+for leftover in tmux.conf config.json log.jsonl; do
+  if [[ -e "$TX_IDE_DIR/$leftover" ]]; then
+    rm -f "$TX_IDE_DIR/$leftover"
+    ok "$TX_IDE_DIR/$leftover"
+  fi
+done
+if [[ -d "$TX_IDE_DIR/hooks" ]]; then
+  rmdir "$TX_IDE_DIR/hooks" 2>/dev/null && ok "$TX_IDE_DIR/hooks" || skip "$TX_IDE_DIR/hooks" "not empty, left alone"
+fi
+if [[ $PURGE -eq 1 ]]; then
+  for state in sessions history user-agents; do
+    if [[ -d "$TX_IDE_DIR/$state" ]]; then
+      rm -rf "${TX_IDE_DIR:?}/$state"
+      ok "$TX_IDE_DIR/$state" "purged"
+    fi
+  done
 else
-  skip "$mailbox_link" "not present"
+  for state in sessions history user-agents; do
+    [[ -d "$TX_IDE_DIR/$state" ]] && skip "$TX_IDE_DIR/$state" "state, left alone (use --purge)"
+  done
+fi
+if [[ -d "$TX_IDE_DIR" ]]; then
+  rmdir "$TX_IDE_DIR" 2>/dev/null && ok "$TX_IDE_DIR" "removed (empty)" || skip "$TX_IDE_DIR" "not empty, left alone"
 fi
 
-statusline_link="$CLAUDE_DIR/statusline.sh"
-if [[ -L "$statusline_link" ]] && [[ "$(readlink "$statusline_link")" == "$REPO/claude/statusline.sh" ]]; then
-  rm "$statusline_link"
-  ok "$statusline_link"
-elif [[ -L "$statusline_link" ]]; then
-  skip "$statusline_link" "points elsewhere, left alone"
-else
-  skip "$statusline_link" "not present"
-fi
-
-# === Strip marker-bounded blocks from rc files ===
-# Generic helper: removes the block delimited by BEGIN/END markers from $file,
-# with a backup. Cleans trailing blank lines we may have introduced.
+# === Strip marker-bounded blocks from rc / tmux files ===
 strip_block() {
   local file="$1" begin="$2" end="$3" label="$4"
   if [[ -f "$file" ]] && grep -qF "$begin" "$file"; then
@@ -117,127 +217,14 @@ for rc in "$HOME_DIR/.zshrc" "$HOME_DIR/.bash_profile" "$HOME_DIR/.bashrc"; do
   strip_block "$rc" "# === BEGIN tx-ide PATH ===" "# === END tx-ide PATH ===" "tx-ide PATH"
 done
 
-# === ~/.tx-ide/ ===
-printf '\n%s~/.tx-ide/%s\n' "$B" "$X"
-agents_link="$TX_IDE_DIR/agents"
-if [[ -L "$agents_link" ]] && [[ "$(readlink "$agents_link")" == "$REPO/agents" ]]; then
-  rm "$agents_link"
-  ok "$agents_link"
-elif [[ -L "$agents_link" ]]; then
-  skip "$agents_link" "points elsewhere, left alone"
-elif [[ -e "$agents_link" ]]; then
-  skip "$agents_link" "not a symlink, left alone"
-fi
-if [[ -f "$TX_IDE_DIR/tmux.conf" ]]; then
-  rm "$TX_IDE_DIR/tmux.conf"
-  ok "$TX_IDE_DIR/tmux.conf"
-fi
-if [[ -d "$TX_IDE_DIR/user-agents" ]]; then
-  skip "$TX_IDE_DIR/user-agents" "user data, left alone"
-fi
-if [[ -d "$TX_IDE_DIR/sessions" ]]; then
-  skip "$TX_IDE_DIR/sessions" "session metadata, left alone"
-fi
-if [[ -d "$TX_IDE_DIR" ]]; then
-  rmdir "$TX_IDE_DIR" 2>/dev/null && ok "$TX_IDE_DIR" "removed (empty)" || skip "$TX_IDE_DIR" "not empty, left alone"
-fi
-
-# === settings.json — remove only what _tx_ide_managed declares ===
-printf '\n%sClaude settings.json%s\n' "$B" "$X"
-SETTINGS_MAIN="$CLAUDE_DIR/settings.json"
-if [[ -f "$SETTINGS_MAIN" ]]; then
-  STAMP=$(date +%Y%m%d%H%M%S)
-  REAL=$(readlink -f "$SETTINGS_MAIN")
-  cp "$REAL" "$REAL.bak.$STAMP"
-  SETTINGS_MAIN="$SETTINGS_MAIN" python3 - <<'PY'
-import json, os
-
-path = os.environ["SETTINGS_MAIN"]
-real = os.path.realpath(path)
-with open(real) as fh:
-    data = json.load(fh)
-
-managed = data.get("_tx_ide_managed")
-if not managed:
-    print(f"  \033[33m!\033[0m no _tx_ide_managed marker — leaving settings.json alone")
-    print(f"  \033[2m(install.sh was either never run, or pre-marker — check by hand)\033[0m")
-    raise SystemExit
-
-removed_hooks = []
-hook_commands = managed.get("hook_commands", {})  # {event: command}
-ours_per_event = {}
-for event, command in hook_commands.items():
-    ours_per_event.setdefault(event, set()).add(command)
-
-hooks = data.get("hooks", {})
-for event, blocks in list(hooks.items()):
-    ours = ours_per_event.get(event, set())
-    if not ours:
-        continue
-    new_blocks = []
-    for block in blocks:
-        kept = [h for h in block.get("hooks", []) if h.get("command") not in ours]
-        if kept:
-            block["hooks"] = kept
-            new_blocks.append(block)
-        elif block.get("hooks"):
-            # All entries were ours — drop the whole block
-            removed_hooks.append(event)
-    if new_blocks:
-        hooks[event] = new_blocks
-    else:
-        # Last hook block removed
-        if event not in removed_hooks:
-            removed_hooks.append(event)
-        del hooks[event]
-if not hooks:
-    data.pop("hooks", None)
-
-removed_status = False
-status_command = managed.get("statusLine_command")
-if status_command and data.get("statusLine", {}).get("command") == status_command:
-    del data["statusLine"]
-    removed_status = True
-
-# Remove the marker itself.
-del data["_tx_ide_managed"]
-
-with open(real, "w") as fh:
-    json.dump(data, fh, indent=2)
-    fh.write("\n")
-print(f"  \033[32m→\033[0m {path} cleaned")
-print(f"  \033[2mremoved hook entries: {', '.join(removed_hooks) if removed_hooks else 'none'}\033[0m")
-print(f"  \033[2mremoved statusLine: {'yes' if removed_status else 'no'}\033[0m")
-print(f"  \033[2m_tx_ide_managed marker removed\033[0m")
-PY
-  printf '  %sbackup: %s.bak.%s%s\n' "$D" "$REAL" "$STAMP" "$X"
-else
-  skip "$SETTINGS_MAIN" "not present"
-fi
-
-# === mx-speaker daemon ===
-printf '\n%smx-speaker daemon%s\n' "$B" "$X"
-PID_FILE="$HOME_DIR/.claude/mailbox/mx-speaker.pid"
-if [[ -f "$PID_FILE" ]]; then
-  pid=$(cat "$PID_FILE")
-  if kill -0 "$pid" 2>/dev/null; then
-    kill "$pid" && ok "mx-speaker" "killed (pid $pid)"
-  else
-    skip "mx-speaker" "stale PID file (process not running)"
-  fi
-  rm -f "$PID_FILE"
-else
-  skip "mx-speaker" "no PID file"
-fi
-
 cat <<EOF
 
 ${B}=== Done ===${X}
 
-${B}Remaining user data (left in place):${X}
-  ${D}~/.claude/mailbox/${X}        inbox, running state, speaker log
-  ${D}~/.tx-ide/user-agents/${X}    your role overrides (if any)
-  ${D}~/.tx-ide/sessions/${X}       durable session metadata
+${B}Remaining (left in place):${X}
+  ${D}$TX_IDE_DIR/sessions/${X}       durable session metadata$( ((PURGE)) && echo "  (PURGED)")
+  ${D}$TX_IDE_DIR/history/${X}        ingested chat bundles$( ((PURGE)) && echo "  (PURGED)")
+  ${D}$TX_IDE_DIR/user-agents/${X}    your role overrides$( ((PURGE)) && echo "  (PURGED)")
 
 ${B}Tmux:${X} reload to drop the bindings:
   ${D}tmux source-file ~/.tmux.conf${X}
