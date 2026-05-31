@@ -102,10 +102,17 @@ def dispatch(service: SessionService, argv: list[str]) -> int:
     if state is None:
         return 0  # Unknown event (e.g. a future hook wired before its arm exists) → no-op.
 
-    # Origin-aware ChatRef capture (CHD6/F6) runs at the turn's START so the chat is on the record
-    # before the turn-end Stop ingest mirrors it. Idempotent backstop to chat.py's synchronous write.
-    if event == "prompt-submit":
+    # Origin-aware ChatRef capture (CHD6/F6) runs on EVERY state event (idempotent). prompt-submit
+    # sets it up; the post-first-prompt **Stop** is the load-bearing moment — on claude ≥2.1 a fork's
+    # transcript is written lazily on the first prompt (NOT at startup as chat-ops §1 #8 measured on
+    # 2.0.76), so the file a fork's null-id placeholder needs only exists by Stop. Capture runs BEFORE
+    # ingest so the filled id is on the record when the Stop mirror reads `session.chats`. Guarded:
+    # this does extra disk I/O (record load/save + a project-dir glob) and a hook must never fail a
+    # Claude turn (the contract above) — chat.py's synchronous write and the next event both backstop.
+    try:
         _capture_chat_ref(service, session_id)
+    except Exception:
+        pass
 
     # No-op when the id isn't in this home's store (D4 — old-tx / other-home session) or the record
     # is already terminal (C3); `record_state` reports both as False, which the hook ignores.

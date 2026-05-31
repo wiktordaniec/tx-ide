@@ -8,9 +8,10 @@ right `origin` so the §11 history shows the full lineage. Implementation refere
 (§1 measured claude facts, §4 fork, §5 handover, §6 rollover, §7 the minimal seed, CHD1–CHD6).
 
   - **fork**  (§4) — new tx session, FULL history. `claude --resume <src> --fork-session`, launched
-    interactively (fork *cannot* pre-mint its id — `--session-id` is rejected with `--resume`, #5 —
-    so the new chat uuid is captured by snapshot-diffing the project dir, the file lands ≈2 s after
-    launch, #8). `ChatRef.role=fork`, `origin → source`.
+    interactively (fork *cannot* pre-mint its id — `--session-id` is rejected with `--resume`, #5).
+    The new chat uuid is captured by the origin-aware hook at the first Stop (CHD6) — on claude ≥2.1
+    the fork writes its `.jsonl` lazily on the first prompt, not at startup as §1 #8 measured on
+    2.0.76, so a brief snapshot-diff poll is only a best-effort fast path. `role=fork`, `origin→src`.
   - **handover** (§5) — new tx session, DISTILLED task. A temporary distiller reads the source
     bundle (source untouched), writes a focused brief into `$TX_IDE_HOME/history/<src>/`, then calls
     `_handover-finish`, which spawns + seeds a *fresh* pre-minted worker minimally. `role=handover`.
@@ -66,8 +67,12 @@ READINESS_INTERVAL = 0.5
 # claude's input box drops an Enter that arrives too fast after the text (COMMON.md / send_message).
 SEED_SETTLE_SECONDS = 0.3
 
-# Fork id capture: the forked `.jsonl` lands at startup ≈2 s (#8); poll a little past that.
-FORK_POLL_ATTEMPTS = 16
+# Fork id capture. chat-ops §1 #8 measured (on claude 2.0.76) that `--fork-session` writes the new
+# `.jsonl` at startup ≈2 s; on claude ≥2.1 it is written LAZILY on the first prompt instead, so a
+# fork that has not been prompted yet has no file to snapshot. This poll is therefore cheap
+# best-effort (it catches the old-claude / already-written cases); the AUTHORITATIVE capture is the
+# origin-aware hook completing the null-id placeholder at the first Stop (hooks.py, CHD6).
+FORK_POLL_ATTEMPTS = 6
 FORK_POLL_INTERVAL = 0.5
 
 # A lightweight throwaway helper that distills/summarizes then calls a finish verb (CHD4 — the
@@ -233,20 +238,21 @@ class ChatOps:
         )
         new_session = self.service.spawn(spec)
 
-        # Tier 1 (synchronous, ~2 s): snapshot-diff the project dir for the id the fork minted (#8).
+        # Tier 1 (synchronous, best-effort): snapshot-diff for an id the fork wrote at startup. On
+        # claude ≥2.1 the fork writes lazily on first prompt, so this usually finds nothing and the
+        # record holds a null-id placeholder. Tier 2 (CHD6, authoritative): the origin-aware hook
+        # completes that placeholder at the first Stop, reading role/origin from `new_session.env`.
         fork_chat_id = self._capture_fork_chat(cwd, before)
         self._record_fork_chat(new_session.id, cwd, source_session.id, source_chat.id, fork_chat_id)
-        # Tier 2 (CHD6): if the poll missed, the record holds a null-id placeholder the origin-aware
-        # hook completes on first prompt — `new_session.env` carries the role/origin it reads.
         self.service.log.append(
             "fork", f"{source_session.name} → {name} (chat {(fork_chat_id or 'pending')[:8]})"
         )
         return self.service.store.load(new_session.id)
 
     def _capture_fork_chat(self, cwd: str, before: set[str]) -> str | None:
-        """Poll the project dir until the fork's new `.jsonl` appears (it lands ≈2 s after launch,
-        #8), returning its uuid — or None if it has not appeared within the window (the hook backstop
-        then completes it). If several appear, the newest by mtime is the fork."""
+        """Poll the project dir briefly for a new `.jsonl` the fork wrote at startup, returning its
+        uuid — or None (the common case on claude ≥2.1, where the fork writes only on first prompt;
+        the hook then completes the placeholder). If several appear, the newest by mtime is the fork."""
         for _ in range(FORK_POLL_ATTEMPTS):
             time.sleep(FORK_POLL_INTERVAL)
             appeared = snapshot_transcripts(cwd) - before
