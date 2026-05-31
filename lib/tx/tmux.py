@@ -5,19 +5,18 @@ One object owns the tmux boundary: session lifecycle (`new_session` / `has_sessi
 option / hook / `@tx_id` get-set, `display_message`, and `switch_client`. Boundary validation
 (parsing tmux output, distinguishing "no such session" from a real failure) lives here.
 
-The attachment-topology join is **frozen here as SIGNATURES only**: `attachment_map` /
-`attached_to` / `inner_for_pane` return empty placeholders ({} / [] / None) until S6 builds the
-real TTY→pane→session join (attachment-topology.md §3/§9). The `Location` shape is already real
-(S0), so no later stage churns when S6 fills these in. `focus_envelope` (which replaces
-`bin/tx-assistant`'s `build_envelope`) ships a basic working body; S6 unifies it onto
-`attachment_map` and joins the inner session's record (M-focus, attachment-topology §6).
+The attachment-topology join lives here (stage S6): ONE `_attachment_join` (the TTY→pane→session
+pass) feeds `attachment_map` / `attached_to` / `inner_for_pane` / `pane_for_session` (jump) /
+`focus_attrs` (the assistant envelope) — every topology reader on one map (M-focus,
+attachment-topology.md §3/§6/§9). The pane-border helper `bin/tmux-pane-session-name` is the one
+deliberate shell mirror (§6 — kept in lockstep with `_attachment_join`). `SessionService.focus_
+envelope` wraps `focus_attrs` to also join the inner session's record (kind/tags).
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
-from pathlib import Path
 
 from .session import Location
 
@@ -174,53 +173,114 @@ class Tmux:
         return subprocess.run([self.binary, "attach", "-t", name], env=env).returncode
 
     def pane_for_session(self, name: str, prefer: str = "") -> str | None:
-        """Find a pane hosting `name` (via nested attach / `@remote-session`) as
-        `session:window.pane`, preferring a pane in one of the comma-separated `prefer` sessions.
+        """A pane hosting `name` as `session:window.pane`, preferring one whose host session is in
+        the comma-separated `prefer` set (today the caller's current view). Backs `tx attach
+        --jump`'s target resolver — same signature + `session:window.pane` shape as before.
 
-        Transitional: wraps the existing `bin/tmux-pane-for-session` helper (frozen topology infra)
-        so `tx attach --jump` keeps today's behavior; S6 replaces this with the real
-        `attachment_map` / `inner_for_pane` join (attachment-topology §3/§9). Returns None when no
-        pane hosts it.
+        S6: now the unified `attachment_map` join (attachment-topology §3/§9) — `bin/tmux-pane-for-
+        session` is deleted. A nested attach wins; an `@remote-session` pane is the fallback
+        (D-remote: out of `attached_to`, resolved here only as a jump target). None when no pane
+        hosts it.
         """
-        helper = Path(__file__).resolve().parents[2] / "bin" / "tmux-pane-for-session"
-        result = subprocess.run(
-            [str(helper), name, prefer], capture_output=True, text=True
-        )
-        target = result.stdout.strip()
-        return target or None
+        preferred = {item for item in prefer.split(",") if item}
+        locations = self.attached_to(name)
+        chosen = next((loc for loc in locations if loc.host in preferred), None)
+        if chosen is None and locations:
+            chosen = locations[0]
+        if chosen is not None:
+            return f"{chosen.host}:{chosen.window_index}.{chosen.pane_index}"
+        return self._remote_pane_for_session(name)
 
-    # ----- attachment topology (SIGNATURES frozen here; bodies are S6) ---------------------
-
-    def attachment_map(self) -> dict[str, list[Location]]:
-        """inner-session-name → every pane currently surfacing it (captures multi-attach).
-        PLACEHOLDER ({}) until S6 builds the join (attachment-topology §3). The `Location` shape is
-        already real (S0), so consumers don't churn when S6 fills this in."""
-        return {}
-
-    def attached_to(self, name: str) -> list[Location]:
-        """Where `name` is surfaced. PLACEHOLDER ([]) until S6 — `[]` ("attached nowhere") is the
-        correct default for the snapshot stamped on every save (attachment-topology §4)."""
-        return []
-
-    def inner_for_pane(self, pane_id: str) -> str | None:
-        """Reverse lookup (which inner session is nested in this pane), for `focus_envelope`.
-        PLACEHOLDER (None) until S6 unifies it onto `attachment_map`."""
+    def _remote_pane_for_session(self, name: str) -> str | None:
+        """An `@remote-session` pane whose ssh target is `name` (D-remote jump fallback). Such a
+        pane has no nested client (list-clients can't see the remote tmux over ssh), so it is found
+        by the pane override, not the TTY join."""
+        _code, panes = self._run_quiet([
+            "list-panes", "-a", "-F",
+            "#{@remote-session}\t#{session_name}\t#{window_index}\t#{pane_index}",
+        ])
+        for line in panes.splitlines():
+            fields = line.split("\t")
+            if len(fields) != 4:
+                continue
+            remote, session_name, window_index, pane_index = fields
+            if remote == name:
+                return f"{session_name}:{window_index}.{pane_index}"
         return None
 
-    def focus_envelope(self, pane_id: str) -> str:
-        """Build the `<tx-command-prompt …/>` envelope for the firing pane (replaces
-        `bin/tx-assistant`'s `build_envelope`). BASIC working version: emits the pane's own
-        location plus, when it hosts a nested `tmux attach`, the inner session's name. S6 unifies
-        this onto `attachment_map()` and joins the inner session's record (kind/tags)."""
+    # ----- attachment topology (S6 — one join, every reader on it; M-focus) ----------------
+
+    def _attachment_join(self) -> list[tuple[str, Location]]:
+        """One pass over the live server → (inner_session_name, Location) for every pane that is
+        nest-attached to an inner session — the single TTY→pane→session join all the topology
+        readers share (attachment-topology.md §3).
+
+        A nested `tmux attach` registers as a client whose `client_tty` IS the host pane's
+        `pane_tty`; so pane P surfaces inner session S ⟺ the client on P's tty views S, and S is
+        not P's own (host) session. Two tmux calls + in-memory parse (sub-10ms). Kept in lockstep
+        with the pane-border shell mirror `bin/tmux-pane-session-name` (§6's one exception).
+        """
+        _code, clients = self._run_quiet(["list-clients", "-F", "#{client_tty}\t#{client_session}"])
+        _code, panes = self._run_quiet([
+            "list-panes", "-a", "-F",
+            "#{pane_tty}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_index}",
+        ])
+        session_by_tty: dict[str, str] = {}
+        for line in clients.splitlines():
+            client_tty, separator, client_session = line.partition("\t")
+            if client_tty and separator:
+                session_by_tty[client_tty] = client_session
+        out: list[tuple[str, Location]] = []
+        for line in panes.splitlines():
+            fields = line.split("\t")
+            if len(fields) != 6:
+                continue
+            pane_tty, host, window_index, window_name, pane_id, pane_index = fields
+            inner = session_by_tty.get(pane_tty)
+            if inner and inner != host:  # guard the degenerate self-attach loop
+                out.append((inner, Location(host, window_index, window_name, pane_id, pane_index)))
+        return out
+
+    def attachment_map(self) -> dict[str, list[Location]]:
+        """inner-session-name → every pane currently surfacing it (captures multi-attach). Each
+        list is sorted into a stable (host, window, pane) order, so the rendered primary location
+        and the jump target are deterministic and don't flicker (attachment-topology §3/§5)."""
+        mapping: dict[str, list[Location]] = {}
+        for inner, location in self._attachment_join():
+            mapping.setdefault(inner, []).append(location)
+        for locations in mapping.values():
+            locations.sort(
+                key=lambda loc: (loc.host, loc.window_index.zfill(8), loc.pane_index.zfill(8))
+            )
+        return mapping
+
+    def attached_to(self, name: str) -> list[Location]:
+        """Every pane surfacing `name`; `[]` ("attached nowhere") when detached / bare-terminal
+        attached. The one source the snapshot stamped on save reads (attachment-topology §4)."""
+        return self.attachment_map().get(name, [])
+
+    def inner_for_pane(self, pane_id: str) -> str | None:
+        """Reverse lookup (which inner session is nested in this pane), for `focus_envelope` — the
+        same join, inverted (attachment-topology §3/§6)."""
+        for inner, location in self._attachment_join():
+            if location.pane_id == pane_id:
+                return inner
+        return None
+
+    def focus_attrs(self, pane_id: str) -> dict[str, str] | None:
+        """The firing pane's location attributes for the tx-assistant envelope, unified on the one
+        attachment join (attachment-topology §6 — replaces `bin/tx-assistant`'s `build_envelope`).
+        Pure tmux; the inner session's RECORD fields (kind/tags) are joined by `SessionService`
+        (M-focus). None outside tmux / when the pane is gone."""
         fields = (
             "session_name", "window_index", "window_name", "pane_index", "pane_title",
-            "pane_current_command", "pane_current_path", "pane_tty",
+            "pane_current_command", "pane_current_path",
         )
         line = self.display_message("|".join("#{" + name + "}" for name in fields), target=pane_id)
         if line is None:
-            return ""
+            return None
         (session_name, window_index, window_name, pane_index, pane_title,
-         pane_command, pane_path, pane_tty) = line.split("|")
+         pane_command, pane_path) = line.split("|")
         attrs = {
             "session-name": session_name, "window-index": window_index,
             "window-name": window_name, "pane-id": pane_id, "pane-index": pane_index,
@@ -233,24 +293,24 @@ class Tmux:
             attrs["inner-remote"] = "1"
             attrs["inner-session-name"] = remote
         else:
-            inner = self._inner_session_for_tty(pane_tty)
+            inner = self.inner_for_pane(pane_id)  # the unified join (no separate tty walk)
             if inner is not None:
                 attrs["inner-session-name"] = inner
-        body = "".join(f" {key}='{_xml_escape(value)}'" for key, value in attrs.items())
-        return f"<tx-command-prompt{body}/>"
+        return attrs
 
-    def _inner_session_for_tty(self, pane_tty: str) -> str | None:
-        """Minimal client-tty → session join (the inline shape S6 replaces with the unified
-        `attachment_map`): a nested `tmux attach` registers a client whose tty IS the host pane's
-        `pane_tty` (attachment-topology §1)."""
-        code, out = self._run_quiet(["list-clients", "-F", "#{client_tty} #{client_session}"])
-        if code != 0:
-            return None
-        for entry in out.splitlines():
-            client_tty, _, client_session = entry.partition(" ")
-            if client_tty == pane_tty:
-                return client_session
-        return None
+    def focus_envelope(self, pane_id: str) -> str:
+        """The `<tx-command-prompt …/>` envelope from pure-tmux fields only (standalone use / the
+        frozen signature). `SessionService.focus_envelope` is the M-focus path that ALSO joins the
+        record's kind/tags. Empty string when the pane is gone."""
+        attrs = self.focus_attrs(pane_id)
+        return format_envelope(attrs) if attrs is not None else ""
+
+
+def format_envelope(attrs: dict[str, str]) -> str:
+    """Render an ordered attribute dict as a self-closing `<tx-command-prompt …/>` tag. Shared by
+    `Tmux.focus_envelope` (tmux-only) and `SessionService.focus_envelope` (tmux + record join)."""
+    body = "".join(f" {key}='{_xml_escape(value)}'" for key, value in attrs.items())
+    return f"<tx-command-prompt{body}/>"
 
 
 def _xml_escape(raw: str) -> str:
