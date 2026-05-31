@@ -42,14 +42,22 @@ def projects_root() -> Path:
 
 
 def munge(cwd: str) -> str:
-    """Munge an absolute cwd into Claude's project-dir name: every `/` and `.` becomes `-`
-    (verified on disk). Pass an absolute path — the caller owns producing it."""
+    """Munge an absolute path into Claude's project-dir name: every `/` and `.` becomes `-`
+    (verified on disk). A pure string transform (no filesystem I/O) — the caller passes the
+    absolute path. claude derives the dir from the cwd's *realpath* (symlinks resolved), so the
+    symlink resolution lives in `project_dir`, not here; this stays a plain string op."""
     return cwd.replace("/", "-").replace(".", "-")
 
 
 def project_dir(cwd: str) -> Path:
-    """The transcript directory for a given cwd: `~/.claude/projects/<munge(cwd)>`."""
-    return projects_root() / munge(cwd)
+    """The transcript directory for a given cwd: `~/.claude/projects/<munge(realpath(cwd))>`.
+
+    claude computes this dir from the *realpath* of its cwd, so we resolve symlinks here before
+    munging — otherwise a symlinked cwd (e.g. macOS `/tmp` → `/private/tmp`) munges to a dir claude
+    never wrote, breaking the deterministic transcript path and fork-id capture. A no-op for
+    non-symlinked paths. This is the single chokepoint: `transcript_path`, `sidecar_dir`,
+    `find_transcript`, and chat.py's snapshot helpers all route through it."""
+    return projects_root() / munge(os.path.realpath(cwd))
 
 
 def transcript_path(chat_id: str, cwd: str) -> Path:
