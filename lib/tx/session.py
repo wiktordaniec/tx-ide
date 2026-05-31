@@ -129,7 +129,7 @@ class Origin:
     how, and from which parent chat." Walking `chat_id` backwards reconstructs a chat's lineage;
     walking `session_id` reconstructs which tx sessions touched it."""
 
-    how: str                    # spawn | fork | rollover | handover
+    how: str                    # spawn | fork | rollover | handover | resume
     session_id: str             # the tx session id that performed the op (a node in the DAG)
     chat_id: str | None = None  # the source chat this derived from (None for spawn/original)
 

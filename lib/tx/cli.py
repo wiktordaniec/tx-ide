@@ -218,6 +218,11 @@ class ShowCommand(Command):
         if session is None:
             print(f"tx show: no record for '{args.target}'", file=sys.stderr)
             return 1
+        # Recompute attached_to on read so `tx show` matches `ls`/picker/jump (compute-on-read, §4):
+        # the stored snapshot only rides along a mutation, so a live record's is stale. Display-only,
+        # never persisted; a terminal record keeps its stored [] (the exit clear).
+        if session.is_alive():
+            session.attached_to = self.service.tmux.attached_to(session.name)
         print(json.dumps(session.to_dict(), indent=2))
         return 0
 
