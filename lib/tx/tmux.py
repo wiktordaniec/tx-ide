@@ -15,7 +15,9 @@ real TTY→pane→session join (attachment-topology.md §3/§9). The `Location` 
 
 from __future__ import annotations
 
+import os
 import subprocess
+from pathlib import Path
 
 from .session import Location
 
@@ -142,6 +144,50 @@ class Tmux:
 
     def current_pane_path(self) -> str | None:
         return self.display_message("#{pane_current_path}")
+
+    # ----- interactive attach (S1b — additive; drives `tx attach`'s nest-attach / jump) -----
+
+    def select_window(self, target: str) -> bool:
+        """Focus a window; False when the target is gone (the bash `|| return 1`)."""
+        code, _ = self._run_quiet(["select-window", "-t", target])
+        return code == 0
+
+    def select_pane(self, target: str) -> bool:
+        """Focus a pane within its window; False when the target is gone."""
+        code, _ = self._run_quiet(["select-pane", "-t", target])
+        return code == 0
+
+    def respawn_pane(self, pane_id: str, command: str) -> None:
+        """Replace a pane's process with `command` (`respawn-pane -k`). The picker uses this to
+        nest-attach a chosen session INTO the launching view pane — the command is a `TMUX= tmux
+        attach …; exec $SHELL` that keeps the pane alive after the inner session detaches."""
+        self._run(["respawn-pane", "-k", "-t", pane_id, command])
+
+    def attach_session(self, name: str) -> int:
+        """Attach `name` in the FOREGROUND from OUTSIDE tmux (the picker's no-`$TMUX` fallback).
+
+        Inherits the real stdio so the attach takes over the terminal, and clears `$TMUX` so tmux
+        does not refuse a nested client. Returns the attach exit code.
+        """
+        env = os.environ.copy()
+        env.pop("TMUX", None)
+        return subprocess.run([self.binary, "attach", "-t", name], env=env).returncode
+
+    def pane_for_session(self, name: str, prefer: str = "") -> str | None:
+        """Find a pane hosting `name` (via nested attach / `@remote-session`) as
+        `session:window.pane`, preferring a pane in one of the comma-separated `prefer` sessions.
+
+        Transitional: wraps the existing `bin/tmux-pane-for-session` helper (frozen topology infra)
+        so `tx attach --jump` keeps today's behavior; S6 replaces this with the real
+        `attachment_map` / `inner_for_pane` join (attachment-topology §3/§9). Returns None when no
+        pane hosts it.
+        """
+        helper = Path(__file__).resolve().parents[2] / "bin" / "tmux-pane-for-session"
+        result = subprocess.run(
+            [str(helper), name, prefer], capture_output=True, text=True
+        )
+        target = result.stdout.strip()
+        return target or None
 
     # ----- attachment topology (SIGNATURES frozen here; bodies are S6) ---------------------
 
