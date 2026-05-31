@@ -7,8 +7,8 @@ service (`tx _list`), and drives the post-selection nest-attach through the `Tmu
 are instantiated fresh per invocation (no daemon). S3 adds the browse-the-past verbs (`history` /
 `chat ls` / `resume`) + forces ingest from `archive`; `resume` orchestrates over the frozen
 `service.spawn` (there is no `service.resume` use-case and `service.py` is off-limits to S3). Still
-out of scope: fork / handover / rollover (S4). Hidden seams: `_session-closed` / `_list` /
-`_edit-tag` / `_init-home` (and the S0 `selfcheck` smoke test).
+out of scope: fork / handover / rollover (S4). Hidden seams: `_list` / `_edit-tag` /
+`_init-home` (and the S0 `selfcheck` smoke test).
 
 See tx-service-redesign.md §6 (CLI surface) + §1 ("CLI parses argv + renders") + C12 (picker keys).
 """
@@ -834,19 +834,6 @@ class EditTagCommand(Command):
 # ----- internal seams ----------------------------------------------------------------------
 
 
-class SessionClosedCommand(Command):
-    name = "_session-closed"
-    summary = "Internal: tmux session-closed hook — stamp EXITED + ended_at (carries the uuid)."
-
-    def run(self, argv: list[str]) -> int:
-        parser = self._parser()
-        parser.add_argument("session_id")
-        args = parser.parse_args(argv)
-        # No-op when the id isn't ours (D4) or the record is already terminal (C3).
-        self.service.record_state(args.session_id, State.EXITED)
-        return 0
-
-
 class FocusEnvelopeCommand(Command):
     name = "focus-envelope"
     summary = "Internal: build the tx-assistant context envelope for a pane (M-focus, S6)."
@@ -1051,7 +1038,7 @@ PUBLIC_COMMANDS: list[type[Command]] = [
     ForkCommand, HandoverCommand, RolloverCommand,
 ]
 HIDDEN_COMMANDS: list[type[Command]] = [
-    ListCommand, EditTagCommand, SessionClosedCommand, FocusEnvelopeCommand, HookCommand,
+    ListCommand, EditTagCommand, FocusEnvelopeCommand, HookCommand,
     InitHomeCommand, SelfCheckCommand,
     RolloverFinishCommand, HandoverFinishCommand,
 ]

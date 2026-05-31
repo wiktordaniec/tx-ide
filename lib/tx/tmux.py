@@ -110,9 +110,6 @@ class Tmux:
         value = out.strip()
         return value or None
 
-    def set_hook(self, target: str, hook: str, command: str) -> None:
-        self._run(["set-hook", "-t", target, hook, command])
-
     def get_tx_id(self, name: str) -> str | None:
         return self.show_option(name, "@tx_id")
 
