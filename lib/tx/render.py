@@ -14,7 +14,7 @@ from __future__ import annotations
 import time
 
 from .palette import RESET_FG, WARN_ANSI, tag_ansi
-from .session import Kind, Session
+from .session import Kind, Location, Session
 
 
 def reltime(epoch: float | None, now: float | None = None) -> str:
@@ -37,21 +37,40 @@ def _chips(tags: list[str]) -> str:
     return "".join(f" [{tag}]" for tag in tags)
 
 
+# LOCATION column (attachment-topology §5): the primary `window[pane]` + a `+N` overflow. The width
+# is shared with cli.py's picker header so the column lines up under it; `tx ls` reuses it too.
+LOCATION_W = 12
+
+
+def location_text(locations: list[Location]) -> str:
+    """The LOCATION cell (attachment-topology §5): the primary pane as `window[pane]`, suffixed `+N`
+    when the session is surfaced in more than one pane; `—` when attached nowhere. Primary = first in
+    the stable order `attachment_map` already sorts by, so the cell never flickers across reloads."""
+    if not locations:
+        return "—"
+    primary = locations[0]
+    cell = f"{primary.window_name}[{primary.pane_index}]"
+    if len(locations) > 1:
+        cell += f" +{len(locations) - 1}"
+    return cell
+
+
 def _by_recent_activity(sessions: list[Session]) -> list[Session]:
     return sorted(sessions, key=lambda session: session.last_activity or 0, reverse=True)
 
 
 def render_ls(sessions: list[Session], now: float | None = None) -> str:
     """Two sections — VIEWS (kind == view) and PROCESSES — newest-activity first. Plain stdout,
-    pipe-friendly. Columns: name, state, idle, tag chips."""
+    pipe-friendly. Columns: name, state, location, idle, tag chips."""
     if now is None:
         now = time.time()
     views: list[str] = []
     processes: list[str] = []
     for session in _by_recent_activity(sessions):
-        row = "  {:<24} {:<8} {:<6}{}".format(
-            session.name, session.state.value, reltime(session.last_activity, now),
-            _chips(session.tags),
+        row = (
+            f"  {session.name:<24} {session.state.value:<8} "
+            f"{location_text(session.attached_to):<{LOCATION_W}} "
+            f"{reltime(session.last_activity, now):<6}{_chips(session.tags)}"
         )
         (views if session.kind == Kind.VIEW else processes).append(row)
     return "\n".join(["VIEWS", *views, "", "PROCESSES", *processes])
@@ -59,9 +78,10 @@ def render_ls(sessions: list[Session], now: float | None = None) -> str:
 
 # ----- fzf picker feed (S1b) ---------------------------------------------------------------------
 
-# Width budget past the NAME column: 3-space gap + 7 STARTED + 1 + 6 IDLE + ~14 tag chips + ~2 fzf
-# gutter (the old bash `compute_namew` overhead). Names are truncated to fit; floor 12, ceiling 60.
-_NAMEW_OVERHEAD = 33
+# Width budget past the NAME column: 3-space gap + LOCATION + 7 STARTED + 1 + 6 IDLE + ~14 tag chips
+# + ~2 fzf gutter (the old bash `compute_namew` overhead, plus S6's LOCATION column). Names are
+# truncated to fit; floor 12, ceiling 60.
+_NAMEW_OVERHEAD = 46
 _NAMEW_FLOOR = 12
 _NAMEW_CEILING = 60
 
@@ -84,7 +104,7 @@ def _trunc(text: str, width: int) -> str:
 
 def _picker_row(
     name: str, tags: list[str], created_at: float | None, last_activity: float | None,
-    namew: int, now: float, origin: str = "L",
+    location: str, namew: int, now: float, origin: str = "L",
 ) -> str:
     """One tab-separated fzf row (the bash `sessions_with_meta` printf):
 
@@ -92,8 +112,8 @@ def _picker_row(
 
     Field 1 is the selection key (the real session name); field 2 (`plain_chips`, ` [tag]…`) feeds
     the focus / arm headers; field 3 is the origin (`L` local); field 4 is the visual — a padded
-    name, STARTED, the IDLE column in WARN yellow, and the per-tag colored chips. The picker
-    displays field 4 (`--with-nth=4..`) and searches the visible text.
+    name, the S6 LOCATION column, STARTED, the IDLE column in WARN yellow, and the per-tag colored
+    chips. The picker displays field 4 (`--with-nth=4..`) and searches the visible text.
     """
     prefix = "(r) " if origin == "R" else ""
     name_disp = _trunc(name, namew - len(prefix))
@@ -104,6 +124,7 @@ def _picker_row(
     idle = reltime(last_activity, now)
     visual = (
         f"{prefix}{name_disp}{' ' * pad}   "
+        f"{location:<{LOCATION_W}} "
         f"{started:<7} {WARN_ANSI}{idle:<6}{RESET_FG}{colored_chips}"
     )
     return "\t".join([name, plain_chips, origin, visual])
@@ -116,7 +137,8 @@ def picker_display_rows(sessions: list[Session], namew: int, now: float | None =
         now = time.time()
     rows = [
         _picker_row(
-            session.name, session.tags, session.created_at, session.last_activity, namew, now,
+            session.name, session.tags, session.created_at, session.last_activity,
+            location_text(session.attached_to), namew, now,
         )
         for session in _by_recent_activity(sessions)
         if session.kind != Kind.VIEW

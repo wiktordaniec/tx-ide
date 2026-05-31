@@ -27,7 +27,7 @@ from pathlib import Path
 
 from . import claude, hooks, palette
 from .events import EventLog
-from .render import picker_display_rows, picker_namew, render_ls
+from .render import LOCATION_W, picker_display_rows, picker_namew, render_ls
 from .service import ServiceError, SessionService
 from .session import SCHEMA_VERSION, ChatRef, Kind, Origin, Role, Session, State
 from .spawn import SHELL_COMMANDS, SpawnSpec
@@ -185,9 +185,8 @@ class LsCommand(Command):
 
     def run(self, argv: list[str]) -> int:
         self._parser().parse_args(argv)  # no args; honors -h
-        self.service.reconcile()  # reconcile-on-read (§4) — dead records drop out below
-        live = [session for session in self.service.store.all() if session.is_alive()]
-        print(render_ls(live))
+        # reconcile-on-read (§4) + a fresh attached_to snapshot for the LOCATION column (S6).
+        print(render_ls(self.service.live_sessions()))
         return 0
 
 
@@ -199,9 +198,7 @@ class ListCommand(Command):
         # Lenient on argv (the picker is the only caller). Reconcile-on-read (~1 Hz from the picker's
         # refresh loop) keeps the list fresh: vanished sessions drop out below, new ones appear. The
         # NAME width comes from $NAMEW so this matches the picker's initial paint width.
-        self.service.reconcile()
-        live = [session for session in self.service.store.all() if session.is_alive()]
-        print(picker_display_rows(live, _env_namew()))
+        print(picker_display_rows(self.service.live_sessions(), _env_namew()))
         return 0
 
 
@@ -416,7 +413,7 @@ class AttachCommand(Command):
             f"{sys.executable} -m tx _edit-tag {{1}}"
         )
         bold, reset = palette.BOLD, palette.RESET
-        header_cols = f"{'NAME':<{namew}}   STARTED IDLE   TAGS"
+        header_cols = f"{'NAME':<{namew}}   {'LOCATION':<{LOCATION_W}} STARTED IDLE   TAGS"
 
         # Focus header: bold-accent name + bold-fg tag chips on line 1 (mirrors the active-pane
         # title), the column header on line 2. {1}=name, {2}=plain chips. `\n` stays literal so the
@@ -484,9 +481,7 @@ class AttachCommand(Command):
             time.sleep(1.2)
 
     def _render_feed(self, namew: int) -> str:
-        self.service.reconcile()
-        live = [s for s in self.service.store.all() if s.is_alive()]
-        return picker_display_rows(live, namew)
+        return picker_display_rows(self.service.live_sessions(), namew)
 
     # ----- post-selection action -----------------------------------------------------------
 
@@ -619,6 +614,21 @@ class SessionClosedCommand(Command):
         return 0
 
 
+class FocusEnvelopeCommand(Command):
+    name = "focus-envelope"
+    summary = "Internal: build the tx-assistant context envelope for a pane (M-focus, S6)."
+
+    def run(self, argv: list[str]) -> int:
+        """The unified `focus_envelope` (attachment-topology §6): the firing pane's location + the
+        nested/inner session + its record kind/tags. Invoked by `bin/tx-assistant` (replaces its
+        inline awk join). Printed without a trailing newline — it is prepended to the input line."""
+        parser = self._parser()
+        parser.add_argument("pane")
+        args = parser.parse_args(argv)
+        sys.stdout.write(self.service.focus_envelope(args.pane))
+        return 0
+
+
 class HookCommand(Command):
     name = "hook"
     summary = "Internal: Claude/tmux hook entry — drive session state (S2)."
@@ -704,8 +714,8 @@ PUBLIC_COMMANDS: list[type[Command]] = [
     ShowCommand,
 ]
 HIDDEN_COMMANDS: list[type[Command]] = [
-    ListCommand, EditTagCommand, SessionClosedCommand, HookCommand, InitHomeCommand,
-    SelfCheckCommand,
+    ListCommand, EditTagCommand, SessionClosedCommand, FocusEnvelopeCommand, HookCommand,
+    InitHomeCommand, SelfCheckCommand,
 ]
 
 
