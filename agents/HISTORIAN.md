@@ -62,7 +62,9 @@ edge:
 - Walk `origin.chat_id` backwards to reconstruct a chat's lineage (what it forked /
   rolled over / was handed over from).
 - Walk `origin.session_id` to see which tx sessions touched a thread.
-- `how` ∈ `spawn` (original) / `fork` / `rollover` / `handover`.
+- `how` ∈ `spawn` (original) / `fork` / `rollover` / `handover` / `resume` (a past session
+  re-spawned via `tx resume`, re-attaching its existing chat into a new record — `origin` points
+  at the source record + chat).
 - Cross-session lineage is just a grep over `sessions/*.json` — there is no query API.
 
 ## What you produce
