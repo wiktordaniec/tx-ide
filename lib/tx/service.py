@@ -26,7 +26,7 @@ from .session import ChatRef, Origin, Session, State
 from .spawn import SpawnSpec
 from .storage import tx_ide_home
 from .store import SessionStore
-from .tmux import Tmux
+from .tmux import Tmux, format_envelope
 
 
 class ServiceError(RuntimeError):
@@ -179,6 +179,7 @@ class SessionService:
     def tag(self, name_or_id: str, tags: list[str]) -> Session:
         session = self._require(name_or_id)
         session.tags = list(tags)
+        session.attached_to = self.tmux.attached_to(session.name)  # ride-along snapshot (§4)
         self.store.save(session)
         self.log.append("tag", f"{session.name} {','.join(tags)}")
         return session
@@ -193,6 +194,7 @@ class SessionService:
         if self.tmux.has_session(previous):
             self.tmux.rename_session(previous, new_name)
         session.name = new_name
+        session.attached_to = self.tmux.attached_to(new_name)  # ride-along snapshot (§4)
         self.store.save(session)
         self.log.append("rename", f"{previous} → {new_name}")
         return session
@@ -241,12 +243,47 @@ class SessionService:
     def reconcile(self) -> list[Session]:
         return self.reconciler.reconcile()
 
+    def live_sessions(self) -> list[Session]:
+        """Reconcile, then return the live records with a FRESH `attached_to` stamped in memory —
+        the display source of truth (compute-on-read, attachment-topology §4). ONE `attachment_map`
+        sweep feeds every row. This snapshot is NOT persisted on its own: an attachment delta never
+        dirties a record (the chattiness the design rejects), it only rides along an actual mutation
+        (record_state / tag / rename) or the exit clear. Backs `tx ls` + the picker feed."""
+        self.reconcile()
+        attachment = self.tmux.attachment_map()
+        live = [session for session in self.store.all() if session.is_alive()]
+        for session in live:
+            session.attached_to = attachment.get(session.name, [])
+        return live
+
     def get(self, name_or_id: str) -> Session | None:
         return self._resolve(name_or_id)
 
     def focus_envelope(self, pane_id: str) -> str:
-        # M-focus: the topology join lives in the Tmux adapter; S6 enriches with the record join.
-        return self.tmux.focus_envelope(pane_id)
+        """M-focus: the topology join lives in `Tmux` (one `attachment_map`); here we add the record
+        join — the firing session's and the inner session's kind/tags from the store (the old
+        `build_envelope`'s `tx-session-state` lookups, now on the v2 record). Empty when no pane."""
+        attrs = self.tmux.focus_attrs(pane_id)
+        if attrs is None:
+            return ""
+        self._add_record_attrs(attrs, attrs.get("session-name"), "session-kind", "session-tag")
+        if not attrs.get("inner-remote"):
+            self._add_record_attrs(
+                attrs, attrs.get("inner-session-name"), "inner-session-kind", "inner-session-tag"
+            )
+        return format_envelope(attrs)
+
+    def _add_record_attrs(
+        self, attrs: dict[str, str], name: str | None, kind_key: str, tag_key: str
+    ) -> None:
+        """Join a session's stored kind/tags into the envelope attrs (no-op when untracked — D4)."""
+        if not name:
+            return
+        record = self._resolve(name)
+        if record is None:
+            return
+        attrs[kind_key] = record.kind.value
+        attrs[tag_key] = ",".join(record.tags)
 
     # ----- resolution ----------------------------------------------------------------------
 

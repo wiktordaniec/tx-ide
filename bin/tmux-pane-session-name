@@ -42,6 +42,10 @@ print_tags() {
 
 pane_tty=$(tmux display-message -p -t "$pane_id" '#{pane_tty}' 2>/dev/null) || exit 0
 
+# S6: this pane→inner lookup is the ONE deliberate shell mirror of the unified Python join
+# (attachment-topology §6 — the render hot path: pane-border-format runs this on every redraw, so
+# it stays shell+awk to avoid per-redraw interpreter startup). Keep it in lockstep with
+# lib/tx/tmux.py `Tmux._attachment_join` — if you change the join there, change it here too.
 inner=$(tmux list-clients -F '#{client_tty} #{client_session}' 2>/dev/null |
   awk -v t="$pane_tty" '$1==t {print $2; exit}')
 
