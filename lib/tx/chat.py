@@ -86,6 +86,13 @@ DISTILLER_TAG = "temporary"
 _IDENTITY_VALUE_FLAGS = frozenset({"--session-id", "--resume"})
 _IDENTITY_BARE_FLAGS = frozenset({"--fork-session", "--continue", "-c"})
 
+# Shell-control tokens. Once shlex surfaces one of these, the rest of a compound source `cmd` is
+# shell wrapping (separator / logical / pipe / background / subshell / brace-group), NOT claude
+# argv. A fork/handover/rollover is a FRESH claude invocation, not the source's shell pipeline, so
+# everything from the first such token on is dropped: `shlex.join`-quoting it back would feed claude
+# stray positional args (e.g. it would run a bare `;` as an initial prompt). Bug #2b.
+_SHELL_CONTROL_TOKENS = frozenset({";", "&", "&&", "||", "|", "|&", "&>", "&>>", "(", ")", "{", "}"})
+
 
 # ----- transcript snapshotting (fork capture, §4 step 5 + the hook backstop) ----------------
 
@@ -129,16 +136,27 @@ def active_chat(session: Session) -> ChatRef | None:
 
 # ----- launch-command reconstruction (inherit the source's flags, swap the identity ones) ---
 
+def _is_shell_control(token: str) -> bool:
+    """Whether a shlex token is a shell operator rather than a claude flag/value: an exact control
+    token, or a redirection (any token starting with `<`/`>` — covers `>`, `>>`, `<`, glued `>log`).
+    Enough to find the shell boundary without re-implementing a full shell parser (bug #2b)."""
+    return token in _SHELL_CONTROL_TOKENS or token[:1] in ("<", ">")
+
+
 def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
     """Split a source `cmd` into (binary, inherited-flags) with the session-identity flags removed.
     Inherits model / effort / --append-system-prompt / --dangerously-skip-permissions so a forked or
-    handed-over session keeps the source's persona, and re-supplies its own identity flags."""
+    handed-over session keeps the source's persona, and re-supplies its own identity flags. Stops at
+    the first shell-control token (`;`, `|`, `&&`, a redirection, …): a compound `--cmd`'s shell
+    wrapping is not part of claude's argv and cannot be safely reconstructed, so it is dropped."""
     tokens = shlex.split(source_cmd)
     binary = tokens[0] if tokens else claude.CLAUDE_BIN
     inherited: list[str] = []
     index = 1
     while index < len(tokens):
         token = tokens[index]
+        if _is_shell_control(token):
+            break  # shell wrapping begins here — drop it and everything after (bug #2b)
         if token in _IDENTITY_VALUE_FLAGS:
             index += 2  # drop the flag and its value
             continue
