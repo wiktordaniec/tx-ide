@@ -14,17 +14,14 @@ See tx-service-redesign.md §1 (object model) + §4 (no-daemon) + §5 (hooks →
 
 from __future__ import annotations
 
-import sys
 import time
 import uuid
-from pathlib import Path
 
 from . import claude
 from .events import EventLog
 from .reconcile import Reconciler
 from .session import ChatRef, Origin, Session, State
 from .spawn import SpawnSpec
-from .storage import tx_ide_home
 from .store import SessionStore
 from .tmux import Tmux, format_envelope
 
@@ -77,8 +74,8 @@ class SessionService:
         return session
 
     def _spawn(self, spec: SpawnSpec) -> Session:
-        """The shared spawn mechanics: create the detached session, set `@tx_id`, register the
-        per-session `session-closed` hook carrying the uuid (C2), persist the record, log once."""
+        """The shared spawn mechanics: create the detached session, set `@tx_id`, persist the
+        record, log once. Liveness/EXITED is handled globally (C2 — see below), not per-session."""
         if self.tmux.has_session(spec.name):
             raise SessionExists(f"session '{spec.name}' already exists")
 
@@ -101,13 +98,13 @@ class SessionService:
         parent = self.tmux.current_session_name()
         pid = self.tmux.new_session(name=spec.name, cwd=spec.cwd, command=spec.cmd, env=launch_env)
         self.tmux.set_tx_id(spec.name, session_id)
-        # C2: register the session-closed hook per-session, carrying the uuid (a reused name would
-        # mis-stamp). NOTE (measured on tmux 3.6a): a session's OWN session-closed hook does not
-        # fire after the session is gone — that hook must be GLOBAL. So the ACTIVE EXITED path is
-        # reconcile-on-read (C1/C4), which stamps a vanished record within the picker's ~1 Hz
-        # reload. This registration + the `_session-closed <uuid>` verb are the C2 wiring S2 builds
-        # the (global) hook install on. Flagged to build-orchestrator. Harmless if it never fires.
-        self.tmux.set_hook(spec.name, "session-closed", self._session_closed_command(session_id))
+        # C2 (revised, measured on tmux 3.6a): NO per-session `session-closed` hook is registered
+        # here. A session's OWN `session-closed` hook does not fire at its own close on 3.6a —
+        # instead a surviving SIBLING's hook fires, carrying the sibling's uuid, so a per-session
+        # hook would stamp a still-live session EXITED (permanent: terminal is absorbing + reconcile
+        # skips terminal records). Liveness/EXITED is the global id-less `session-closed → reconcile`
+        # hook (S2, hooks.py) plus reconcile-on-read (C1/C4): both diff `@tx_id` liveness over one
+        # `list-sessions` and stamp only genuinely-vanished records, so neither can cross-fire.
 
         session = Session(
             id=session_id,
@@ -128,16 +125,6 @@ class SessionService:
         self.store.save(session)
         self.log.append("spawn", f"{spec.name} [{spec.role.value}] {spec.cwd}")
         return session
-
-    def _session_closed_command(self, session_id: str) -> str:
-        """The tmux `session-closed` hook value (C2): a baked invocation carrying the uuid (not the
-        name — a reused name mis-stamps). Paths are resolved at registration (C9) because hooks run
-        with a minimal env — `$TX_IDE_HOME`, the package on `PYTHONPATH`, the running interpreter."""
-        invocation = (
-            f"env TX_IDE_HOME={tx_ide_home()} PYTHONPATH={_package_lib()} "
-            f"{sys.executable} -m tx _session-closed {session_id}"
-        )
-        return f'run-shell -b "{invocation}"'
 
     # ----- lifecycle -----------------------------------------------------------------------
 
@@ -305,9 +292,3 @@ class SessionService:
         if session is None:
             raise SessionNotFound(f"session '{token}' not found (no live @tx_id, no store record)")
         return session
-
-
-def _package_lib() -> Path:
-    """The `lib/` dir that holds the `tx` package — what `PYTHONPATH` must point at so a baked hook
-    can `python3.14 -m tx …`. `service.py` → `lib/tx` → `lib`."""
-    return Path(__file__).resolve().parents[1]
