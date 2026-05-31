@@ -122,3 +122,53 @@ def picker_display_rows(sessions: list[Session], namew: int, now: float | None =
         if session.kind != Kind.VIEW
     ]
     return "\n".join(rows)
+
+
+# ----- history browse (S3) -----------------------------------------------------------------------
+# Self-contained renderers for `tx history` + `tx chat ls`. Kept localized (and free of I/O, per the
+# module contract) so they merge cleanly when S6 inserts its picker LOCATION column.
+
+def render_history(sessions: list[Session], now: float | None = None) -> str:
+    """`tx history` — the past (EXITED / ARCHIVED) records, newest-ended first. Columns: name,
+    state, when it ended, chat count, tag chips, cwd. Plain + pipe-friendly like `render_ls`; the
+    everyday picker stays live-only (§7), so history is its own listing."""
+    if now is None:
+        now = time.time()
+    ordered = sorted(
+        sessions, key=lambda session: session.ended_at or session.last_activity or 0, reverse=True
+    )
+    rows = []
+    for session in ordered:
+        rows.append("  {:<24} {:<8} {:>5}  {:>2}c {}  {}".format(
+            _trunc(session.name, 24),
+            session.state.value,
+            reltime(session.ended_at or session.last_activity, now),
+            len(session.chats),
+            _chips(session.tags) or "",
+            session.cwd,
+        ))
+    if not rows:
+        return "HISTORY\n  (no exited or archived sessions)"
+    return "\n".join(["HISTORY", *rows])
+
+
+def render_chats(session: Session, now: float | None = None) -> str:
+    """`tx chat ls <session>` — one line per `ChatRef`: the chat uuid (short), its role, the origin
+    edge (how + the parent chat it derived from), when it started, and the durable bundle path. The
+    bundle path shown is the stored `bundle_path` (— until ingested) — no disk check (pure
+    formatting); `tx history` / a HISTORIAN grep confirm what is on disk."""
+    if now is None:
+        now = time.time()
+    header = f"{session.name} — {len(session.chats)} chat(s)"
+    if not session.chats:
+        return header + "\n  (none)"
+    lines = [header]
+    for chat in session.chats:
+        identifier = chat.id[:8] if chat.id else "pending"
+        origin = chat.origin.how
+        if chat.origin.chat_id:
+            origin += f"←{chat.origin.chat_id[:8]}"
+        lines.append("  {:<8}  {:<9} {:<18} {:>4} ago   {}".format(
+            identifier, chat.role, origin, reltime(chat.started_at, now), chat.bundle_path or "—",
+        ))
+    return "\n".join(lines)
