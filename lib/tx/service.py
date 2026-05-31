@@ -172,8 +172,10 @@ class SessionService:
         return session
 
     def rename(self, name_or_id: str, new_name: str) -> Session:
-        """Rename the tmux session and the record together. `@tx_id` and the `session-closed` hook
-        ride along (rename-session keeps the same session), so liveness tracking is unbroken."""
+        """Rename the tmux session and the record together. `@tx_id` rides along (rename-session
+        keeps the same session), so the record stays linked and liveness tracking is unbroken —
+        liveness is the global id-less `session-closed` hook + reconcile-on-read, not a per-session
+        hook that a rename could strand."""
         session = self._require(name_or_id)
         if self.tmux.has_session(new_name):
             raise SessionExists(f"session '{new_name}' already exists")
@@ -192,8 +194,7 @@ class SessionService:
         """Apply a hook-driven state change to ONE record. No-op when the id isn't ours (D4 — a
         hand-started `claude` carries an `@tx_id` we never recorded). Honors C3 (terminal states
         absorbing) + the C4 dirty-check via `Session.transition_to`. Accepts WAITING from either
-        Stop or PermissionRequest (C6 — the event→state table is S2; here we just apply a state).
-        Backs the internal `tx _session-closed <uuid>` verb (new_state = EXITED)."""
+        Stop or PermissionRequest (C6 — the event→state table is S2; here we just apply a state)."""
         session = self.store.load(session_id)
         if session is None:
             return False
