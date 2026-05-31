@@ -36,19 +36,6 @@ repo=$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")
 tx_session_state="$repo/lib/tx-session-state"
 tx_python=$(command -v python3.14)
 
-xml_escape() {
-  local raw="$1"
-  raw="${raw//&/&amp;}"
-  raw="${raw//\'/&apos;}"
-  raw="${raw//</&lt;}"
-  raw="${raw//>/&gt;}"
-  printf '%s' "$raw"
-}
-
-attr() {
-  printf " %s='%s'" "$1" "$(xml_escape "$2")"
-}
-
 build_envelope() {
   [ -z "${TMUX:-}" ] && return 0
 
@@ -57,76 +44,11 @@ build_envelope() {
   [ -z "$target_pane" ] && target_pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
   [ -z "$target_pane" ] && return 0
 
-  local format='#{session_name}|#{window_index}|#{window_name}|#{pane_index}|#{pane_title}|#{pane_current_command}|#{pane_current_path}|#{pane_tty}'
-  local line
-  line=$(tmux display-message -t "$target_pane" -p "$format" 2>/dev/null) || return 0
-  [ -z "$line" ] && return 0
-
-  local session_name window_index window_name pane_index pane_title pane_command pane_path pane_tty
-  IFS='|' read -r session_name window_index window_name pane_index pane_title pane_command pane_path pane_tty <<<"$line"
-  local pane_id="$target_pane"
-
-  local session_id session_kind session_tag
-  session_id=$(tmux show-options -vqt "$session_name" @tx_id 2>/dev/null) || session_id=""
-  session_kind=""
-  session_tag=""
-  if [ -n "$session_id" ]; then
-    session_kind=$("$tx_python" "$tx_session_state" get "$session_id" kind 2>/dev/null) || session_kind=""
-    session_tag=$("$tx_python" "$tx_session_state" get "$session_id" tags 2>/dev/null) || session_tag=""
-  fi
-
-  local envelope="<tx-command-prompt"
-  envelope+=$(attr session-name "$session_name")
-  envelope+=$(attr session-kind "$session_kind")
-  envelope+=$(attr session-tag "$session_tag")
-  envelope+=$(attr window-index "$window_index")
-  envelope+=$(attr window-name "$window_name")
-  envelope+=$(attr pane-id "$pane_id")
-  envelope+=$(attr pane-index "$pane_index")
-  envelope+=$(attr pane-title "$pane_title")
-  envelope+=$(attr pane-cmd "$pane_command")
-  envelope+=$(attr pane-path "$pane_path")
-
-  # Nest-attach detection mirrors bin/tmux-pane-session-name. @remote-session
-  # marks an ssh-attached remote tmux — skip inner introspection (needs ssh).
-  local remote_session
-  remote_session=$(tmux show-options -pqv -t "$pane_id" @remote-session 2>/dev/null) || remote_session=""
-  if [ -n "$remote_session" ]; then
-    envelope+=$(attr inner-remote "1")
-    envelope+=$(attr inner-session-name "$remote_session")
-  else
-    local inner_session
-    inner_session=$(tmux list-clients -F '#{client_tty} #{client_session}' 2>/dev/null |
-      awk -v t="$pane_tty" '$1==t {print $2; exit}')
-    if [ -n "$inner_session" ]; then
-      local inner_id inner_kind inner_tag inner_info
-      inner_id=$(tmux show-options -vqt "$inner_session" @tx_id 2>/dev/null) || inner_id=""
-      inner_kind=""
-      inner_tag=""
-      if [ -n "$inner_id" ]; then
-        inner_kind=$("$tx_python" "$tx_session_state" get "$inner_id" kind 2>/dev/null) || inner_kind=""
-        inner_tag=$("$tx_python" "$tx_session_state" get "$inner_id" tags 2>/dev/null) || inner_tag=""
-      fi
-      inner_info=$(tmux display-message -t "$inner_session" -p \
-        '#{window_index}|#{window_name}|#{pane_id}|#{pane_index}|#{pane_title}|#{pane_current_command}|#{pane_current_path}' \
-        2>/dev/null) || inner_info=""
-      local inner_window_index inner_window_name inner_pane_id inner_pane_index inner_pane_title inner_pane_command inner_pane_path
-      IFS='|' read -r inner_window_index inner_window_name inner_pane_id inner_pane_index inner_pane_title inner_pane_command inner_pane_path <<<"$inner_info"
-      envelope+=$(attr inner-session-name "$inner_session")
-      envelope+=$(attr inner-session-kind "$inner_kind")
-      envelope+=$(attr inner-session-tag "$inner_tag")
-      envelope+=$(attr inner-window-index "$inner_window_index")
-      envelope+=$(attr inner-window-name "$inner_window_name")
-      envelope+=$(attr inner-pane-id "$inner_pane_id")
-      envelope+=$(attr inner-pane-index "$inner_pane_index")
-      envelope+=$(attr inner-pane-title "$inner_pane_title")
-      envelope+=$(attr inner-pane-cmd "$inner_pane_command")
-      envelope+=$(attr inner-pane-path "$inner_pane_path")
-    fi
-  fi
-
-  envelope+="/>"
-  printf '%s' "$envelope"
+  # S6: the envelope is now built by the Python package's unified attachment join (M-focus,
+  # attachment-topology §6) — this replaces the old inline client_tty→session awk and the
+  # tx-session-state kind/tag lookups. Call this checkout's tx (repo-relative) so it tracks the
+  # installed code regardless of $PATH during coexistence; stdout is the <tx-command-prompt/>.
+  "$repo/bin/tx" focus-envelope "$target_pane" 2>/dev/null || true
 }
 
 ensure_session() {
