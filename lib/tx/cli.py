@@ -406,6 +406,15 @@ class AttachCommand(Command):
         escapes, the column header, and the `bin/tx` path are interpolated here."""
         bin_tx = str(_repo_root() / "bin" / "tx")
         reload = f"reload-sync({bin_tx} _list)"
+        # Ctrl-T's `_edit-tag` runs inside a `display-popup`, which tmux spawns in the SERVER's
+        # environment — it does NOT inherit the picker's $TX_IDE_HOME the way the fzf-child paths
+        # (reload-sync / kill) do. Bake the resolved home + PYTHONPATH + interpreter into the command
+        # (the same C9 idea as the hook shims) so the retag edits the SAME store the picker shows —
+        # otherwise it falls back to the default ~/.tx-ide and spams the v1-record warnings.
+        edit_tag = (
+            f"env TX_IDE_HOME={tx_ide_home()} PYTHONPATH={_repo_root() / 'lib'} "
+            f"{sys.executable} -m tx _edit-tag {{1}}"
+        )
         bold, reset = palette.BOLD, palette.RESET
         header_cols = f"{'NAME':<{namew}}   STARTED IDLE   TAGS"
 
@@ -442,8 +451,9 @@ class AttachCommand(Command):
             f'--bind=focus:transform-header({focus_cmd})+execute-silent(: >"$TX_ARM_FILE")'
             f'+unbind(y,n)',
             # Ctrl-T: edit tags in a popup (readline pre-fill), then reload to show the new chips.
-            f'--bind=ctrl-t:execute(tmux display-popup -E -h 5 -w 60% "{bin_tx} _edit-tag {{1}}")'
-            f'+{reload}',
+            # The popup command carries a baked $TX_IDE_HOME (see `edit_tag`) — `display-popup` does
+            # not inherit fzf's environment, so without it the retag hits the default home.
+            f'--bind=ctrl-t:execute(tmux display-popup -E -h 5 -w 60% "{edit_tag}")+{reload}',
             # Two-press Ctrl-D kill: arm the row, swap in the prompt header, rebind y/n. `y` drives
             # `tx kill` (record → EXITED + logged, not a raw kill-session) then reloads; `n` /
             # cursor-move cancel and restore the focus header. y/n unbind themselves after firing.
