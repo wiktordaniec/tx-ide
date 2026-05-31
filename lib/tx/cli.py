@@ -33,7 +33,9 @@ from .chat import ChatOps
 from .events import EventLog
 from .render import LOCATION_W, picker_display_rows, picker_namew, render_chats, render_history, render_ls
 from .service import ServiceError, SessionService
-from .session import SCHEMA_VERSION, ChatRef, Kind, Origin, Role, Session, State
+from .session import (
+    SCHEMA_VERSION, ChatRef, Kind, Origin, Role, Session, State, UnsupportedRecordError,
+)
 from .spawn import SHELL_COMMANDS, SpawnSpec
 from .storage import LocalStorage, ensure_home, tx_ide_home
 from .store import SessionStore
@@ -854,6 +856,52 @@ class FocusEnvelopeCommand(Command):
         return 0
 
 
+# ----- pane-border fast readers (F5 — the v2-aware shell-reader seams) ----------------------
+# bin/tmux-pane-session-name (pane-border-format) and tmux/tx-ide.tmux (after-new-window) used to
+# read the v1 store via `lib/tx-session-state get <id> <field>`. Post-Flip the records are v2, which
+# the v1 reader cannot parse, so those readers call these tiny verbs instead — one v2 read each,
+# reusing the real SessionStore + $TX_IDE_HOME resolution. Both run on a tmux render path, so they
+# print empty + exit 0 for an absent / unreadable record rather than failing the border.
+
+
+def _pane_record(service: SessionService, session_id: str) -> Session | None:
+    """Load a record for a pane reader by id, tolerating the persistence boundary: None for an
+    absent OR unreadable (stale-v1 / malformed) file. A single bad record must never break pane
+    rendering, so this swallows the same boundary errors `SessionStore.all()` does (OPEN-0b)."""
+    if not session_id:
+        return None
+    try:
+        return service.store.load(session_id)
+    except (UnsupportedRecordError, json.JSONDecodeError, KeyError, ValueError):
+        return None
+
+
+class PaneTagsCommand(Command):
+    name = "_pane-tags"
+    summary = "Internal: comma-joined tags for a record id (pane-border reader; empty if absent)."
+
+    def run(self, argv: list[str]) -> int:
+        parser = self._parser()
+        parser.add_argument("session_id")
+        args = parser.parse_args(argv)
+        record = _pane_record(self.service, args.session_id)
+        print(",".join(record.tags) if record is not None else "")
+        return 0
+
+
+class PaneKindCommand(Command):
+    name = "_pane-kind"
+    summary = "Internal: kind value (view/process) for a record id (after-new-window reader)."
+
+    def run(self, argv: list[str]) -> int:
+        parser = self._parser()
+        parser.add_argument("session_id")
+        args = parser.parse_args(argv)
+        record = _pane_record(self.service, args.session_id)
+        print(record.kind.value if record is not None else "")
+        return 0
+
+
 class HookCommand(Command):
     name = "hook"
     summary = "Internal: Claude/tmux hook entry — drive session state (S2)."
@@ -1043,8 +1091,8 @@ PUBLIC_COMMANDS: list[type[Command]] = [
     ForkCommand, HandoverCommand, RolloverCommand,
 ]
 HIDDEN_COMMANDS: list[type[Command]] = [
-    ListCommand, EditTagCommand, FocusEnvelopeCommand, HookCommand,
-    InitHomeCommand, SelfCheckCommand,
+    ListCommand, EditTagCommand, FocusEnvelopeCommand, PaneTagsCommand, PaneKindCommand,
+    HookCommand, InitHomeCommand, SelfCheckCommand,
     RolloverFinishCommand, HandoverFinishCommand,
 ]
 

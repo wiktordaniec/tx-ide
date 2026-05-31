@@ -16,7 +16,9 @@
 # own tmux.conf wins, since tmux is last-write-wins.
 set -u
 
-TX_SESSION_STATE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/tx-session-state"
+# The python shim (repo-relative), used by the after-new-window hook to read a session's kind
+# from the v2 store. Resolves $TX_IDE_HOME (default ~/.tx-ide) inside the package.
+TX="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tx"
 
 option() {
   tmux show-option -gv "$1" 2>/dev/null || printf '%s' "$2"
@@ -68,7 +70,7 @@ set -g pane-border-status off
 set -g pane-border-format " [#P] #(tmux-pane-session-name #D) "
 EOF
   cat >>"$CONF" <<EOF
-set-hook -g after-new-window "if-shell 'test \"\$($TX_SESSION_STATE get \"#{@tx_id}\" kind)\" = view' 'setw pane-border-status top'"
+set-hook -g after-new-window "if-shell 'test \"\$($TX _pane-kind \"#{@tx_id}\")\" = view' 'setw pane-border-status top'"
 EOF
 fi
 
