@@ -4,9 +4,11 @@ A thin façade per the design: each command parses its own argv (boundary valida
 and renders `SessionService` results — ZERO business logic for the non-interactive verbs. The S1b
 `attach` picker is the one interactive front-end (§1): it builds the fzf UI, feeds rows from the
 service (`tx _list`), and drives the post-selection nest-attach through the `Tmux` adapter. Objects
-are instantiated fresh per invocation (no daemon). Still out of scope: `hook` (S2) and history /
-resume / fork / handover / rollover (S3/S4). Hidden seams: `_session-closed` / `_list` / `_edit-tag`
-/ `_init-home` (and the S0 `selfcheck` smoke test).
+are instantiated fresh per invocation (no daemon). S3 adds the browse-the-past verbs (`history` /
+`chat ls` / `resume`) + forces ingest from `archive`; `resume` orchestrates over the frozen
+`service.spawn` (there is no `service.resume` use-case and `service.py` is off-limits to S3). Still
+out of scope: fork / handover / rollover (S4). Hidden seams: `_session-closed` / `_list` /
+`_edit-tag` / `_init-home` (and the S0 `selfcheck` smoke test).
 
 See tx-service-redesign.md §6 (CLI surface) + §1 ("CLI parses argv + renders") + C12 (picker keys).
 """
@@ -23,11 +25,12 @@ import sys
 import tempfile
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
-from . import claude, hooks, palette, sync
+from . import claude, history, hooks, palette, sync
 from .events import EventLog
-from .render import picker_display_rows, picker_namew, render_ls
+from .render import picker_display_rows, picker_namew, render_chats, render_history, render_ls
 from .service import ServiceError, SessionService
 from .session import SCHEMA_VERSION, ChatRef, Kind, Origin, Role, Session, State
 from .spawn import SHELL_COMMANDS, SpawnSpec
@@ -221,6 +224,160 @@ class ShowCommand(Command):
         return 0
 
 
+# ----- history browse + resume (S3) --------------------------------------------------------
+# Browse the past (read) is first-class; reviving it (write) is a deliberate, explicit step (§7).
+# The everyday picker stays live-only — these are the separate "look at / bring back the past" verbs.
+
+
+def _parse_history_date(raw: str | None, parser: argparse.ArgumentParser, flag: str,
+                        *, end_of_day: bool = False) -> float | None:
+    """Parse a `--since` / `--until` YYYY-MM-DD filter to an epoch second (local midnight, or
+    23:59:59 for an inclusive `--until`). A bad date is user input at the CLI boundary → `error`."""
+    if raw is None:
+        return None
+    try:
+        moment = datetime.strptime(raw, "%Y-%m-%d")
+    except ValueError:
+        parser.error(f"{flag} expects YYYY-MM-DD, got '{raw}'")
+    if end_of_day:
+        moment = moment.replace(hour=23, minute=59, second=59)
+    return moment.timestamp()
+
+
+def _latest_chat(session: Session) -> ChatRef | None:
+    """The chat `tx resume` reattaches: the last `ChatRef` carrying a real id, preferring one still
+    open (`ended_at is None`). Forks / rollovers append in order, so the last is the live thread."""
+    candidates = [chat for chat in session.chats if chat.id is not None]
+    if not candidates:
+        return None
+    open_chats = [chat for chat in candidates if chat.ended_at is None]
+    return (open_chats or candidates)[-1]
+
+
+class HistoryCommand(Command):
+    name = "history"
+    summary = "List past (EXITED / ARCHIVED) sessions — filter by --tag / --cwd / --since / --until."
+
+    def run(self, argv: list[str]) -> int:
+        parser = self._parser()
+        parser.add_argument("--tag", help="only sessions carrying this tag")
+        parser.add_argument("--cwd", help="only sessions whose cwd contains this substring")
+        parser.add_argument("--since", metavar="YYYY-MM-DD", help="ended on or after this date")
+        parser.add_argument("--until", metavar="YYYY-MM-DD", help="ended on or before this date")
+        args = parser.parse_args(argv)
+        since = _parse_history_date(args.since, parser, "--since")
+        until = _parse_history_date(args.until, parser, "--until", end_of_day=True)
+        # Reconcile first (§4) so a just-vanished session is stamped EXITED and surfaces here, not
+        # only on the next `ls`. Terminal records are untouched by reconcile, so this is cheap.
+        self.service.reconcile()
+        past = self.service.store.query(
+            lambda session: session.state in (State.EXITED, State.ARCHIVED)
+        )
+        shown = [s for s in past if self._matches(s, args.tag, args.cwd, since, until)]
+        print(render_history(shown))
+        return 0
+
+    def _matches(self, session: Session, tag: str | None, cwd: str | None,
+                 since: float | None, until: float | None) -> bool:
+        if tag is not None and tag not in session.tags:
+            return False
+        if cwd is not None and cwd not in session.cwd:
+            return False
+        ended = session.ended_at or session.last_activity or 0
+        if since is not None and ended < since:
+            return False
+        if until is not None and ended > until:
+            return False
+        return True
+
+
+class ChatCommand(Command):
+    name = "chat"
+    summary = "Inspect a session's chats: `chat ls <session>` lists its ChatRefs + bundle paths."
+
+    def run(self, argv: list[str]) -> int:
+        parser = self._parser()
+        parser.add_argument("subcommand", choices=["ls"], help="ls — list the session's chats")
+        parser.add_argument("session")
+        args = parser.parse_args(argv)
+        session = self.service.get(args.session)
+        if session is None:
+            print(f"tx chat ls: session '{args.session}' not found", file=sys.stderr)
+            return 1
+        print(render_chats(session))
+        return 0
+
+
+class ResumeCommand(Command):
+    name = "resume"
+    summary = "Re-spawn a past session + reattach its chat (claude --resume); collision-safe (§7)."
+
+    def run(self, argv: list[str]) -> int:
+        parser = self._parser()
+        parser.add_argument("target", help="the past session to resume (id or name)")
+        parser.add_argument("--as", dest="new_name", metavar="NAME",
+                            help="spawn under a new name (required on a live-name clash)")
+        parser.add_argument("--cwd", metavar="DIR",
+                            help="override the cwd (required if the stored cwd is gone — C8)")
+        args = parser.parse_args(argv)
+
+        record = self.service.get(args.target)
+        if record is None:
+            print(f"tx resume: no record for '{args.target}'", file=sys.stderr)
+            return 1
+        chat = _latest_chat(record)
+        if chat is None:
+            print(f"tx resume: '{record.name}' has no chat to resume — use `tx spawn` for a fresh "
+                  "session", file=sys.stderr)
+            return 1
+
+        # Name: --as wins; else reuse the stored name. tmux names must be unique among LIVE sessions
+        # (D7), so a live clash is the one case that forces --as (§7).
+        name = args.new_name or record.name
+        if self.service.tmux.has_session(name):
+            print(f"tx resume: a live session named '{name}' already exists — pass --as <new-name>",
+                  file=sys.stderr)
+            return 1
+
+        # cwd: transcripts are munged-cwd-keyed (C8), so restore the stored cwd by default and error
+        # for an explicit --cwd if it is gone. (Resuming into a cwd other than the chat's own may not
+        # reattach the exact transcript — claude resolves --resume within the current project dir.)
+        cwd = args.cwd or record.cwd
+        if not Path(cwd).is_dir():
+            remedy = "pass --cwd <dir>" if args.cwd is None else f"'{cwd}' is not a directory"
+            print(f"tx resume: cwd '{cwd}' does not exist — {remedy} (C8)", file=sys.stderr)
+            return 1
+        if history.resolve_transcript(chat.id, cwd) is None:
+            print(f"tx resume: warning — transcript for chat {chat.id[:8]} not found under {cwd}; "
+                  "claude --resume may start a fresh conversation", file=sys.stderr)
+
+        resume_cmd = shlex.join(claude.build_launch_command(resume=chat.id))
+        spec = SpawnSpec.for_process(
+            name=name, tags=list(record.tags), cwd=cwd, cmd=resume_cmd, env=dict(record.env),
+        )
+        new = self.service.spawn(spec)
+        self._attach_resumed_chat(new, chat, cwd)
+        print(f"Resumed '{record.name}' as '{new.name}' (chat {chat.id[:8]}, cwd={cwd})")
+        return 0
+
+    def _attach_resumed_chat(self, new: Session, source: ChatRef, cwd: str) -> None:
+        """Record the resumed conversation on the NEW session so `tx chat ls` shows it and ingest
+        mirrors it forward. role=original — it continues the source's primary conversation, not a
+        fork/rollover/handover; origin.how="resume" is S3's provenance edge back to the source chat.
+        bundle_path points at where THIS session's ingest will write (history/<new-tx>/<chat>/)."""
+        now = time.time()
+        new.chats.append(ChatRef(
+            id=source.id,
+            role="original",
+            cwd=cwd,
+            transcript_path=str(claude.transcript_path(source.id, cwd)),
+            origin=Origin(how="resume", session_id=new.id, chat_id=source.id),
+            bundle_path=str(claude.bundle_dir(new.id, source.id)),
+            started_at=now,
+        ))
+        self.service.store.save(new)
+
+
 # ----- mutations ---------------------------------------------------------------------------
 
 
@@ -274,14 +431,18 @@ class KillCommand(Command):
 
 class ArchiveCommand(Command):
     name = "archive"
-    summary = "Retire a session (mark ARCHIVED, keep the record)."
+    summary = "Retire a session (mark ARCHIVED, keep the record) + force a full history ingest."
 
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
         parser.add_argument("name")
         args = parser.parse_args(argv)
         session = self.service.archive(args.name)
-        print(f"Archived '{session.name}'")
+        # archive = retire + ingest (§11). The Stop-path mirror is coalescing/best-effort, so a
+        # retire forces a BLOCKING, complete mirror (wait=True) — the bundle is final after this.
+        bundles = history.ingest_session(self.service.store, session.id, wait=True)
+        suffix = f" (ingested {len(bundles)} chat bundle(s))" if bundles else ""
+        print(f"Archived '{session.name}'{suffix}")
         return 0
 
 
@@ -772,7 +933,7 @@ class SelfCheckCommand(Command):
 PUBLIC_COMMANDS: list[type[Command]] = [
     StartCommand, AttachCommand, LsCommand, SpawnCommand, SpawnNvimCommand, SpawnViewCommand,
     TagCommand, RenameCommand, SendMessageCommand, KillCommand, ArchiveCommand, RmCommand,
-    ShowCommand, SyncCommand,
+    ShowCommand, HistoryCommand, ChatCommand, ResumeCommand, SyncCommand,
 ]
 HIDDEN_COMMANDS: list[type[Command]] = [
     ListCommand, EditTagCommand, SessionClosedCommand, HookCommand, InitHomeCommand,
