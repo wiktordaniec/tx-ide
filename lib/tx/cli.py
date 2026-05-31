@@ -28,7 +28,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import claude, history, hooks, palette, sync
+from . import chat, claude, history, hooks, palette, sync
+from .chat import ChatOps
 from .events import EventLog
 from .render import LOCATION_W, picker_display_rows, picker_namew, render_chats, render_history, render_ls
 from .service import ServiceError, SessionService
@@ -940,14 +941,119 @@ class SelfCheckCommand(Command):
         return 0
 
 
+# ----- chat operations (S4) ----------------------------------------------------------------
+# fork / handover / rollover + the hidden async-tail finish verbs. Thin façades over `ChatOps`
+# (lib/tx/chat.py) — argv parsing + rendering only, zero choreography. All transcription-based,
+# never `-p` (chat-ops.md CHD). See chat-ops.md §4 (fork) / §5 (handover) / §6 (rollover).
+
+
+class ForkCommand(Command):
+    name = "fork"
+    summary = "Fork a session's chat into a NEW session that starts with the full history (§4)."
+
+    def run(self, argv: list[str]) -> int:
+        parser = self._parser()
+        parser.add_argument("source", help="the session to fork (id or name)")
+        parser.add_argument("new_name", nargs="?", help="name for the fork (default <source>-fork)")
+        args = parser.parse_args(argv)
+        new = ChatOps(self.service).fork(args.source, args.new_name)
+        forked = chat.active_chat(new)
+        chat_label = forked.id[:8] if forked and forked.id else "pending"
+        print(f"Forked '{args.source}' → '{new.name}' (chat {chat_label}, cwd={new.cwd})")
+        return 0
+
+
+class HandoverCommand(Command):
+    name = "handover"
+    summary = "Distill a session's chat into a focused brief for a NEW worker session (§5)."
+
+    def run(self, argv: list[str]) -> int:
+        parser = self._parser()
+        parser.add_argument("source", help="the session to hand over from (id or name)")
+        parser.add_argument("task", help="the task to distill a brief for")
+        parser.add_argument("new_name", nargs="?", help="name for the worker (default <source>-handover)")
+        parser.add_argument("--self-catch-up", action="store_true",
+                            help="skip the distiller — the worker reads the source bundle itself (CHD1)")
+        args = parser.parse_args(argv)
+        worker = ChatOps(self.service).handover(
+            args.source, args.task, args.new_name, self_catch_up=args.self_catch_up
+        )
+        how = "self-catch-up" if args.self_catch_up else "distilling brief"
+        print(f"Handover '{args.source}' → worker '{worker}' ({how}; launches when ready)")
+        return 0
+
+
+class RolloverCommand(Command):
+    name = "rollover"
+    summary = "Rotate a session onto a fresh chat in the SAME pane (context exhausted) (§6)."
+
+    def run(self, argv: list[str]) -> int:
+        parser = self._parser()
+        parser.add_argument("session", nargs="?",
+                            help="the session to roll over (default: the one you are in)")
+        parser.add_argument("--self-catch-up", action="store_true",
+                            help="skip the distiller — the successor reads the bundle itself (CHD1)")
+        args = parser.parse_args(argv)
+        new_chat = ChatOps(self.service).rollover(args.session, self_catch_up=args.self_catch_up)
+        how = "self-catch-up" if args.self_catch_up else "summarizing first"
+        print(f"Rollover scheduled ({how}); same session rotates onto chat {new_chat[:8]} when ready")
+        return 0
+
+
+class RolloverFinishCommand(Command):
+    name = "_rollover-finish"
+    summary = "Internal: the rollover async tail — respawn the pane onto the fresh chat (CHD5)."
+
+    def run(self, argv: list[str]) -> int:
+        """Called by the rollover distiller once its note is written (or fired detached for
+        `--self-catch-up`). `note` is empty in the self-catch-up case (the successor reads the
+        bundle instead). Does the `respawn-pane -k` + minimal seed + `ChatRef{role:rollover}`."""
+        parser = self._parser()
+        parser.add_argument("txid")
+        parser.add_argument("source_chat")
+        parser.add_argument("new_chat")
+        parser.add_argument("pane")
+        parser.add_argument("note", nargs="?", default="")
+        args = parser.parse_args(argv)
+        ChatOps(self.service).rollover_finish(
+            args.txid, args.source_chat, args.new_chat, args.pane, args.note
+        )
+        return 0
+
+
+class HandoverFinishCommand(Command):
+    name = "_handover-finish"
+    summary = "Internal: the handover async tail — spawn + seed the fresh worker (CHD5)."
+
+    def run(self, argv: list[str]) -> int:
+        """Called by the handover distiller once its brief is written. Spawns the pre-minted worker,
+        records `ChatRef{role:handover}`, and seeds it minimally. `brief_path` empty / `--self-catch-up`
+        means the worker reads the source bundle itself."""
+        parser = self._parser()
+        parser.add_argument("source_txid")
+        parser.add_argument("source_chat")
+        parser.add_argument("worker_name")
+        parser.add_argument("worker_chat")
+        parser.add_argument("brief_path", nargs="?", default="")
+        parser.add_argument("--self-catch-up", action="store_true")
+        args = parser.parse_args(argv)
+        ChatOps(self.service).handover_finish(
+            args.source_txid, args.source_chat, args.worker_name, args.worker_chat,
+            brief_path=args.brief_path or None, self_catch_up=args.self_catch_up,
+        )
+        return 0
+
+
 PUBLIC_COMMANDS: list[type[Command]] = [
     StartCommand, AttachCommand, LsCommand, SpawnCommand, SpawnNvimCommand, SpawnViewCommand,
     TagCommand, RenameCommand, SendMessageCommand, KillCommand, ArchiveCommand, RmCommand,
     ShowCommand, HistoryCommand, ChatCommand, ResumeCommand, SyncCommand,
+    ForkCommand, HandoverCommand, RolloverCommand,
 ]
 HIDDEN_COMMANDS: list[type[Command]] = [
     ListCommand, EditTagCommand, SessionClosedCommand, FocusEnvelopeCommand, HookCommand,
     InitHomeCommand, SelfCheckCommand,
+    RolloverFinishCommand, HandoverFinishCommand,
 ]
 
 
