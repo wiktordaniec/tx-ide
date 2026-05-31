@@ -154,11 +154,13 @@ class LocalStorage(Storage):
 
 
 class S3Storage(Storage):
-    """Remote-storage stub — the real implementation is deferred to S7 (§14).
+    """Remote-storage stub — the real backend is deferred (§14).
 
-    Defined here only so the `Storage` interface and the `tx sync` shape exist for the freeze; the
-    boto3-vs-`aws`-CLI decision and conflict policy (last-writer-wins by `last_activity`/
-    `ended_at`) are S7's. Every method raises until then.
+    S7 wired the `tx sync` shape (the diff + last-writer-wins copy lives in `sync.py`) against the
+    `Storage` interface and proved it end-to-end on `LocalStorage`; the S3 backend itself (the
+    boto3-vs-`aws`-CLI decision and credentials) is still deferred, so every method raises a clean
+    "deferred" error rather than half-working. `tx sync` catches it at the CLI boundary and prints
+    the deferred message instead of a traceback.
     """
 
     def __init__(self, bucket: str, prefix: str = ""):
@@ -166,7 +168,10 @@ class S3Storage(Storage):
         self.prefix = prefix
 
     def _unimplemented(self) -> NotImplementedError:
-        return NotImplementedError("S3Storage is a stub — implemented in stage S7 (§14)")
+        return NotImplementedError(
+            "S3 sync: deferred — the S3 backend is not implemented yet (§14). "
+            "Use `--remote PATH` for a local archive, or configure it later."
+        )
 
     def get(self, key: str) -> bytes:
         raise self._unimplemented()
