@@ -25,7 +25,7 @@ import sys
 import tempfile
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import chat, claude, history, hooks, palette, sync
@@ -36,8 +36,8 @@ from .service import ServiceError, SessionService
 from .session import (
     SCHEMA_VERSION, ChatRef, Kind, Origin, Role, Session, State, UnsupportedRecordError,
 )
-from .spawn import SHELL_COMMANDS, SpawnSpec
-from .storage import LocalStorage, ensure_home, tx_ide_home
+from .spawn import SHELL_COMMANDS, SpawnSpec, infer_role
+from .storage import LocalStorage, ensure_home, sessions_dir, tx_ide_home
 from .store import SessionStore
 from .tmux import TmuxError
 
@@ -981,6 +981,172 @@ class SelfCheckCommand(Command):
         return 0
 
 
+# ----- Flip cutover (S9) -------------------------------------------------------------------
+# The D2 staged re-derivation (install-flip.md §5 step B / §6): build a fresh v2 record for every
+# live tmux session into a STAGING dir, reading the OLD v1 records (raw JSON — SessionStore skips
+# v1) for provenance and refreshing the live fields from tmux. Net-new + idempotent: nothing in the
+# real store is touched, so an abort before the destructive Flip steps loses nothing. `./flip`
+# invokes this; it is also runnable into a throwaway dir for a dry inspection.
+
+
+def _split_role_tags(old_tags: list[str], pane_command: str | None) -> tuple[Role, list[str]]:
+    """§6: the v1 leading tag encoded the role. When it maps to a `Role` value (llm/nvim/shell/
+    other) that is the role and the rest are the free-form tags; otherwise the leading tag was never
+    a role (e.g. a view's `views`), so infer the role from the live pane command and keep all tags."""
+    role_values = {role.value for role in Role}
+    if old_tags and old_tags[0] in role_values:
+        return Role(old_tags[0]), old_tags[1:]
+    return _pane_command_role(pane_command), old_tags
+
+
+def _pane_command_role(pane_command: str | None) -> Role:
+    """§6 inference fallback from the live `pane_current_command`: a Claude version string (shown
+    while it loads) → LLM, else `infer_role` (claude → LLM, nvim → NVIM, a shell → SHELL, else
+    OTHER). `infer_role` is the shared mapping spawn uses, so a re-derived role matches a re-spawn."""
+    command = pane_command or ""
+    if _looks_like_version(command):
+        return Role.LLM
+    return infer_role(command)
+
+
+def _looks_like_version(command: str) -> bool:
+    """A dotted-numeric command like `2.1.138` — Claude Code reports its version in
+    `pane_current_command` while loading (mirrors tmux/tx-ide.tmux's claude-scroll matcher)."""
+    parts = command.split(".")
+    return len(parts) >= 2 and all(part.isdigit() for part in parts)
+
+
+def _iso_to_epoch(created_at: object, fallback: float) -> float:
+    """Convert a v1 `created_at` (ISO-8601 `2026-05-31T13:14:26Z`) to v2 float epoch seconds. A
+    number is already epoch; a missing or unparseable value falls back to `fallback` (now)."""
+    if isinstance(created_at, (int, float)):
+        return float(created_at)
+    if isinstance(created_at, str) and created_at:
+        try:
+            return (
+                datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ")
+                .replace(tzinfo=timezone.utc)
+                .timestamp()
+            )
+        except ValueError:
+            return fallback
+    return fallback
+
+
+class FlipRederiveCommand(Command):
+    name = "_flip-rederive"
+    summary = "Internal: stage v2 records for every live @tx_id tmux session (Flip D2 / §6)."
+
+    def run(self, argv: list[str]) -> int:
+        parser = self._parser()
+        parser.add_argument("--staging", required=True, metavar="DIR",
+                            help="output dir for the staged v2 records (created if absent)")
+        args = parser.parse_args(argv)
+        staging = Path(args.staging).expanduser()
+        staging.mkdir(parents=True, exist_ok=True)
+        staged = SessionStore(directory=staging)
+        source = sessions_dir()  # the OLD v1 records: $TX_IDE_HOME/sessions
+        now = time.time()
+
+        rederived: list[tuple[Session, str]] = []
+        skipped: list[tuple[str, str]] = []
+        for name, tx_id in self._live_tmux_sessions():
+            if not tx_id:
+                skipped.append((name, "no @tx_id — not adopted (D4)"))
+                continue
+            try:
+                session, origin = self._rederive(name, tx_id, source, now)
+            except (OSError, ValueError, KeyError) as error:  # a malformed/unreadable v1 record
+                skipped.append((name, f"{type(error).__name__}: {error}"))
+                continue
+            if session is None:
+                skipped.append((name, "no v1 record and no live pane — skipped"))
+                continue
+            staged.save(session)
+            rederived.append((session, origin))
+
+        self._report(staging, rederived, skipped)
+        return 0
+
+    def _live_tmux_sessions(self) -> list[tuple[str, str]]:
+        """(name, @tx_id) for every live tmux session; @tx_id is "" when the session carries none."""
+        rows = self.service.tmux.list_sessions("#{session_name}\t#{@tx_id}")
+        sessions = []
+        for row in rows:
+            name, _, tx_id = row.partition("\t")
+            sessions.append((name, tx_id))
+        return sessions
+
+    def _live_fields(self, name: str) -> tuple[int | None, str | None, str | None]:
+        """(pid, cwd, pane_command) from the session's active pane (§6 live refresh); all None when
+        the session has already vanished."""
+        line = self.service.tmux.display_message(
+            "#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}", target=name
+        )
+        if line is None:
+            return None, None, None
+        pid_text, _, rest = line.partition("\t")
+        cwd, _, pane_command = rest.partition("\t")
+        pid = int(pid_text) if pid_text.isdigit() else None
+        return pid, cwd or None, pane_command or None
+
+    def _rederive(self, name: str, tx_id: str, source: Path, now: float) -> tuple[Session | None, str]:
+        """Build one v2 record. With a v1 record present (the §6 path) it is authoritative for
+        provenance, refreshed with the live name/pid/cwd. Without one — a coexistence session whose
+        record lives in the dev home (discarded at Flip), not the old store — re-derive from tmux
+        alone (the §6 pane-heuristic), which needs a live pane."""
+        old: dict | None = None
+        v1_path = source / f"{tx_id}.json"
+        if v1_path.exists():
+            with open(v1_path) as handle:
+                old = json.load(handle)  # raw v1 — NOT via SessionStore, which skips v1 records
+        pid, cwd, pane_command = self._live_fields(name)
+
+        if old is None:
+            if pid is None:
+                return None, ""
+            role = _pane_command_role(pane_command)
+            return Session(
+                id=tx_id, name=name, kind=Kind.PROCESS, role=role,
+                state=State.initial_for(role), cwd=cwd or "", cmd="", tags=[], env={},
+                parent=None, pid=pid, created_at=now, last_activity=now, chats=[],
+            ), "tmux-only"
+
+        role, tags = _split_role_tags(list(old.get("tags") or []), pane_command)
+        kind = Kind.VIEW if old.get("kind") == Kind.VIEW.value else Kind.PROCESS
+        session = Session(
+            id=tx_id,                                       # same uuid → @tx_id pointer stays valid
+            name=name,                                      # refreshed live #S
+            kind=kind,
+            role=role,
+            state=State.initial_for(role),                  # IDLE if llm else ALIVE (D3)
+            cwd=cwd or old.get("cwd", ""),                  # refreshed pane_current_path
+            cmd=old.get("cmd", ""),                         # preserved
+            tags=tags,
+            env=dict(old.get("env") or {}),                 # preserved
+            parent=(old.get("parent") or None),
+            pid=pid if pid is not None else old.get("pid"),
+            created_at=_iso_to_epoch(old.get("created_at"), now),  # ISO string → float epoch
+            ended_at=None,
+            last_activity=now,
+            chats=[],                                       # v1 chats not migrated (re-ingest on Stop)
+        )
+        return session, "v1"
+
+    def _report(
+        self, staging: Path, rederived: list[tuple[Session, str]], skipped: list[tuple[str, str]]
+    ) -> None:
+        print(f"re-derived {len(rederived)} session(s) into {staging}:")
+        for session, origin in rederived:
+            tags = ",".join(session.tags) or "-"
+            print(f"  {session.name:<24} role={session.role.value:<6} kind={session.kind.value:<8} "
+                  f"state={session.state.value:<6} tags={tags:<22} [{origin}]")
+        if skipped:
+            print(f"skipped {len(skipped)}:")
+            for name, reason in skipped:
+                print(f"  {name:<24} {reason}")
+
+
 # ----- chat operations (S4) ----------------------------------------------------------------
 # fork / handover / rollover + the hidden async-tail finish verbs. Thin façades over `ChatOps`
 # (lib/tx/chat.py) — argv parsing + rendering only, zero choreography. All transcription-based,
@@ -1092,7 +1258,7 @@ PUBLIC_COMMANDS: list[type[Command]] = [
 ]
 HIDDEN_COMMANDS: list[type[Command]] = [
     ListCommand, EditTagCommand, FocusEnvelopeCommand, PaneTagsCommand, PaneKindCommand,
-    HookCommand, InitHomeCommand, SelfCheckCommand,
+    HookCommand, InitHomeCommand, SelfCheckCommand, FlipRederiveCommand,
     RolloverFinishCommand, HandoverFinishCommand,
 ]
 

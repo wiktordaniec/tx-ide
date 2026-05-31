@@ -1,0 +1,372 @@
+#!/usr/bin/env bash
+# ./flip — the S9 cutover from the live bash tx + mailbox to the new Python tx (install-flip.md §5).
+#
+#   ./flip [--dry-run]
+#
+# The ONE destructive, hands-on, user-gated stage. NOT an AI worker. Run it yourself, with the
+# daily driver in front of you, AFTER reviewing `./flip --dry-run`.
+#
+#   --dry-run   print the full plan and change NOTHING (no backups, no surgery, no records moved).
+#
+# Ordering is SAFE-FIRST: every non-destructive step (pre-flight, backup, staged re-derivation)
+# happens BEFORE anything is removed, so an abort before the first destructive step loses nothing.
+# The real run prints each step then prompts [y/N] before each DESTRUCTIVE step (C/D/E/F/G/I); a
+# "no" aborts cleanly (the step-A backups are intact and the steps are idempotent — re-run to
+# resume). Steps 0/A/B/H/J/K are safe and ungated (but still honor --dry-run).
+#
+# settings.json is a symlink into the claude-server git repo; every edit targets its REALPATH and
+# is atomic (temp + os.replace), so the dotfiles repo sees one clean, auditable diff. The hook
+# repoint + real-home shim bake + global tmux hook + mx-speaker stop are REUSED from
+# setup/agents/claude.sh (the same surgery dogfooded against the dev home since S2). The only thing
+# claude.sh leaves out is the C10 statusLine move, which this script does (atomically, here).
+#
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+# ## Rollback (install-flip.md §7) — MANUAL procedure (there is no --rollback flag)
+#
+# If the flip goes wrong, revert to the old world by hand:
+#   1. settings.json:  cd ~/claude-server && git checkout claude-config/settings.json
+#                      (or restore the printed `<realpath>.bak.<stamp>`). This re-instates the old
+#                      mailbox/* hook commands + statusLine + marker in one shot.
+#   2. records:        rm -rf ~/.tx-ide/sessions && tar xzf ~/.tx-ide.flipbak.<stamp>.tgz -C ~
+#                      (restores the v1 records from the step-A tarball).
+#   3. old code:       check out the OLD tx-ide checkout and run its ./install (idempotent) — it
+#                      re-creates ~/.claude/hooks/mailbox + ~/.claude/statusline.sh + the mailbox.
+#   4. mx-speaker:     (from the OLD checkout) claude/hooks/start-speaker.sh
+#   5. entrypoint:     re-point ~/.local/bin/tx → the OLD checkout's bin/tx
+#   6. tmux:           tmux source-file ~/.tmux.conf
+#
+# The recorded claude-server git HEAD (printed in step A) is the `git checkout` target.
+# ─────────────────────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+REPO="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOME_DIR="${HOME%/}"
+TX_HOME="$HOME_DIR/.tx-ide"            # the real home the flip targets
+DEV_HOME="$HOME_DIR/.tx-ide-next"      # the coexistence dev home (discarded in step I)
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME_DIR/.claude}"
+SETTINGS="$CLAUDE_DIR/settings.json"
+LOCAL_BIN="$HOME_DIR/.local/bin"
+STAMP="$(date +%Y%m%d%H%M%S)"
+STAGING="$TX_HOME/sessions.staging"
+
+# Every sub-call to the NEW tx + claude.sh resolves the REAL home (not the dev home, not a
+# pre-set custom one). bin/tx + claude.sh both read $TX_IDE_HOME.
+export TX_IDE_HOME="$TX_HOME"
+TX="$REPO/bin/tx"
+CLAUDE_SH="$REPO/setup/agents/claude.sh"
+
+DRY_RUN=0
+case "${1:-}" in
+  --dry-run) DRY_RUN=1 ;;
+  "") ;;
+  -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+  *) printf 'flip: unknown argument: %s\n' "$1" >&2; exit 2 ;;
+esac
+
+B=$'\e[1m'; G=$'\e[32m'; Y=$'\e[33m'; RED=$'\e[31m'; D=$'\e[2m'; X=$'\e[0m'
+ok()     { printf '  %s✓%s %s\n' "$G" "$X" "$*"; }
+warn()   { printf '  %s!%s %s\n' "$Y" "$X" "$*"; }
+bad()    { printf '  %s✗%s %s\n' "$RED" "$X" "$*"; }
+info()   { printf '  %s%s%s\n' "$D" "$*" "$X"; }
+plan()   { printf '  %s· %s%s\n' "$D" "$*" "$X"; }
+step()   { printf '\n%s%s%s\n' "$B" "$*" "$X"; }
+die()    { printf '\n%sflip: %s%s\n' "$RED" "$*" "$X" >&2; exit 1; }
+
+REAL_SETTINGS="$(readlink -f "$SETTINGS" 2>/dev/null || echo "$SETTINGS")"
+
+# confirm_step — the gate before a DESTRUCTIVE step.
+#   dry-run  → return 1 (caller takes its "would do" branch; nothing executes)
+#   real, y  → return 0 (caller executes the live action)
+#   real, n  → abort the whole flip cleanly (backups intact, idempotent re-run)
+confirm_step() {
+  if [[ $DRY_RUN -eq 1 ]]; then return 1; fi
+  local reply
+  read -r -p "  ${B}Execute this step? [y/N] ${X}" reply </dev/tty || reply=""
+  if [[ "$reply" =~ ^[Yy]$ ]]; then return 0; fi
+  printf '\n  %sAborted at this step.%s The step-A backups are intact and nothing further ran.\n' "$Y" "$X"
+  printf '  Re-run %s./flip%s to resume from the top (every step is idempotent).\n' "$D" "$X"
+  exit 1
+}
+
+# rm a squatter symlink/file if present, tolerating absence (step E).
+rm_squatter() {
+  local target="$1"
+  if [[ -L "$target" || -e "$target" ]]; then
+    rm -f "$target" && ok "removed $target" || warn "could not remove $target"
+  else
+    info "$target already absent"
+  fi
+}
+
+# C10: copy the statusline under $TX_HOME, point settings.json at the moved copy, and stamp the
+# marker mode=flipped + the new statusLine command. Atomic realpath edit (temp + os.replace, .bak
+# alongside); preserves every other settings.json key (peon-ping / hooks / permissions / theme).
+flip_statusline_and_marker() {
+  cp "$REPO/claude/statusline.sh" "$TX_HOME/statusline.sh"
+  chmod +x "$TX_HOME/statusline.sh"
+  SETTINGS_MAIN="$SETTINGS" TX_HOME="$TX_HOME" TX_MODE="flipped" python3.14 - <<'PY'
+import json, os, tempfile
+
+path  = os.environ["SETTINGS_MAIN"]
+home  = os.environ["TX_HOME"]
+mode  = os.environ["TX_MODE"]
+G, D, X = "\033[32m", "\033[2m", "\033[0m"
+
+real = os.path.realpath(path)
+with open(real) as fh:
+    data = json.load(fh)
+
+# Point statusLine at the moved copy (absolute, baked like the hook shims), preserving any other
+# keys; settings.json is a boundary, so tolerate a non-dict statusLine.
+status_command = f"bash {home}/statusline.sh"
+existing = data.get("statusLine")
+if isinstance(existing, dict):
+    existing["command"] = status_command
+else:
+    data["statusLine"] = {"type": "command", "command": status_command}
+
+# Stamp the marker claude.sh just wrote: this is the Flip, and record the moved statusLine command.
+marker = data.get("_tx_ide_managed")
+if isinstance(marker, dict):
+    marker["mode"] = mode
+    marker["statusLine_command"] = status_command
+
+# No .bak here: the pristine pre-flip settings.json is already captured by step A
+# (<settings>.bak.<stamp>) and by claude.sh's own backup; writing one with flip's shared $STAMP
+# would clobber step A's pristine copy and break the §7 rollback. The atomic replace is the safety.
+directory = os.path.dirname(real) or "."
+fd, tmp = tempfile.mkstemp(dir=directory, prefix=".tx-settings.", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(data, indent=2) + "\n")
+    os.replace(tmp, real)
+except BaseException:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    raise
+print(f"  {G}statusLine.command → {status_command}{X}  {D}(marker mode={mode}){X}")
+PY
+}
+
+# Step K — the install-flip.md §8 read-only acceptance checks.
+verify_flip() {
+  SETTINGS_MAIN="$SETTINGS" TX_HOME="$TX_HOME" python3.14 - <<'PY'
+import json, os
+real = os.path.realpath(os.environ["SETTINGS_MAIN"])
+home = os.environ["TX_HOME"]
+G, RED, X = "\033[32m", "\033[31m", "\033[0m"
+def line(good, msg): print(f"  {(G + chr(10003)) if good else (RED + chr(10007))}{X} {msg}")
+with open(real) as fh:
+    data = json.load(fh)
+marker = data.get("_tx_ide_managed") or {}
+line(marker.get("mode") == "flipped", f"marker mode = {marker.get('mode')!r} (expect flipped)")
+status = (data.get("statusLine") or {}).get("command", "")
+line(home in status, f"statusLine.command → {status}")
+line("peon-ping" in json.dumps(data), "peon-ping hooks still present in settings.json")
+PY
+  local pid_file="$CLAUDE_DIR/mailbox/mx-speaker.pid"
+  [[ -e "$CLAUDE_DIR/mailbox" ]] && bad "$CLAUDE_DIR/mailbox still present" || ok "$CLAUDE_DIR/mailbox absent"
+  [[ -e "$DEV_HOME" ]] && bad "$DEV_HOME still present" || ok "dev home discarded"
+  if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file" 2>/dev/null || echo -1)" 2>/dev/null; then
+    bad "mx-speaker still running"
+  else
+    ok "mx-speaker not running"
+  fi
+  info "tx ls (the re-derived live sessions):"
+  "$TX" ls 2>&1 | sed 's/^/    /' || warn "tx ls failed"
+}
+
+# ── STEP 0 — Pre-flight (read-only) ────────────────────────────────────────────────────────
+step "STEP 0 — Pre-flight (read-only)"
+[[ -f "$SETTINGS" ]] || die "settings.json not found at $SETTINGS"
+command -v tmux >/dev/null 2>&1 || die "tmux not found on PATH"
+tmux list-sessions >/dev/null 2>&1 || die "\`tmux list-sessions\` failed — no live server to re-derive from"
+[[ -x "$TX" ]] || die "new tx shim not executable at $TX"
+[[ -x "$CLAUDE_SH" ]] || die "setup/agents/claude.sh not executable at $CLAUDE_SH"
+
+REAL_SETTINGS="$REAL_SETTINGS" DEV_HOME="$DEV_HOME" python3.14 - <<'PY' || die "pre-flight marker check failed (see above) — is the dev home coexistence active?"
+import json, os, sys
+real = os.environ["REAL_SETTINGS"]
+dev_home = os.environ["DEV_HOME"]
+G, Y, RED, D, X = "\033[32m", "\033[33m", "\033[31m", "\033[2m", "\033[0m"
+with open(real) as fh:
+    data = json.load(fh)
+marker = data.get("_tx_ide_managed")
+if not marker:
+    print(f"  {RED}✗{X} no _tx_ide_managed marker in settings.json"); sys.exit(1)
+mode = marker.get("mode")
+home = marker.get("home")
+ok = True
+if mode != "coexist":
+    print(f"  {RED}✗{X} marker mode is {mode!r}, expected 'coexist' (already flipped? not coexisting?)"); ok = False
+else:
+    print(f"  {G}✓{X} marker mode = coexist")
+if home != dev_home:
+    print(f"  {Y}!{X} marker home = {home!r}, expected {dev_home!r} (continuing — verify the dev home)")
+else:
+    print(f"  {G}✓{X} marker home = {home}")
+sys.exit(0 if ok else 1)
+PY
+ok "tmux server reachable ($(tmux list-sessions 2>/dev/null | wc -l | tr -d ' ') live sessions)"
+info "This will cut over to the new Python tx on $TX_HOME. Destructive steps (C/D/E/F/G/I) are gated."
+if [[ $DRY_RUN -eq 1 ]]; then
+  info "(dry-run) — printing the full plan; nothing will change."
+else
+  warn "Have you reviewed \`./flip --dry-run\`? The destructive steps each prompt [y/N]."
+fi
+
+# ── STEP A — BACKUP (safe, ungated) ─────────────────────────────────────────────────────────
+step "STEP A — Backup (safe)"
+CLAUDE_SERVER_DIR="$(dirname "$REAL_SETTINGS")"
+SERVER_HEAD="$(git -C "$CLAUDE_SERVER_DIR" rev-parse HEAD 2>/dev/null || echo '(not a git repo)')"
+SETTINGS_BAK="$REAL_SETTINGS.bak.$STAMP"
+TX_TARBALL="$HOME_DIR/.tx-ide.flipbak.$STAMP.tgz"
+if [[ $DRY_RUN -eq 1 ]]; then
+  plan "would copy   $REAL_SETTINGS → $SETTINGS_BAK"
+  plan "would tar    $TX_HOME → $TX_TARBALL"
+  plan "claude-server git HEAD (recorded): $SERVER_HEAD"
+else
+  cp "$REAL_SETTINGS" "$SETTINGS_BAK"; ok "settings backup: $SETTINGS_BAK"
+  tar czf "$TX_TARBALL" -C "$HOME_DIR" "$(basename "$TX_HOME")"; ok "home tarball:    $TX_TARBALL"
+  ok "claude-server git HEAD: $SERVER_HEAD"
+fi
+
+# ── STEP B — Stage the v2 re-derivation (safe, ungated; net-new) ─────────────────────────────
+step "STEP B — Stage v2 re-derivation (D2 / §6, safe)"
+if [[ $DRY_RUN -eq 1 ]]; then
+  preview="$(mktemp -d "${TMPDIR:-/tmp}/flip-rederive-preview.XXXXXX")"
+  plan "would stage v2 records for every live @tx_id session into $STAGING"
+  info "(dry-run preview — staged into a temp dir, removed after; $STAGING is NOT created)"
+  "$TX" _flip-rederive --staging "$preview" | sed 's/^/  /'
+  rm -rf "$preview"
+else
+  "$TX" _flip-rederive --staging "$STAGING" | sed 's/^/  /'
+  ok "staged into $STAGING (net-new — nothing deleted yet; abort here loses nothing)"
+fi
+
+# ── STEP C — settings.json surgery + statusLine move C10 (atomic, GATED) ─────────────────────
+step "STEP C — settings.json surgery + statusLine move (C10)   [atomic, gated]"
+plan "claude.sh install (real home): repoint 4 tx hook events dev-home → real-home shims"
+plan "  (match-by-marker; peon-ping / require-worktree / discord untouched), bake real-home"
+plan "  shims under $TX_HOME/hooks, set the global tmux session-closed hook, stop mx-speaker"
+plan "C10: copy statusline → $TX_HOME/statusline.sh; rewrite settings.json statusLine.command;"
+plan "     stamp the marker mode=flipped"
+if confirm_step; then
+  TX_IDE_HOME="$TX_HOME" "$CLAUDE_SH" install
+  flip_statusline_and_marker
+  ok "hooks repointed to real-home shims; statusLine moved; marker mode=flipped"
+else
+  step "  (dry-run) STEP C preview via claude.sh --dry-run:"
+  TX_IDE_HOME="$TX_HOME" "$CLAUDE_SH" install --dry-run | sed 's/^/  /'
+  plan "(dry-run) would then copy statusline → $TX_HOME/statusline.sh + rewrite statusLine.command"
+  plan "(dry-run) would stamp the marker mode=flipped"
+fi
+
+# ── STEP D — Kill mx-speaker (gated; usually a no-op after C) ─────────────────────────────────
+step "STEP D — Stop mx-speaker"
+PID_FILE="$CLAUDE_DIR/mailbox/mx-speaker.pid"
+speaker_pid=""
+if [[ -f "$PID_FILE" ]]; then
+  speaker_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+fi
+if [[ -n "$speaker_pid" ]] && kill -0 "$speaker_pid" 2>/dev/null; then
+  plan "mx-speaker still running (pid $speaker_pid) — claude.sh (step C) should have stopped it"
+  if confirm_step; then
+    kill "$speaker_pid" 2>/dev/null && ok "mx-speaker stopped (pid $speaker_pid)" || warn "could not stop pid $speaker_pid"
+  else
+    plan "(dry-run) would kill mx-speaker pid $speaker_pid"
+  fi
+else
+  ok "mx-speaker already dark (stopped in step C)"
+fi
+
+# ── STEP E — Remove ~/.claude squatters (gated) ──────────────────────────────────────────────
+step "STEP E — Remove ~/.claude squatter symlinks"
+plan "rm $CLAUDE_DIR/hooks/mailbox (symlink) and $CLAUDE_DIR/statusline.sh (symlink) — tolerate absent"
+if confirm_step; then
+  rm_squatter "$CLAUDE_DIR/hooks/mailbox"
+  rm_squatter "$CLAUDE_DIR/statusline.sh"
+else
+  plan "(dry-run) would rm the two squatter symlinks if present"
+fi
+
+# ── STEP F — Delete the mailbox (gated) ──────────────────────────────────────────────────────
+step "STEP F — Delete ~/.claude/mailbox"
+plan "rm -rf $CLAUDE_DIR/mailbox (inbox, running.d, config, logs, pid)"
+info "Note: the mailbox is NOT in the step-A backup (expendable by design — install-flip.md §7)."
+if confirm_step; then
+  rm -rf "${CLAUDE_DIR:?}/mailbox" && ok "mailbox removed" || warn "mailbox removal reported an error"
+else
+  plan "(dry-run) would rm -rf $CLAUDE_DIR/mailbox"
+fi
+
+# ── STEP G — Prune v1 records + install the staged v2 set (gated, near-atomic) ───────────────
+step "STEP G — Prune v1 records + install the staged v2 set"
+plan "rm the old v1 records in $TX_HOME/sessions, then mv the staged v2 set in (same uuids →"
+plan "  @tx_id pointers stay valid). The old set is already in the step-A tarball."
+if confirm_step; then
+  shopt -s nullglob
+  staged_files=("$STAGING"/*.json)
+  shopt -u nullglob
+  [[ ${#staged_files[@]} -gt 0 ]] || die "staging is empty/missing ($STAGING) — run step B first; refusing to prune"
+  rm -f "$TX_HOME/sessions"/*.json
+  mv "$STAGING"/*.json "$TX_HOME/sessions"/
+  rmdir "$STAGING" 2>/dev/null || true
+  ok "installed ${#staged_files[@]} v2 records into $TX_HOME/sessions (staging swapped in)"
+else
+  plan "(dry-run) would prune all v1 records in $TX_HOME/sessions and install the staged v2 set"
+  plan "(dry-run) (guard: refuses if staging is empty — see the step-B preview for the count)"
+fi
+
+# ── STEP H — Entrypoint (safe) ───────────────────────────────────────────────────────────────
+step "STEP H — Entrypoint"
+tx_on_path="$(command -v tx 2>/dev/null || true)"
+if [[ -n "$tx_on_path" ]] && grep -q -- "-m tx" "$(readlink -f "$tx_on_path" 2>/dev/null || echo "$tx_on_path")" 2>/dev/null; then
+  ok "\`tx\` on PATH ($tx_on_path) resolves to the new python shim"
+else
+  warn "\`tx\` on PATH ($tx_on_path) is NOT the new python shim yet — finish the feat→main merge / re-run install"
+fi
+if [[ -e "$LOCAL_BIN/txn" ]]; then
+  if [[ $DRY_RUN -eq 1 ]]; then
+    plan "would remove the coexistence alias $LOCAL_BIN/txn"
+  else
+    rm -f "$LOCAL_BIN/txn"; ok "removed coexistence alias $LOCAL_BIN/txn"
+  fi
+else
+  ok "no $LOCAL_BIN/txn coexistence alias (already absent)"
+fi
+
+# ── STEP I — Discard the dev home (gated) ────────────────────────────────────────────────────
+step "STEP I — Discard the dev home"
+plan "rm -rf $DEV_HOME (OPEN-6 — the coexistence dev home is disposable)"
+if confirm_step; then
+  rm -rf "$DEV_HOME" && ok "removed $DEV_HOME" || warn "dev home removal reported an error"
+else
+  plan "(dry-run) would rm -rf $DEV_HOME"
+fi
+
+# ── STEP J — Reload tmux (safe) ──────────────────────────────────────────────────────────────
+step "STEP J — Reload tmux"
+if [[ $DRY_RUN -eq 1 ]]; then
+  plan "would: tmux source-file $HOME_DIR/.tmux.conf"
+else
+  if tmux source-file "$HOME_DIR/.tmux.conf" 2>&1 | sed 's/^/  → /'; then
+    ok "tmux reloaded — the picker now drives the new tx"
+  else
+    warn "tmux source-file reported an error (reload by hand: tmux source-file ~/.tmux.conf)"
+  fi
+fi
+
+# ── STEP K — Verify (read-only) ──────────────────────────────────────────────────────────────
+step "STEP K — Verify (install-flip.md §8)"
+if [[ $DRY_RUN -eq 1 ]]; then
+  info "(dry-run) after a real flip, this step checks:"
+  plan "tx ls shows the re-derived live sessions (correct name/role/tags/cwd)"
+  plan "marker mode=flipped; statusLine.command → $TX_HOME/statusline.sh"
+  plan "peon-ping / require-worktree / discord still present in settings.json"
+  plan "$CLAUDE_DIR/mailbox absent; mx-speaker not running; $DEV_HOME gone"
+else
+  verify_flip
+fi
+
+printf '\n%s%s%s\n' "$B" "$( ((DRY_RUN)) && echo '=== flip --dry-run complete (nothing changed) ===' || echo '=== flip complete ===' )" "$X"
