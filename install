@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
-# tx-ide installer. Click-through, idempotent, safe to re-run.
-# All file modifications back up to <file>.bak.<timestamp> before writing.
+# tx-ide installer (new model — install-flip.md §2.1). Click-through, idempotent, safe to re-run.
+# All settings.json edits target the realpath and back up to <file>.bak.<timestamp>.
+#
+# The repo is the code source of truth (git pull updates in place); $TX_IDE_HOME holds only state.
+# Install:
+#   - deps (tmux, fzf, python3.14)
+#   - symlink the CLIs onto PATH at ~/.local/bin (tx, tx-assistant, tmux-pane-session-name)
+#   - create the $TX_IDE_HOME skeleton via `tx _init-home`, + the agents symlink
+#   - the ~/.tx-ide/tmux.conf shim + the ~/.tmux.conf source-file block
+#   - register Claude hooks via setup/agents/claude.sh (baked shims under $TX_IDE_HOME/hooks)
+#   - C10: move the statusline under $TX_IDE_HOME and point settings.json at it (marker mode=installed)
 set -u
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 HOME_DIR="${HOME%/}"
 LOCAL_BIN="$HOME_DIR/.local/bin"
-CLAUDE_DIR="$HOME_DIR/.claude"
-TX_IDE_DIR="$HOME_DIR/.tx-ide"
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME_DIR/.claude}"
+# Default home ~/.tx-ide; honor a pre-set $TX_IDE_HOME, expand a leading ~. Export it so every
+# sub-call (tx _init-home, claude.sh, the C10 edit) resolves the SAME home.
+TX_IDE_DIR="${TX_IDE_HOME:-$HOME_DIR/.tx-ide}"
+TX_IDE_DIR="${TX_IDE_DIR/#\~/$HOME_DIR}"
+export TX_IDE_HOME="$TX_IDE_DIR"
 STAMP=$(date +%Y%m%d%H%M%S)
 
 B=$'\e[1m'
@@ -77,41 +90,38 @@ cat <<EOF
 ${B}=== tx-ide install ===${X}
 
 Repo:  $REPO
+Home:  $TX_IDE_DIR
 
 I will:
   - check dependencies and brew-install tmux + fzf + python@3.14 if missing
-      (also warn if python3 / claude / gh are not on PATH)
-  - symlink CLIs into ~/.local/bin/
-      tx, tx-assistant, tmux-pane-for-session, tmux-pane-session-name
+      (also warn if claude / gh are not on PATH)
+  - symlink CLIs into ~/.local/bin/  (tx, tx-assistant, tmux-pane-session-name)
   - add ~/.local/bin to your shell PATH (zsh/bash; marker-tracked)
-  - symlink Claude mailbox hooks dir: ~/.claude/hooks/mailbox/ → repo
-  - symlink statusline: ~/.claude/statusline.sh → repo
-  - symlink agents dir: ~/.tx-ide/agents/ → repo (orchestration role files)
-  - create ~/.tx-ide/user-agents/ (empty; drop overrides + .local.md here)
-  - write ~/.tx-ide/tmux.conf (a one-line file I own)
+  - create the $TX_IDE_DIR skeleton (sessions/, history/, user-agents/, config)
+      and symlink agents/ → repo (orchestration role files)
+  - write $TX_IDE_DIR/tmux.conf (a one-line file I own)
   - install the tx-ide default ~/.tmux.conf if you have none; if you
       already have one, add a source-file block (or, with a [y/N]
       confirm, replace it with the default) — backup either way
-  - add hooks + statusLine to ~/.claude/settings.json (with backup)
-      (4 mailbox hook entries + statusLine, tracked via a _tx_ide_managed
-       marker so uninstall removes only ours. Your existing hooks,
-       permissions, plugins, theme are untouched.)
+  - register Claude hooks in ~/.claude/settings.json via setup/agents/claude.sh
+      (4 hook events → baked shims under $TX_IDE_DIR/hooks, the global
+       tmux session-closed hook, all tracked by a _tx_ide_managed marker)
+  - move the statusline under $TX_IDE_DIR and point settings.json at it
   - configure iTerm: keyboard map + import tokyonight-night color preset,
       with a [Y/n] confirm to also apply it to your Default profile
       (only if iTerm is installed and currently quit)
-  - start the mx-speaker background daemon
 
 I will NOT touch:
-  - any settings.json entry I didn't add (permissions, theme, plugins, other hooks)
+  - any settings.json entry the marker did not add (permissions, theme,
+      plugins, peon-ping / require-worktree / other hooks)
   - ~/.claude/CLAUDE.md
   - your existing ~/.tmux.conf, unless you confirm a replace ([y/N], backed up)
   - any iTerm preference if iTerm is currently running (you'll get a hint)
-  - ~/.tx-ide/user-agents/ contents (your overrides survive re-runs)
+  - $TX_IDE_DIR/user-agents/ contents (your overrides survive re-runs)
 
 After install:
   - run $(tx) from any tmux pane to pick a session
   - run $(tx start) to create the Views home-base and warm the tx-assistant
-  - run $(tx mailbox) (or prefix+m) to open the inbox
 
 EOF
 
@@ -122,7 +132,7 @@ confirm "Proceed?" Y || {
 
 # === 0: Dependencies ===
 # Hard requirements (auto-installed via brew): tmux, fzf, python@3.14.
-# Soft requirements (warn only): python3, claude, gh.
+# Soft requirements (warn only): claude, gh.
 header "Dependencies"
 
 if ! command -v brew >/dev/null 2>&1; then
@@ -144,7 +154,7 @@ for pkg in tmux fzf; do
   fi
 done
 
-# Hard requirement: the session store runs under python3.14.
+# Hard requirement: the tx package + the hook shims run under python3.14.
 if command -v python3.14 >/dev/null 2>&1; then
   ok "python3.14" "found"
 else
@@ -158,11 +168,6 @@ else
 fi
 
 # Soft checks — warn but do not block.
-if command -v python3 >/dev/null 2>&1; then
-  ok "python3" "found"
-else
-  warn "python3" "missing — mailbox + hooks need it; install: brew install python"
-fi
 if command -v claude >/dev/null 2>&1; then
   ok "claude" "found"
 else
@@ -175,17 +180,16 @@ else
 fi
 
 # === 1: CLIs ===
+# Only the live entrypoints (install-flip §2.2): tx (the python shim), tx-assistant, and the
+# pane-border reader. No txn (coexistence alias only), no tx-mailbox / tmux-pane-for-session (gone).
 header "CLIs into ~/.local/bin"
 mkdir -p "$LOCAL_BIN"
 link "$REPO/bin/tx" "$LOCAL_BIN/tx"
 link "$REPO/bin/tx-assistant" "$LOCAL_BIN/tx-assistant"
-link "$REPO/bin/tmux-pane-for-session" "$LOCAL_BIN/tmux-pane-for-session"
 link "$REPO/bin/tmux-pane-session-name" "$LOCAL_BIN/tmux-pane-session-name"
 
 # === 1b: ~/.local/bin on PATH ===
-# Add a marked block to the user's shell rc so `tx` is callable from a fresh
-# shell. Idempotent: detected via begin/end markers. Skipped if the rc already
-# references the dir some other way (we don't want to duplicate the user's setup).
+# Add a marked block to the user's shell rc so `tx` is callable from a fresh shell. Idempotent.
 header "PATH"
 PATH_BEGIN="# === BEGIN tx-ide PATH ==="
 PATH_END="# === END tx-ide PATH ==="
@@ -219,31 +223,23 @@ HEREDOC
   ok "$rc_file" "PATH block added (open a new shell, or: source $rc_file)"
 fi
 
-# === 2: Claude hooks dir ===
-header "Claude mailbox hooks"
-mkdir -p "$CLAUDE_DIR/hooks"
-link_dir "$REPO/claude/hooks" "$CLAUDE_DIR/hooks/mailbox"
-
-# === 3: Statusline ===
-header "Statusline"
-link "$REPO/claude/statusline.sh" "$CLAUDE_DIR/statusline.sh"
-
-# === 4: Agents (shipped + user override dir) ===
-header "Agents"
-mkdir -p "$TX_IDE_DIR"
-link_dir "$REPO/agents" "$TX_IDE_DIR/agents"
-if [[ -d "$TX_IDE_DIR/user-agents" ]]; then
-  ok "$TX_IDE_DIR/user-agents" "already present"
+# === 2: $TX_IDE_HOME skeleton + agents ===
+# `tx _init-home` builds the layout idempotently (sessions/, history/, user-agents/, dirs the
+# package writes into). The agents symlink + the hooks shims are the installer's job: the symlink
+# here, the shims via claude.sh below (§2.3).
+header "tx-ide home ($TX_IDE_DIR)"
+if "$REPO/bin/tx" _init-home 2>&1 | sed 's/^/  → /'; then
+  ok "$TX_IDE_DIR" "skeleton ready"
 else
-  mkdir -p "$TX_IDE_DIR/user-agents"
-  ok "$TX_IDE_DIR/user-agents" "created (empty)"
+  fail "$TX_IDE_DIR" "tx _init-home failed"
+  exit 1
 fi
+link_dir "$REPO/agents" "$TX_IDE_DIR/agents"
 
-# === 5: ~/.tx-ide/tmux.conf shim ===
+# === 3: ~/.tx-ide/tmux.conf shim ===
 header "Tmux config shim"
-mkdir -p "$TX_IDE_DIR"
 TX_IDE_CONF="$TX_IDE_DIR/tmux.conf"
-desired_content="# Written by tx-ide install.sh — do not edit, re-run install to update.
+desired_content="# Written by tx-ide install — do not edit, re-run install to update.
 # Repo: $REPO
 run-shell '$REPO/tmux/tx-ide.tmux'
 "
@@ -257,13 +253,11 @@ else
   ok "$TX_IDE_CONF" "written"
 fi
 
-# === 6: ~/.tmux.conf default + source-file block ===
-# The tx-ide default IS the example config at tmux/tmux.conf (a full personal
-# setup that already ends with the source-file block). Behavior:
+# === 4: ~/.tmux.conf default + source-file block ===
 #   - no ~/.tmux.conf       → install the default
 #   - has one, block present → leave it (idempotent re-run)
-#   - has one, no block      → confirm replace-with-default [y/N]; on no,
-#                              just append the source-file block. Backup either way.
+#   - has one, no block      → confirm replace-with-default [y/N]; on no, append the
+#                              source-file block. Backup either way.
 header "~/.tmux.conf"
 USER_TMUX_CONF="$HOME_DIR/.tmux.conf"
 EXAMPLE_TMUX_CONF="$REPO/tmux/tmux.conf"
@@ -296,106 +290,74 @@ else
   info "backup: $USER_TMUX_CONF.bak.$STAMP"
 fi
 
-# === 7: ~/.claude/settings.json merge ===
-# We write hooks + statusLine directly into ~/.claude/settings.json (not
-# settings.local.json — Claude Code doesn't read settings.local.json at user
-# scope, only at project scope). A top-level `_tx_ide_managed` key tracks
-# exactly what we added so uninstall removes only those entries and doctor
-# detects drift. Claude Code ignores unknown top-level keys.
-header "Claude settings.json"
-SETTINGS_MAIN="$CLAUDE_DIR/settings.json"
-SETTINGS_MAIN="$SETTINGS_MAIN" STAMP="$STAMP" python3 - <<'PY'
-import json, os, sys
+# === 5: Claude hooks (settings.json) ===
+# The per-agent integration owns the settings.json hook registration behind the _tx_ide_managed
+# marker (install-flip §4): it generates the C9-baked shims under $TX_IDE_HOME/hooks, surgically
+# sets the 4 tx hook events (match-by-marker, so peon-ping / require-worktree / discord are
+# preserved), installs the global tmux session-closed → reconcile hook, and stops any mx-speaker.
+header "Claude hooks (setup/agents/claude.sh)"
+"$REPO/setup/agents/claude.sh" install
 
-main_path = os.environ["SETTINGS_MAIN"]
+# === 6: Statusline (C10) ===
+# Move the statusline under $TX_IDE_HOME and point settings.json at the moved copy, then stamp the
+# marker mode=installed + record the new statusLine command (so uninstall removes exactly ours).
+# claude.sh leaves the statusLine alone (C10 is install/flip-only), so this is the one extra edit.
+header "Statusline → $TX_IDE_DIR (C10)"
+cp "$REPO/claude/statusline.sh" "$TX_IDE_DIR/statusline.sh"
+chmod +x "$TX_IDE_DIR/statusline.sh"
+ok "$TX_IDE_DIR/statusline.sh" "copied"
+SETTINGS_MAIN="$CLAUDE_DIR/settings.json" TX_HOME="$TX_IDE_DIR" STAMP="$STAMP" TX_MODE="installed" \
+  python3.14 - <<'PY'
+import json, os, tempfile
+
+path  = os.environ["SETTINGS_MAIN"]
+home  = os.environ["TX_HOME"]
 stamp = os.environ["STAMP"]
+mode  = os.environ["TX_MODE"]
+G, Y, D, X = "\033[32m", "\033[33m", "\033[2m", "\033[0m"
 
-POST = "$HOME/.claude/hooks/mailbox/post.sh"
-PRE  = "$HOME/.claude/hooks/mailbox/pre.sh"
-END  = "$HOME/.claude/hooks/mailbox/end.sh"
-STATUS = "bash $HOME/.claude/statusline.sh"
+# settings.json is a symlink into the claude-server git repo — edit the REALPATH, atomically.
+real = os.path.realpath(path)
+if not os.path.exists(real):
+    print(f"  {Y}!{X} {path} absent — run claude.sh install first")
+    raise SystemExit(1)
+with open(real) as fh:
+    data = json.load(fh)
+before = json.loads(json.dumps(data))
 
-# Single source of truth for what tx-ide manages.
-managed_hook_commands = {
-    "Stop":              POST,
-    "PermissionRequest": POST,
-    "UserPromptSubmit":  PRE,
-    "SessionEnd":        END,
-}
-
-def make_entry(cmd):
-    return {"type": "command", "command": cmd, "timeout": 10, "async": True}
-
-# Load (or initialize) settings.json.
-if os.path.exists(main_path):
-    real_path = os.path.realpath(main_path)
-    with open(real_path) as fh:
-        data = json.load(fh)
-    backup_path = f"{real_path}.bak.{stamp}"
-    with open(backup_path, "w") as fh:
-        json.dump(data, fh, indent=2)
-        fh.write("\n")
+# C10: point statusLine at the moved copy (absolute, baked like the hook shims), preserving any
+# other statusLine keys the user has. settings.json is a boundary, so tolerate a non-dict value.
+status_command = f"bash {home}/statusline.sh"
+existing = data.get("statusLine")
+if isinstance(existing, dict):
+    existing["command"] = status_command
 else:
-    real_path = main_path
-    data = {}
-    backup_path = None
+    data["statusLine"] = {"type": "command", "command": status_command}
 
-# Append a hook entry for each event if our command isn't already wired.
-def event_has_command(hooks_for_event, command):
-    return any(
-        h.get("command") == command
-        for block in hooks_for_event
-        for h in block.get("hooks", [])
-    )
+# Stamp the marker claude.sh just wrote: this is a real install (not coexistence), and record the
+# statusLine command so uninstall can find + remove exactly ours.
+marker = data.get("_tx_ide_managed")
+if isinstance(marker, dict):
+    marker["mode"] = mode
+    marker["statusLine_command"] = status_command
 
-hooks = data.setdefault("hooks", {})
-appended = []
-already_present = []
-for event, command in managed_hook_commands.items():
-    bucket = hooks.setdefault(event, [])
-    if event_has_command(bucket, command):
-        already_present.append(event)
-    else:
-        bucket.append({"matcher": "", "hooks": [make_entry(command)]})
-        appended.append(event)
-
-# statusLine: add ours if absent. If present and matches ours, leave it
-# (idempotent). If present and different, leave the user's untouched and
-# print a warning — they have their own; we don't shadow.
-status_msg = ""
-status_existing = data.get("statusLine", {}).get("command")
-if status_existing is None:
-    data["statusLine"] = {"type": "command", "command": STATUS}
-    status_msg = "added"
-elif status_existing == STATUS:
-    status_msg = "already current"
-else:
-    status_msg = f"skipped — user has their own ({status_existing!r}). Move it aside if you want tx-ide's."
-
-# Write the marker. Always overwrite — declares current intent.
-data["_tx_ide_managed"] = {
-    "version": 1,
-    "hook_commands": managed_hook_commands,
-    "statusLine_command": STATUS if data.get("statusLine", {}).get("command") == STATUS else None,
-}
-
-with open(real_path, "w") as fh:
-    json.dump(data, fh, indent=2)
-    fh.write("\n")
-
-state = "merged" if appended or status_msg == "added" else "already current"
-print(f"  \033[32m→\033[0m {main_path}    \033[32m{state}\033[0m")
-if backup_path:
-    print(f"  \033[2mbackup: {backup_path}\033[0m")
-if appended:
-    print(f"  \033[2mhooks added: {', '.join(appended)}\033[0m")
-if already_present:
-    print(f"  \033[2mhooks already present: {', '.join(already_present)}\033[0m")
-print(f"  \033[2mstatusLine: {status_msg}\033[0m")
-print(f"  \033[2m_tx_ide_managed marker written (uninstall + doctor use this)\033[0m")
+with open(f"{real}.bak.{stamp}", "w") as fh:
+    json.dump(before, fh, indent=2); fh.write("\n")
+directory = os.path.dirname(real) or "."
+fd, tmp = tempfile.mkstemp(dir=directory, prefix=".tx-settings.", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(data, indent=2) + "\n")
+    os.replace(tmp, real)
+except BaseException:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    raise
+print(f"  {G}→{X} statusLine.command → {status_command}  {D}(marker mode={mode}){X}")
+print(f"  {D}backup: {real}.bak.{stamp}{X}")
 PY
 
-# === 8: iTerm (keymap + tokyonight-night colors) ===
+# === 7: iTerm (keymap + tokyonight-night colors) ===
 header "iTerm setup"
 if [[ "${TERM_PROGRAM:-}" == "iTerm.app" ]]; then
   if pgrep -x iTerm2 >/dev/null 2>&1; then
@@ -418,35 +380,7 @@ else
   warn "iTerm" "TERM_PROGRAM='${TERM_PROGRAM:-unknown}' — skipping (iTerm only)"
 fi
 
-# === 9: mailbox config ===
-# The mx-speaker daemon (and any future mailbox-side feature) reads this file
-# on every event and assumes it exists with all expected keys, so install must
-# seed it. Re-runs preserve user edits.
-write_default_mailbox_config() {
-  cat >"$1" <<'JSON'
-{
-  "tts": {
-    "enabled": true
-  }
-}
-JSON
-}
-
-header "Mailbox config"
-config_file="$HOME_DIR/.claude/mailbox/config.json"
-if [[ -e "$config_file" ]]; then
-  ok "$config_file" "exists (preserved)"
-else
-  mkdir -p "$(dirname "$config_file")"
-  write_default_mailbox_config "$config_file"
-  ok "$config_file" "seeded"
-fi
-
-# === 10: mx-speaker daemon ===
-header "mx-speaker daemon"
-"$REPO/claude/hooks/start-speaker.sh" 2>&1 | sed 's/^/  → /'
-
-# === 11: reload tmux (only if a server is already running) ===
+# === 8: reload tmux (only if a server is already running) ===
 header "Reload tmux"
 if tmux info >/dev/null 2>&1; then
   if tmux source-file "$HOME_DIR/.tmux.conf" 2>&1 | sed 's/^/  → /'; then
@@ -465,16 +399,15 @@ ${B}Set up the tx-ide view:${X}
   ${D}tx start${X}  (creates the Views home-base and warms the tx-assistant)
 
 ${B}Customize roles (optional):${X}
-  ${D}drop overrides in ~/.tx-ide/user-agents/ (e.g. TX-ASSISTANT.local.md)${X}
+  ${D}drop overrides in $TX_IDE_DIR/user-agents/ (e.g. TX-ASSISTANT.local.md)${X}
 
 ${B}Undo:${X}
   ${D}$REPO/uninstall${X}
 
 EOF
 
-# If the current shell doesn't have ~/.local/bin on PATH, re-exec it so `tx`
-# is immediately callable. Skipped when PATH is already correct (most common
-# on re-runs) so we don't surprise the user with a "fresh shell" needlessly.
+# If the current shell doesn't have ~/.local/bin on PATH, re-exec it so `tx` is immediately
+# callable. Skipped when PATH is already correct (most common on re-runs).
 case ":${PATH:-}:" in
 *":$LOCAL_BIN:"*) : ;;
 *)
