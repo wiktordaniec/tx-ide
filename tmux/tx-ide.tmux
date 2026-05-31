@@ -3,7 +3,7 @@
 # which is sourced from the user's ~/.tmux.conf by install.sh.
 #
 # Reads @tx-ide-* options to decide which view features to enable:
-#   @tx-ide-popups          on|off   prefix+t (tx), prefix+m (mx), prefix+/ (tx-assistant)
+#   @tx-ide-popups          on|off   prefix+t (tx), prefix+/ (tx-assistant)
 #   @tx-ide-pane-borders    on|off   pane-border-format integration + colors
 #   @tx-ide-claude-scroll   on|off   C-u/C-d → PageUp/PageDown in Claude panes
 #   @tx-ide-pane-keys       on|off   M-1..9 → select-pane
@@ -34,16 +34,14 @@ palette=$(option @tx-ide-palette tokyonight-night)
 CONF=$(mktemp -t tx-ide-bindings.XXXXXX)
 trap 'rm -f "$CONF"' EXIT
 
-# --- Popups (prefix+t / prefix+m / prefix+/) ---
-# prefix+t opens the tx picker, prefix+m the mailbox. tx attach figures out the
-# pane to glue into by asking tmux directly (`display-message -p #{pane_id}`),
-# so the bind doesn't need to plumb anything through. prefix+M re-homes the
-# default `select-pane -m` that prefix+m used to do.
+# --- Popups (prefix+t / prefix+/) ---
+# prefix+t opens the tx picker; prefix+/ forwards a line to the tx-assistant. tx attach figures
+# out the pane to glue into by asking tmux directly (`display-message -p #{pane_id}`), so the bind
+# doesn't need to plumb anything through. There is no mailbox anymore, so prefix+m is left bound to
+# its native `select-pane -m` (tx-ide no longer overrides it).
 if [ "$popups" = on ]; then
   cat >>"$CONF" <<'EOF'
 bind t display-popup -E -w 100 -h 30 -x C -y 1 -T " tx " "tx attach"
-bind m display-popup -E -w 100 -h 30 -x C -y 1 -T " mailbox " "tx mailbox"
-bind M select-pane -m
 bind '/' command-prompt -p "tx-assistant>" {
   set-buffer -b tx-assistant-input "%%"
   run-shell -b "tx-assistant --from-buffer"
