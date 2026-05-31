@@ -28,13 +28,13 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from . import claude, history, hooks, palette
+from . import claude, history, hooks, palette, sync
 from .events import EventLog
 from .render import picker_display_rows, picker_namew, render_chats, render_history, render_ls
 from .service import ServiceError, SessionService
 from .session import SCHEMA_VERSION, ChatRef, Kind, Origin, Role, Session, State
 from .spawn import SHELL_COMMANDS, SpawnSpec
-from .storage import ensure_home, tx_ide_home
+from .storage import LocalStorage, ensure_home, tx_ide_home
 from .store import SessionStore
 from .tmux import TmuxError
 
@@ -474,6 +474,77 @@ class SendMessageCommand(Command):
         return 0
 
 
+class SyncCommand(Command):
+    name = "sync"
+    summary = "Manual archive sync of the reproducible corpus (push/pull/status) — never hot-path."
+
+    def run(self, argv: list[str]) -> int:
+        """`tx sync push|pull|status` (§14, S7). Local (`$TX_IDE_HOME`) is always the working set;
+        this is a manual archive layer over the `Storage` boundary, run only when you type it. The
+        remote is `--remote PATH` (a local archive dir / the S3 proxy), `--s3 BUCKET[/PREFIX]` (the
+        deferred stub), or the `sync` section of `config.json`."""
+        parser = self._parser()
+        parser.add_argument("action", choices=["push", "pull", "status"])
+        parser.add_argument("--remote", metavar="PATH",
+                            help="a local filesystem remote (archive dir / S3 dogfood proxy)")
+        parser.add_argument("--s3", metavar="BUCKET[/PREFIX]",
+                            help="select the S3 backend (deferred — reports 'not implemented')")
+        args = parser.parse_args(argv)
+
+        local = sync.local_storage()
+        remote = self._resolve_remote(args)
+        if args.action == "status":
+            return self._status(local, remote)
+        if remote is None:
+            print("tx sync: no remote configured — pass --remote PATH / --s3 BUCKET, or set the "
+                  "'sync' section in config.json", file=sys.stderr)
+            return 1
+        operation = sync.sync_push if args.action == "push" else sync.sync_pull
+        try:
+            result = operation(local, remote)
+        except NotImplementedError as error:  # S3 stub — surface cleanly, no traceback (§14)
+            print(f"tx sync {args.action}: {error}", file=sys.stderr)
+            return 1
+        self._print_result(args.action, sync.remote_label(remote), result)
+        return 0
+
+    def _resolve_remote(self, args: argparse.Namespace):
+        if args.s3:
+            bucket, _, prefix = args.s3.partition("/")
+            return sync.remote_from_spec({"backend": "s3", "bucket": bucket, "prefix": prefix})
+        if args.remote:
+            return sync.remote_from_spec({"backend": "local", "path": args.remote})
+        return sync.remote_from_config()
+
+    def _status(self, local: LocalStorage, remote) -> int:
+        status = sync.corpus_status(local)
+        print(f"Local corpus ({sync.remote_label(local)}):")
+        print(f"  records:        {status.records}")
+        print(f"  history files:  {status.history_files}")
+        print(f"  log.jsonl:      {'present' if status.has_log else 'missing'}")
+        print(f"  config.json:    {'present' if status.has_config else 'missing'}")
+        print(f"  total keys:     {status.total}")
+        if remote is None:
+            print("Remote: none configured (local-only; pass --remote/--s3 or set config.json).")
+            return 0
+        label = sync.remote_label(remote)
+        try:
+            to_push = sync.sync_diff(local, remote)
+            to_pull = sync.sync_diff(remote, local)
+        except NotImplementedError as error:
+            print(f"Remote ({label}): {error}")
+            return 0
+        print(f"Remote ({label}): {to_push} key(s) to push, {to_pull} key(s) to pull.")
+        return 0
+
+    def _print_result(self, action: str, label: str, result: sync.SyncResult) -> None:
+        direction = "→" if action == "push" else "←"
+        print(f"sync {action} (local {direction} {label}): "
+              f"{len(result.added)} added, {len(result.updated)} updated, "
+              f"{len(result.unchanged)} unchanged"
+              + (f", {len(result.kept)} kept (destination newer)" if result.kept else ""))
+
+
 class StartCommand(Command):
     name = "start"
     summary = "Ensure the Views home base + tx-assistant exist, then attach Views."
@@ -862,7 +933,7 @@ class SelfCheckCommand(Command):
 PUBLIC_COMMANDS: list[type[Command]] = [
     StartCommand, AttachCommand, LsCommand, SpawnCommand, SpawnNvimCommand, SpawnViewCommand,
     TagCommand, RenameCommand, SendMessageCommand, KillCommand, ArchiveCommand, RmCommand,
-    ShowCommand, HistoryCommand, ChatCommand, ResumeCommand,
+    ShowCommand, HistoryCommand, ChatCommand, ResumeCommand, SyncCommand,
 ]
 HIDDEN_COMMANDS: list[type[Command]] = [
     ListCommand, EditTagCommand, SessionClosedCommand, HookCommand, InitHomeCommand,
