@@ -224,7 +224,7 @@ class ShowCommand(Command):
         # the stored snapshot only rides along a mutation, so a live record's is stale. Display-only,
         # never persisted; a terminal record keeps its stored [] (the exit clear).
         if session.is_alive():
-            session.attached_to = self.service.tmux.attached_to(session.name)
+            session.attached_to = self.service.tmux.attached_to(session.tmux_name)
         print(json.dumps(session.to_dict(), indent=2))
         return 0
 
@@ -409,7 +409,7 @@ class TagCommand(Command):
 
 class RenameCommand(Command):
     name = "rename"
-    summary = "Rename a session (tmux session + record)."
+    summary = "Rename a session's display name (record; a process leaves its tmux id untouched)."
 
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
@@ -418,6 +418,24 @@ class RenameCommand(Command):
         args = parser.parse_args(argv)
         session = self.service.rename(args.name, args.new_name)
         print(f"Renamed to '{session.name}'")
+        return 0
+
+
+class WhoamiCommand(Command):
+    name = "whoami"
+    summary = "Print the current session's display name (resolves #S — the id for a process)."
+
+    def run(self, argv: list[str]) -> int:
+        # `#S` is the tmux session name, which for a PROCESS is its id — resolve it back to the
+        # store-owned display name so a worker can name/tag things (e.g. its nvim companion) with the
+        # human name it is known by. Falls back to the raw `#S` for an untracked session.
+        self._parser().parse_args(argv)
+        current = self.service.tmux.current_session_name()
+        if current is None:
+            print("tx whoami: not inside a tmux session", file=sys.stderr)
+            return 1
+        record = self.service.get(current)
+        print(record.name if record is not None else current)
         return 0
 
 
@@ -725,42 +743,54 @@ class AttachCommand(Command):
 
     # ----- post-selection action -----------------------------------------------------------
 
+    def _tmux_target(self, name: str) -> str:
+        """Map a picker display name to its tmux session target. A PROCESS is tmux-named by its id,
+        so the human name the row carries is not a tmux target — resolve it through the store. Falls
+        back to the name itself for an untracked / coexistence session (no record)."""
+        record = self.service.get(name)
+        return record.tmux_name if record is not None else name
+
     def _nest_attach(self, name: str) -> bool:
         """Attach the chosen LOCAL session (cmd_pick's loop body): nest-attach into the launching
-        Views pane when applicable, else switch-client / foreground attach. False = the session
-        vanished (re-loop)."""
-        if not self.service.tmux.has_session(name):
+        Views pane when applicable, else switch-client / foreground attach. `name` is the picker's
+        display name; tmux is keyed by the resolved target (a process is named by its id). False =
+        the session vanished (re-loop)."""
+        target = self._tmux_target(name)
+        if not self.service.tmux.has_session(target):
             print(f"tx: session '{name}' does not exist", file=sys.stderr)
             return False
-        if self._respawn_into_view_pane(name):
+        if self._respawn_into_view_pane(target):
             return True
-        return self._switch_or_attach(name)
+        return self._switch_or_attach(target)
 
     def _jump_to_session(self, name: str) -> bool:
         """`--jump`: focus the existing pane already hosting `name` instead of nest-attaching here
-        (port of `jump_to_session`). Falls back to nest-attach-into-view, then switch-client."""
+        (port of `jump_to_session`). Falls back to nest-attach-into-view, then switch-client. tmux
+        is keyed by the resolved target (a process is named by its id)."""
         tmux = self.service.tmux
-        if not tmux.has_session(name):
+        target = self._tmux_target(name)
+        if not tmux.has_session(target):
             print(f"tx: session '{name}' does not exist", file=sys.stderr)
             return False
         current_session = tmux.current_session_name() or ""
-        if current_session == name:
+        if current_session == target:
             return True
-        target = tmux.pane_for_session(name, current_session)
-        if target and target.split(":")[0] == current_session:
-            return tmux.select_window(target) and tmux.select_pane(target)
-        if self._respawn_into_view_pane(name):
+        pane = tmux.pane_for_session(target, current_session)
+        if pane and pane.split(":")[0] == current_session:
+            return tmux.select_window(pane) and tmux.select_pane(pane)
+        if self._respawn_into_view_pane(target):
             return True
         try:
-            tmux.switch_client(name)
+            tmux.switch_client(target)
             return True
         except TmuxError:
             return False
 
-    def _respawn_into_view_pane(self, name: str) -> bool:
-        """If the picker was launched from a shell pane inside a Views home, nest-attach `name` INTO
-        that pane via `respawn-pane -k` (the `TMUX= tmux attach …; exec $SHELL` keeps the pane alive
-        after the inner session detaches). Returns True when it did, False to fall through."""
+    def _respawn_into_view_pane(self, target: str) -> bool:
+        """If the picker was launched from a shell pane inside a Views home, nest-attach `target` (a
+        tmux session target) INTO that pane via `respawn-pane -k` (the `TMUX= tmux attach …; exec
+        $SHELL` keeps the pane alive after the inner session detaches). True when it did, else fall
+        through."""
         tmux = self.service.tmux
         if not os.environ.get("TMUX"):
             return False
@@ -771,21 +801,21 @@ class AttachCommand(Command):
         origin_cmd = tmux.display_message("#{pane_current_command}", target=origin_pane)
         if origin_cmd not in SHELL_COMMANDS:
             return False
-        quoted = shlex.quote(name)
+        quoted = shlex.quote(target)
         tmux.respawn_pane(origin_pane, f"TMUX= tmux attach -t {quoted}; exec ${{SHELL:-zsh}}")
         return True
 
-    def _switch_or_attach(self, name: str) -> bool:
-        """Switch the calling client to `name` (inside tmux) or foreground-attach (outside). A
+    def _switch_or_attach(self, target: str) -> bool:
+        """Switch the calling client to `target` (inside tmux) or foreground-attach (outside). A
         failed switch-client (the client may be gone) is tolerated — cmd_pick ignores its status."""
         tmux = self.service.tmux
         if os.environ.get("TMUX"):
             try:
-                tmux.switch_client(name)
+                tmux.switch_client(target)
             except TmuxError:
                 pass
         else:
-            tmux.attach_session(name)
+            tmux.attach_session(target)
         return True
 
     def _is_view_session(self, name: str) -> bool:
@@ -876,15 +906,21 @@ def _pane_record(service: SessionService, session_id: str) -> Session | None:
         return None
 
 
-class PaneTagsCommand(Command):
-    name = "_pane-tags"
-    summary = "Internal: comma-joined tags for a record id (pane-border reader; empty if absent)."
+class PaneInfoCommand(Command):
+    name = "_pane-info"
+    summary = "Internal: a record's display name + comma-joined tags (pane-border reader; two lines)."
 
     def run(self, argv: list[str]) -> int:
+        # ONE record read feeding the pane border's name AND tag chips, so the helper stays a single
+        # Python launch on the ~1 Hz (status-interval) render path. Line 1 = display name, line 2 =
+        # comma-joined tags; both empty for an absent/unreadable record (the helper then falls back
+        # to the live tmux name). The name is the store-owned label — for a PROCESS the tmux session
+        # is named by its id, so the border must read the name here rather than echo `#{session_name}`.
         parser = self._parser()
         parser.add_argument("session_id")
         args = parser.parse_args(argv)
         record = _pane_record(self.service, args.session_id)
+        print(record.name if record is not None else "")
         print(",".join(record.tags) if record is not None else "")
         return 0
 
@@ -899,6 +935,23 @@ class PaneKindCommand(Command):
         args = parser.parse_args(argv)
         record = _pane_record(self.service, args.session_id)
         print(record.kind.value if record is not None else "")
+        return 0
+
+
+class TmuxNameCommand(Command):
+    name = "_tmux-name"
+    summary = "Internal: the LIVE tmux target (id for a process) for a name/id; empty if not live."
+
+    def run(self, argv: list[str]) -> int:
+        # The shell seam for targeting a session in raw tmux now that a process is tmux-named by its
+        # id (bin/tx-assistant): resolve a name/id to its live tmux target. Empty (exit 0) when no
+        # live record matches, so a caller can test `[ -z "$out" ]` for "not running".
+        parser = self._parser()
+        parser.add_argument("token")
+        args = parser.parse_args(argv)
+        record = self.service.get(args.token)
+        if record is not None and self.service.tmux.has_session(record.tmux_name):
+            print(record.tmux_name)
         return 0
 
 
@@ -1114,9 +1167,13 @@ class FlipRederiveCommand(Command):
 
         role, tags = _split_role_tags(list(old.get("tags") or []), pane_command)
         kind = Kind.VIEW if old.get("kind") == Kind.VIEW.value else Kind.PROCESS
+        # Live #S is the human name during the historical Flip; but a re-run AFTER the id-naming
+        # cutover sees a PROCESS whose #S IS its id — fall back to the v1 record's stored name so the
+        # human display label is never overwritten with the uuid.
+        display_name = old.get("name", name) if name == tx_id else name
         session = Session(
             id=tx_id,                                       # same uuid → @tx_id pointer stays valid
-            name=name,                                      # refreshed live #S
+            name=display_name,                              # refreshed live #S (v1 name if id-named)
             kind=kind,
             role=role,
             state=State.initial_for(role),                  # IDLE if llm else ALIVE (D3)
@@ -1145,6 +1202,41 @@ class FlipRederiveCommand(Command):
             print(f"skipped {len(skipped)}:")
             for name, reason in skipped:
                 print(f"  {name:<24} {reason}")
+
+
+class MigrateTmuxNamesCommand(Command):
+    name = "_migrate-tmux-names"
+    summary = "Internal: rename live PROCESS tmux sessions to their id (one-time id-naming cutover)."
+
+    def run(self, argv: list[str]) -> int:
+        # One-time cutover for the id-naming switch. Before it, a PROCESS tmux session was named by
+        # its human name; after, by its id (Session.tmux_name). Sessions live ACROSS the upgrade
+        # still carry the old human tmux name, so lifecycle ops — now keyed on the id — would miss
+        # them. Rename each live process tmux session over to its id (the human name lives on as the
+        # store's display label; `@tx_id` rides along rename-session, so the record link is intact).
+        # Idempotent (a session already id-named is skipped); VIEWs are left human-named. Only @tx_id
+        # sessions are touched (D4 — never a hand-started session tx does not own).
+        renamed: list[tuple[str, str]] = []
+        for name, tx_id in self._live_tx_sessions():
+            if not tx_id or name == tx_id:
+                continue
+            record = _pane_record(self.service, tx_id)
+            if record is None or record.kind != Kind.PROCESS:
+                continue
+            self.service.tmux.rename_session(name, tx_id)
+            renamed.append((name, tx_id))
+        for old, new in renamed:
+            print(f"  {old} → {new}")
+        print(f"renamed {len(renamed)} process session(s) to id-naming.")
+        return 0
+
+    def _live_tx_sessions(self) -> list[tuple[str, str]]:
+        rows = self.service.tmux.list_sessions("#{session_name}\t#{@tx_id}")
+        out: list[tuple[str, str]] = []
+        for row in rows:
+            name, _, tx_id = row.partition("\t")
+            out.append((name, tx_id))
+        return out
 
 
 # ----- chat operations (S4) ----------------------------------------------------------------
@@ -1252,14 +1344,14 @@ class HandoverFinishCommand(Command):
 
 PUBLIC_COMMANDS: list[type[Command]] = [
     StartCommand, AttachCommand, LsCommand, SpawnCommand, SpawnNvimCommand, SpawnViewCommand,
-    TagCommand, RenameCommand, SendMessageCommand, KillCommand, ArchiveCommand, RmCommand,
-    ShowCommand, HistoryCommand, ChatCommand, ResumeCommand, SyncCommand,
+    TagCommand, RenameCommand, WhoamiCommand, SendMessageCommand, KillCommand, ArchiveCommand,
+    RmCommand, ShowCommand, HistoryCommand, ChatCommand, ResumeCommand, SyncCommand,
     ForkCommand, HandoverCommand, RolloverCommand,
 ]
 HIDDEN_COMMANDS: list[type[Command]] = [
-    ListCommand, EditTagCommand, FocusEnvelopeCommand, PaneTagsCommand, PaneKindCommand,
-    HookCommand, InitHomeCommand, SelfCheckCommand, FlipRederiveCommand,
-    RolloverFinishCommand, HandoverFinishCommand,
+    ListCommand, EditTagCommand, FocusEnvelopeCommand, PaneInfoCommand, PaneKindCommand,
+    TmuxNameCommand, HookCommand, InitHomeCommand, SelfCheckCommand, FlipRederiveCommand,
+    MigrateTmuxNamesCommand, RolloverFinishCommand, HandoverFinishCommand,
 ]
 
 

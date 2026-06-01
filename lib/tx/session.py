@@ -35,8 +35,8 @@ class UnsupportedRecordError(Exception):
 class Kind(str, Enum):
     """Structural classification of a tmux session (§1)."""
 
-    VIEW = "view"          # an outer "Views" home the user lives in; hosts nested sessions
-    PROCESS = "process"    # a normal worker/agent/shell session
+    VIEW = "view"  # an outer "Views" home the user lives in; hosts nested sessions
+    PROCESS = "process"  # a normal worker/agent/shell session
 
 
 class Role(str, Enum):
@@ -57,11 +57,19 @@ class State(str, Enum):
     "needs you" coloring is gated on `role == llm` (§2). See `valid_for` / `initial_for`.
     """
 
-    ALIVE = "alive"        # non-llm live session (F2 — the row D3 adds to today's §2 table)
-    WORKING = "working"    # llm: agent actively running a turn          (UserPromptSubmit hook)
-    WAITING = "waiting"    # llm: turn finished, awaiting input — needs attention   (Stop hook)
-    IDLE = "idle"          # llm: alive, no active turn (between chats / shell)  (SessionEnd/spawn)
-    EXITED = "exited"      # the tmux session is gone     (Reconciler + tmux session-closed hook)
+    ALIVE = "alive"  # non-llm live session (F2 — the row D3 adds to today's §2 table)
+    WORKING = (
+        "working"  # llm: agent actively running a turn          (UserPromptSubmit hook)
+    )
+    WAITING = (
+        "waiting"  # llm: turn finished, awaiting input — needs attention   (Stop hook)
+    )
+    IDLE = (
+        "idle"  # llm: alive, no active turn (between chats / shell)  (SessionEnd/spawn)
+    )
+    EXITED = (
+        "exited"  # the tmux session is gone     (Reconciler + tmux session-closed hook)
+    )
     ARCHIVED = "archived"  # intentionally retired, record + history kept            (tx archive)
 
     @property
@@ -80,7 +88,9 @@ class State(str, Enum):
         """The states a session of this role may legally hold (D3). Used by callers/tests to
         assert the per-role model; `transition_to` does not enforce it (it guards only C3)."""
         if role == Role.LLM:
-            return frozenset({cls.WORKING, cls.WAITING, cls.IDLE, cls.EXITED, cls.ARCHIVED})
+            return frozenset(
+                {cls.WORKING, cls.WAITING, cls.IDLE, cls.EXITED, cls.ARCHIVED}
+            )
         return frozenset({cls.ALIVE, cls.EXITED})
 
 
@@ -97,11 +107,11 @@ class Location:
     builds the real TTY-join (attachment-topology §9), so no later stage churns when it lands.
     """
 
-    host: str           # tmux session that OWNS the pane (the view/outer session, e.g. "Views")
-    window_index: str   # display + secondary jump target
-    window_name: str    # display (e.g. "work")
-    pane_id: str        # "%41" — globally-unique, stable; the jump key
-    pane_index: str     # display (e.g. "1")
+    host: str  # tmux session that OWNS the pane (the view/outer session, e.g. "Views")
+    window_index: str  # display + secondary jump target
+    window_name: str  # display (e.g. "work")
+    pane_id: str  # "%41" — globally-unique, stable; the jump key
+    pane_index: str  # display (e.g. "1")
 
     def to_dict(self) -> dict:
         return {
@@ -129,16 +139,20 @@ class Origin:
     how, and from which parent chat." Walking `chat_id` backwards reconstructs a chat's lineage;
     walking `session_id` reconstructs which tx sessions touched it."""
 
-    how: str                    # spawn | fork | rollover | handover | resume
-    session_id: str             # the tx session id that performed the op (a node in the DAG)
-    chat_id: str | None = None  # the source chat this derived from (None for spawn/original)
+    how: str  # spawn | fork | rollover | handover | resume
+    session_id: str  # the tx session id that performed the op (a node in the DAG)
+    chat_id: str | None = (
+        None  # the source chat this derived from (None for spawn/original)
+    )
 
     def to_dict(self) -> dict:
         return {"how": self.how, "session_id": self.session_id, "chat_id": self.chat_id}
 
     @classmethod
     def from_dict(cls, data: dict) -> Origin:
-        return cls(how=data["how"], session_id=data["session_id"], chat_id=data["chat_id"])
+        return cls(
+            how=data["how"], session_id=data["session_id"], chat_id=data["chat_id"]
+        )
 
 
 @dataclass
@@ -147,15 +161,17 @@ class ChatRef:
     the original chat plus every fork / rollover / handover lands one. F7: includes `bundle_path`
     (our ingested copy) and `ended_at`; `origin` includes `chat_id`."""
 
-    id: str | None              # claude chat uuid; None while a fork capture is still pending
-    role: str                   # original | fork | rollover | handover
-    cwd: str                    # cwd the chat launched in (→ the munged transcript dir)
-    transcript_path: str        # source path under ~/.claude/projects — may go stale
+    id: str | None  # claude chat uuid; None while a fork capture is still pending
+    role: str  # original | fork | rollover | handover
+    cwd: str  # cwd the chat launched in (→ the munged transcript dir)
+    transcript_path: str  # source path under ~/.claude/projects — may go stale
     origin: Origin
-    bundle_path: str | None = None  # our durable ingested copy: $TX_IDE_HOME/history/<tx>/<chat>/
+    bundle_path: str | None = (
+        None  # our durable ingested copy: $TX_IDE_HOME/history/<tx>/<chat>/
+    )
     started_at: float | None = None
     ended_at: float | None = None
-    summary: str = ""           # cheap best-effort title (from sessions-index); optional
+    summary: str = ""  # cheap best-effort title (from sessions-index); optional
 
     def to_dict(self) -> dict:
         return {
@@ -194,17 +210,17 @@ class Session:
     role-dependent (D3); `attached_to` is the frozen `Location` list (S6 fills it, S0 freezes it).
     """
 
-    id: str                     # uuid, primary key (the record file name)
-    name: str                   # tmux session name (reusable across non-concurrent sessions, D7)
+    id: str  # uuid, primary key (the record file name)
+    name: str  # human display name; tmux names a PROCESS by `id` (see tmux_name), D7
     kind: Kind
     role: Role
     state: State
     cwd: str = ""
     cmd: str = ""
-    tags: list[str] = field(default_factory=list)          # free-form scope chips
+    tags: list[str] = field(default_factory=list)  # free-form scope chips
     env: dict[str, str] = field(default_factory=dict)
     parent: str | None = None
-    pid: int | None = None                                 # provenance only (C1)
+    pid: int | None = None  # provenance only (C1)
     attached_to: list[Location] = field(default_factory=list)
     created_at: float | None = None
     ended_at: float | None = None
@@ -213,6 +229,16 @@ class Session:
     schema_version: int = SCHEMA_VERSION
 
     # ----- behavior -------------------------------------------------------------------------
+
+    @property
+    def tmux_name(self) -> str:
+        # AINote:Don't add such a long explanation. No comment is needed here.
+        """The name tmux knows this session by — the target of every tmux call (never `name`). A
+        PROCESS is named by its immutable, collision-free `id`, so `name` is a pure store-owned
+        display label (rename is a store-only write, no rename-session) and worker names are
+        unconstrained by tmux. A VIEW keeps its human `name`: it is a home the user navigates
+        through native tmux chrome (choose-tree / prefix+s), which only ever shows the raw name."""
+        return self.id if self.kind == Kind.PROCESS else self.name
 
     def is_alive(self) -> bool:
         """Whether the *record* is in a non-terminal state. NOTE: this reflects recorded state,
@@ -248,7 +274,14 @@ class Session:
             return True
         needle = query.lower()
         haystack = " ".join(
-            [self.name, self.role.value, self.kind.value, self.state.value, self.cwd, *self.tags]
+            [
+                self.name,
+                self.role.value,
+                self.kind.value,
+                self.state.value,
+                self.cwd,
+                *self.tags,
+            ]
         ).lower()
         return needle in haystack
 
@@ -301,7 +334,9 @@ class Session:
             env=dict(data["env"]),
             parent=data["parent"],
             pid=data["pid"],
-            attached_to=[Location.from_dict(location) for location in data["attached_to"]],
+            attached_to=[
+                Location.from_dict(location) for location in data["attached_to"]
+            ],
             created_at=data["created_at"],
             ended_at=data["ended_at"],
             last_activity=data["last_activity"],

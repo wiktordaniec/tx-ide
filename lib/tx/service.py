@@ -20,7 +20,7 @@ import uuid
 from . import claude
 from .events import EventLog
 from .reconcile import Reconciler
-from .session import ChatRef, Origin, Session, State
+from .session import ChatRef, Kind, Origin, Session, State
 from .spawn import SpawnSpec
 from .store import SessionStore
 from .tmux import Tmux, format_envelope
@@ -68,18 +68,27 @@ class SessionService:
     def spawn_view(self, spec: SpawnSpec) -> Session:
         session = self._spawn(spec)
         # A view is a home base the user lives in: turn on its status bar and put pane borders at
-        # window-top so nested panes get a labelled border (mirrors the old cmd_spawn_view).
-        self.tmux.set_option(spec.name, "status", "on")
-        self.tmux.set_window_option(spec.name, "pane-border-status", "top")
+        # window-top so nested panes get a labelled border (mirrors the old cmd_spawn_view). A view
+        # is tmux-named by its human name (tmux_name == name), but key on tmux_name for uniformity.
+        self.tmux.set_option(session.tmux_name, "status", "on")
+        self.tmux.set_window_option(session.tmux_name, "pane-border-status", "top")
         return session
 
     def _spawn(self, spec: SpawnSpec) -> Session:
         """The shared spawn mechanics: create the detached session, set `@tx_id`, persist the
-        record, log once. Liveness/EXITED is handled globally (C2 — see below), not per-session."""
-        if self.tmux.has_session(spec.name):
-            raise SessionExists(f"session '{spec.name}' already exists")
+        record, log once. Liveness/EXITED is handled globally (C2 — see below), not per-session.
 
+        A PROCESS is created in tmux under its `id` (Session.tmux_name), so the human `name` is a
+        free, store-owned display label; a VIEW is created under its human name (navigated via
+        native tmux chrome). Live human-name uniqueness — which used to fall out of tmux's own
+        unique-session-name rule — is now enforced against the store, since for a process tmux only
+        ever sees the collision-free id."""
         session_id = str(uuid.uuid4())
+        tmux_name = session_id if spec.kind == Kind.PROCESS else spec.name
+        self._require_name_free(spec.name)
+        if self.tmux.has_session(tmux_name):
+            raise SessionExists(f"session '{tmux_name}' already exists")
+
         now = time.time()
         launch_env = {"TX_SESSION_ID": session_id, **spec.env}
         chats: list[ChatRef] = []
@@ -96,8 +105,8 @@ class SessionService:
             ))
 
         parent = self.tmux.current_session_name()
-        pid = self.tmux.new_session(name=spec.name, cwd=spec.cwd, command=spec.cmd, env=launch_env)
-        self.tmux.set_tx_id(spec.name, session_id)
+        pid = self.tmux.new_session(name=tmux_name, cwd=spec.cwd, command=spec.cmd, env=launch_env)
+        self.tmux.set_tx_id(tmux_name, session_id)
         # C2 (revised, measured on tmux 3.6a): NO per-session `session-closed` hook is registered
         # here. A session's OWN `session-closed` hook does not fire at its own close on 3.6a —
         # instead a surviving SIBLING's hook fires, carrying the sibling's uuid, so a per-session
@@ -126,14 +135,23 @@ class SessionService:
         self.log.append("spawn", f"{spec.name} [{spec.role.value}] {spec.cwd}")
         return session
 
+    def _require_name_free(self, name: str) -> None:
+        """Refuse a spawn/rename onto a display name a LIVE record already holds — the human-name
+        uniqueness that used to fall out of tmux's unique-session-name rule (now that a process is
+        tmux-named by its id, tmux no longer enforces it, so name resolution stays unambiguous).
+        Reconcile first so a vanished session's stale record does not block reuse (D7)."""
+        self.reconcile()
+        if any(s.name == name and s.is_alive() for s in self.store.all()):
+            raise SessionExists(f"session '{name}' already exists")
+
     # ----- lifecycle -----------------------------------------------------------------------
 
     def kill(self, name_or_id: str) -> Session:
         """End the tmux session (if live) and mark the record EXITED. Idempotent with the
         `session-closed` hook the kill triggers — whichever runs second is a no-op transition."""
         session = self._require(name_or_id)
-        if self.tmux.has_session(session.name):
-            self.tmux.kill_session(session.name)
+        if self.tmux.has_session(session.tmux_name):
+            self.tmux.kill_session(session.tmux_name)
         if session.transition_to(State.EXITED):
             session.ended_at = time.time()
             session.attached_to = []
@@ -166,24 +184,26 @@ class SessionService:
     def tag(self, name_or_id: str, tags: list[str]) -> Session:
         session = self._require(name_or_id)
         session.tags = list(tags)
-        session.attached_to = self.tmux.attached_to(session.name)  # ride-along snapshot (§4)
+        session.attached_to = self.tmux.attached_to(session.tmux_name)  # ride-along snapshot (§4)
         self.store.save(session)
         self.log.append("tag", f"{session.name} {','.join(tags)}")
         return session
 
     def rename(self, name_or_id: str, new_name: str) -> Session:
-        """Rename the tmux session and the record together. `@tx_id` rides along (rename-session
-        keeps the same session), so the record stays linked and liveness tracking is unbroken —
-        liveness is the global id-less `session-closed` hook + reconcile-on-read, not a per-session
-        hook that a rename could strand."""
+        """Rename a session's DISPLAY name. For a PROCESS this is a pure store write — tmux names it
+        by its (unchanging) id, so nothing moves in tmux and the pane border reflects the new name
+        on its next ≤1s refresh. A VIEW is tmux-named by its human name, so its tmux session is
+        renamed too. `@tx_id` is untouched either way, so the record link + liveness tracking are
+        unbroken (liveness is the global id-less `session-closed` hook + reconcile-on-read)."""
         session = self._require(name_or_id)
-        if self.tmux.has_session(new_name):
-            raise SessionExists(f"session '{new_name}' already exists")
         previous = session.name
-        if self.tmux.has_session(previous):
+        if new_name == previous:
+            return session
+        self._require_name_free(new_name)
+        if session.kind == Kind.VIEW and self.tmux.has_session(previous):
             self.tmux.rename_session(previous, new_name)
         session.name = new_name
-        session.attached_to = self.tmux.attached_to(new_name)  # ride-along snapshot (§4)
+        session.attached_to = self.tmux.attached_to(session.tmux_name)  # ride-along snapshot (§4)
         self.store.save(session)
         self.log.append("rename", f"{previous} → {new_name}")
         return session
@@ -205,7 +225,7 @@ class SessionService:
             session.last_activity = now  # turn start — the C5 stuck-WORKING clock
         if new_state.is_terminal:
             session.ended_at = now
-        session.attached_to = [] if new_state.is_terminal else self.tmux.attached_to(session.name)
+        session.attached_to = [] if new_state.is_terminal else self.tmux.attached_to(session.tmux_name)
         self.store.save(session)
         self.log.append("state", f"{session.name} → {new_state.value}")
         return True
@@ -215,16 +235,22 @@ class SessionService:
     def send_message(self, target: str, body: str) -> None:
         """Peer-message another session: wrap the body in the `<from-claude session="…">` envelope,
         type it into the target's active pane, pause, then send Enter (Claude Code's input box
-        drops an Enter that arrives too fast — COMMON.md)."""
-        if not self.tmux.has_session(target):
+        drops an Enter that arrives too fast — COMMON.md). Both ends resolve through the store: the
+        user addresses a PROCESS by its human name but tmux targets it by id, and the envelope must
+        carry the sender's human name, not the raw `#S` (which is the sender's id for a worker)."""
+        record = self._resolve(target)
+        if record is None or not self.tmux.has_session(record.tmux_name):
             raise SessionNotFound(f"target session '{target}' does not exist")
-        sender = self.tmux.current_session_name()
-        if sender is None:
+        current = self.tmux.current_session_name()
+        if current is None:
             raise NotInsideTmux("send-message must run inside tmux (needs the sender session name)")
-        self.tmux.send_keys(target, f'<from-claude session="{sender}">{body}</from-claude>')
+        sender = self._resolve(current)
+        sender_name = sender.name if sender is not None else current
+        envelope = f'<from-claude session="{sender_name}">{body}</from-claude>'
+        self.tmux.send_keys(record.tmux_name, envelope)
         time.sleep(0.3)
-        self.tmux.send_keys(target, "Enter")
-        self.log.append("send-message", f"→ {target}")
+        self.tmux.send_keys(record.tmux_name, "Enter")
+        self.log.append("send-message", f"→ {record.name}")
 
     # ----- reads ---------------------------------------------------------------------------
 
@@ -241,7 +267,7 @@ class SessionService:
         attachment = self.tmux.attachment_map()
         live = [session for session in self.store.all() if session.is_alive()]
         for session in live:
-            session.attached_to = attachment.get(session.name, [])
+            session.attached_to = attachment.get(session.tmux_name, [])
         return live
 
     def get(self, name_or_id: str) -> Session | None:

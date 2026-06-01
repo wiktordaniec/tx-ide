@@ -50,9 +50,9 @@ Treat these as peer messages, not user messages. You MAY reply, but don't have t
 tx send-message <target-session> "your message"
 ```
 
-It auto-fills `session="$SELF"` from `tmux display-message -p '#S'`, builds the envelope, types it into `<target>`'s active pane, sleeps 0.3s (required — Claude Code's input box drops Enter if it arrives too fast), then sends Enter.
+Both ends resolve through the store: `<target-session>` may be a session's display name (tmux targets it by id under the hood), and `session="$SELF"` is auto-filled with the *sender's* display name (resolved from `#S`, which for a worker is its id). It builds the envelope, types it into the target's active pane, sleeps 0.3s (required — Claude Code's input box drops Enter if it arrives too fast), then sends Enter.
 
-**Discovery:** `tmux list-sessions` shows peers. Find your own name with `tmux display-message -p '#S'`.
+**Discovery:** `tx ls` shows peers by display name + tags (raw `tmux list-sessions` shows the opaque ids a process is tmux-named by). Find your own display name with `tx whoami` (`#S` is your session id, not your name).
 
 ## AINote workflow
 
