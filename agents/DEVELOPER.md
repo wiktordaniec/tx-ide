@@ -23,7 +23,7 @@ You must have already read `agents/COMMON.md` — those conventions apply to you
 6. **After the PR is open, spawn an nvim companion showing the diff** so the user can review without context-switching:
 
    ```bash
-   SELF=$(tmux display-message -p '#S')
+   SELF=$(tx whoami)   # your display name (#S is your id — a process is tmux-named by its id)
    BASE=$(gh pr view --json baseRefName --jq .baseRefName)
    tx spawn-nvim "$SELF-diff" --tag "nvim,$SELF" --cwd <worktree-path> --diff "$BASE"
    ```

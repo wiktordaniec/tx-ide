@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Print the tmux session attached inside the given pane (when the pane is
-# running a nested `tmux attach`), else the pane's own session name. Appends
-# the session's tags (from the durable store, resolved via @tx_id) as bracketed
-# chips when set.
-# Used by the tx-ide tmux fragment for pane-border-format so an aggregator
-# pane shows the program/session it's hosting rather than the outer name.
+# Print the DISPLAY name of the session attached inside the given pane (when the
+# pane is running a nested `tmux attach`), else a dim placeholder. The name is the
+# store-owned label resolved from the durable record via @tx_id — NOT the raw tmux
+# session name, since a PROCESS is tmux-named by its id (the human name lives only
+# in the record). Appends the record's tags as bracketed chips.
+# Used by the tx-ide tmux fragment for pane-border-format so an aggregator pane
+# shows the session it is hosting rather than the outer name.
 #
-# Honors a `@remote-session` pane override — set by tx when ssh-attaching
-# a remote tmux, since list-clients cannot see the remote client over ssh.
-# Tags are skipped for the remote case (would require an ssh round-trip per
-# refresh).
+# Honors a `@remote-session` pane override — set by tx when ssh-attaching a remote
+# tmux, since list-clients cannot see the remote client over ssh. Name + tags both
+# come from the override there (no store lookup — it would need an ssh round-trip
+# per refresh).
 set -e
 
 SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
@@ -27,12 +28,22 @@ if [[ -n "$override" ]]; then
   exit 0
 fi
 
-print_tags() {
-  local session="$1" id tag part color
+# Render the inner session's store-owned display name (bold) followed by its tag chips, from ONE
+# `_pane-info` read — a single Python launch on the ~1 Hz (status-interval) render path. `$1` is the
+# inner session's tmux name (an id for a PROCESS, a human name for a VIEW), used ONLY to resolve
+# @tx_id → the record. Falls back to that raw tmux name when the pane hosts an untracked session (no
+# @tx_id) or its record is absent, so the border never goes blank. Two read -r's (not `mapfile`,
+# which macOS bash 3.2 lacks); `_pane-info` always emits exactly two lines (name, tags).
+render_inner() {
+  local session="$1" id name="" tag="" part color
   local -a parts
-  id=$(tmux show-options -vqt "$session" @tx_id 2>/dev/null) || return 0
-  [[ -z "$id" ]] && return 0
-  tag=$("$TX" _pane-tags "$id" 2>/dev/null) || return 0
+  id=$(tmux show-options -vqt "$session" @tx_id 2>/dev/null) || id=""
+  if [[ -z "$id" ]]; then
+    printf '#[bold]%s#[default]' "$session"
+    return 0
+  fi
+  { IFS= read -r name; IFS= read -r tag; } < <("$TX" _pane-info "$id" 2>/dev/null) || true
+  printf '#[bold]%s#[default]' "${name:-$session}"
   [[ -z "$tag" ]] && return 0
   IFS=',' read -ra parts <<<"$tag"
   for part in "${parts[@]}"; do
@@ -52,8 +63,7 @@ inner=$(tmux list-clients -F '#{client_tty} #{client_session}' 2>/dev/null |
   awk -v t="$pane_tty" '$1==t {print $2; exit}')
 
 if [[ -n "$inner" ]]; then
-  printf '#[bold]%s#[default]' "$inner"
-  print_tags "$inner"
+  render_inner "$inner"
 else
   printf '#[fg=colour240,nobold]—#[default]'
 fi

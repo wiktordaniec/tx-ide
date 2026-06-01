@@ -396,7 +396,7 @@ class ChatOps:
                 f"Your task brief is at {brief_path} — read it and begin. Fuller predecessor history, "
                 f"only if the brief is insufficient: {bundle}/ ."
             )
-        self._seed(worker.name, seed)
+        self._seed(worker.tmux_name, seed)
         self.service.log.append("handover-finish", f"{worker_name} (chat {worker_chat[:8]})")
         return worker
 
@@ -501,9 +501,9 @@ class ChatOps:
         `$TMUX_PANE` only when it is the target's own session — `tx rollover <other>` runs in the
         caller's pane, not the target's."""
         pane_env = os.environ.get("TMUX_PANE")
-        if pane_env and self.service.tmux.current_session_name() == record.name:
+        if pane_env and self.service.tmux.current_session_name() == record.tmux_name:
             return pane_env
-        pane = self.service.tmux.display_message("#{pane_id}", target=record.name)
+        pane = self.service.tmux.display_message("#{pane_id}", target=record.tmux_name)
         if pane is None:
             raise ServiceError(f"rollover: could not resolve a pane for '{record.name}'")
         return pane
@@ -547,7 +547,7 @@ class ChatOps:
         the throwaway distiller), then seed it with the inline distill/summarize prompt (CHD4)."""
         spec = SpawnSpec.for_process(name=name, tags=[DISTILLER_TAG], cwd=cwd, cmd=DISTILLER_COMMAND)
         distiller = self.service.spawn(spec)
-        self._seed(distiller.name, seed)
+        self._seed(distiller.tmux_name, seed)
         return distiller
 
     def _seed(self, target: str, prompt: str) -> None:
@@ -583,13 +583,17 @@ class ChatOps:
         )
 
     def _unique_name(self, base: str) -> str:
-        """A tmux-unique session name: `base`, else `base-2`, `-3`, … (tmux names must be unique
-        among live sessions, §9). An explicit name that clashes still gets suffixed."""
-        if not self.service.tmux.has_session(base):
+        """A display name no LIVE record holds: `base`, else `base-2`, `-3`, … A worker is tmux-
+        named by its id, so tmux no longer enforces name uniqueness (§9) — it is enforced against
+        the store instead, keeping name resolution unambiguous. An explicit clash still gets
+        suffixed."""
+        self.service.reconcile()
+        taken = {session.name for session in self.service.store.all() if session.is_alive()}
+        if base not in taken:
             return base
         for suffix in range(2, 100):
             candidate = f"{base}-{suffix}"
-            if not self.service.tmux.has_session(candidate):
+            if candidate not in taken:
                 return candidate
         raise ServiceError(f"could not find a free session name based on '{base}'")
 

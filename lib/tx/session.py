@@ -195,7 +195,7 @@ class Session:
     """
 
     id: str                     # uuid, primary key (the record file name)
-    name: str                   # tmux session name (reusable across non-concurrent sessions, D7)
+    name: str                   # human display name; tmux names a PROCESS by `id` (see tmux_name), D7
     kind: Kind
     role: Role
     state: State
@@ -213,6 +213,15 @@ class Session:
     schema_version: int = SCHEMA_VERSION
 
     # ----- behavior -------------------------------------------------------------------------
+
+    @property
+    def tmux_name(self) -> str:
+        """The name tmux knows this session by — the target of every tmux call (never `name`). A
+        PROCESS is named by its immutable, collision-free `id`, so `name` is a pure store-owned
+        display label (rename is a store-only write, no rename-session) and worker names are
+        unconstrained by tmux. A VIEW keeps its human `name`: it is a home the user navigates
+        through native tmux chrome (choose-tree / prefix+s), which only ever shows the raw name."""
+        return self.id if self.kind == Kind.PROCESS else self.name
 
     def is_alive(self) -> bool:
         """Whether the *record* is in a non-terminal state. NOTE: this reflects recorded state,

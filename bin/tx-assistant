@@ -49,9 +49,13 @@ build_envelope() {
   "$repo/bin/tx" focus-envelope "$target_pane" 2>/dev/null || true
 }
 
+# The assistant is a PROCESS, so its tmux session is named by its id (Session.tmux_name), not by
+# `tx-assistant` — resolve the live tmux target (the id) through tx rather than targeting the human
+# name. Sets the globals `state` (existed|created) and `target` (the tmux id, "" if unresolved).
 ensure_session() {
-  if tmux has-session -t "=$session" 2>/dev/null; then
-    echo existed
+  target=$("$repo/bin/tx" _tmux-name "$session" 2>/dev/null)
+  if [ -n "$target" ]; then
+    state=existed
     return
   fi
   local claude_cmd="claude --model sonnet --effort low --dangerously-skip-permissions"
@@ -61,21 +65,28 @@ ensure_session() {
   # (claude → llm); parent is the firing session. Call this checkout's tx so it tracks the
   # installed code regardless of $PATH.
   "$repo/bin/tx" spawn "$session" --tag tx-system --cwd "$repo" --cmd "$claude_cmd" >/dev/null
+  target=$("$repo/bin/tx" _tmux-name "$session" 2>/dev/null)
   # Wait for claude's input box to render (its prefix char is `❯`, not `>`).
   for _ in $(seq 1 20); do
-    tmux capture-pane -p -t "$session" 2>/dev/null | grep -q '❯ ' && break
+    tmux capture-pane -p -t "$target" 2>/dev/null | grep -q '❯ ' && break
     sleep 0.5
   done
-  echo created
+  state=created
 }
 
-state=$(ensure_session)
+state=""
+target=""
+ensure_session
+if [ -z "$target" ]; then
+  printf 'tx-assistant: could not resolve the assistant session\n' >&2
+  exit 1
+fi
 
 if [ "$warm_only" -eq 1 ]; then
   if [ "$state" = created ]; then
-    tmux send-keys -t "$session" -l -- "$priming"
+    tmux send-keys -t "$target" -l -- "$priming"
     sleep 0.3
-    tmux send-keys -t "$session" Enter
+    tmux send-keys -t "$target" Enter
   fi
   exit 0
 fi
@@ -87,7 +98,7 @@ if [ "$state" = created ]; then
   input="$priming Now: $input"
 fi
 
-tmux send-keys -t "$session" -l -- "$input"
+tmux send-keys -t "$target" -l -- "$input"
 sleep 0.3
-tmux send-keys -t "$session" Enter
+tmux send-keys -t "$target" Enter
 exit 0
