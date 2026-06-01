@@ -39,7 +39,12 @@ def _chips(tags: list[str]) -> str:
 
 # LOCATION column (attachment-topology §5): the primary `window[pane]` + a `+N` overflow. The width
 # is shared with cli.py's picker header so the column lines up under it; `tx ls` reuses it too.
-LOCATION_W = 12
+# `location_text` hard-caps the cell to this width — clipping the window name with `…` but keeping
+# the `[pane] +N` tail whole — so an unbounded window name can't overrun the cell and wrap the picker
+# row. Widened 12→25; the extra columns are funded by the `display-popup -w` bump in
+# tmux/tx-ide.tmux (which outpaces the overhead, leaving NAME ~5 cols more headroom too), so NAME
+# cedes nothing.
+LOCATION_W = 25
 
 # ROLE column — the session's role (llm/nvim/shell/other) surfaced in the picker so the kind of a
 # session reads at a glance without stuffing it into `tags`. Width fits the longest value
@@ -51,14 +56,21 @@ ROLE_W = 5
 def location_text(locations: list[Location]) -> str:
     """The LOCATION cell (attachment-topology §5): the primary pane as `window[pane]`, suffixed `+N`
     when the session is surfaced in more than one pane; `—` when attached nowhere. Primary = first in
-    the stable order `attachment_map` already sorts by, so the cell never flickers across reloads."""
+    the stable order `attachment_map` already sorts by, so the cell never flickers across reloads.
+
+    Hard-capped to `LOCATION_W`: window names are user-controlled and unbounded, so when the cell
+    would overrun, only the window name is clipped (trailing `…`) while the `[pane]` index and the
+    `+N` overflow — the parts you navigate by — are kept whole. That cap is what stops a long window
+    name from pushing the picker row past the popup width and wrapping it."""
     if not locations:
         return "—"
     primary = locations[0]
-    cell = f"{primary.window_name}[{primary.pane_index}]"
-    if len(locations) > 1:
-        cell += f" +{len(locations) - 1}"
-    return cell
+    suffix = f" +{len(locations) - 1}" if len(locations) > 1 else ""
+    tail = f"[{primary.pane_index}]{suffix}"  # the `[pane] +N` part — always kept whole
+    name = primary.window_name
+    if len(name) + len(tail) > LOCATION_W:
+        name = name[: LOCATION_W - len(tail) - 1] + "…"
+    return f"{name}{tail}"
 
 
 def _by_recent_activity(sessions: list[Session]) -> list[Session]:
@@ -84,10 +96,12 @@ def render_ls(sessions: list[Session], now: float | None = None) -> str:
 
 # ----- fzf picker feed (S1b) ---------------------------------------------------------------------
 
-# Width budget past the NAME column: 3-space gap + LOCATION + 7 STARTED + 1 + 6 IDLE + 1 + 5 ROLE +
-# ~14 tag chips + ~2 fzf gutter (the old bash `compute_namew` overhead, plus S6's LOCATION column and
-# the ROLE column). Names are truncated to fit; floor 12, ceiling 60.
-_NAMEW_OVERHEAD = 52
+# Width budget past the NAME column: 3-space gap + 25 LOCATION + 7 STARTED + 1 + 6 IDLE + 1 + 5 ROLE
+# + ~14 tag chips + ~2 fzf gutter (the old bash `compute_namew` overhead, plus S6's LOCATION column
+# and the ROLE column). Tracks `LOCATION_W` (now 25). The `display-popup -w 118` bump in
+# tmux/tx-ide.tmux outpaces this overhead, so NAME's cap (`cols - overhead` = 53 in the popup) gains
+# ~5 cols too. Names truncated to fit; floor 12, ceiling 60.
+_NAMEW_OVERHEAD = 65
 _NAMEW_FLOOR = 12
 _NAMEW_CEILING = 60
 
