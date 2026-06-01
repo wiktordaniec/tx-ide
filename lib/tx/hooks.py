@@ -7,19 +7,27 @@
 state-transition rules (C3 terminal guard, C4 dirty-check, the last_activity clock) live in
 `record_state`, so the contract here is just *which event maps to which state*.
 
-The event→state table (tx-service-redesign.md §5 + C6):
+The event→state table (tx-service-redesign.md §5 + C6), broadened to the full Claude hook set so a
+missed edge self-heals — only the three live states WORKING / WAITING / IDLE are used (§2):
 
-| `tx hook` event  | Claude hook                     | effect                                       |
-|------------------|---------------------------------|----------------------------------------------|
-| `prompt-submit`  | UserPromptSubmit                | `state = WORKING` (+ bump last_activity)     |
-| `stop`           | Stop **and** PermissionRequest  | `state = WAITING` — needs you (C6) + ingest  |
-| `session-end`    | SessionEnd                      | `state = IDLE` (NOT exited — §2) + ingest    |
+| `tx hook` event | Claude hook(s)                                                        | state   |
+|-----------------|-----------------------------------------------------------------------|---------|
+| `prompt-submit` | UserPromptSubmit                                                      | WORKING |
+| `working`       | PreToolUse, PostToolUse, PostToolUseFailure, SubagentStart, PreCompact | WORKING |
+| `stop`          | Stop, StopFailure, PermissionRequest                                  | WAITING |
+| `notification`  | Notification — idle_prompt / permission_prompt / elicitation_dialog   | WAITING |
+| `session-end`   | SessionEnd                                                            | IDLE    |
 
-A `stop` / `session-end` ALSO fires history ingest (§11, S3): the per-turn mirror on Stop, the
-final one on SessionEnd. Ingest runs DETACHED — `_trigger_ingest` re-invokes the hidden `ingest`
-pseudo-event (`tx hook ingest <tx-id>`) in a new session — so it never lengthens the turn (C7's
-`timeout:10` is comfortably met). The `ingest` event is not state-driven; it is dispatched before
-the state arm and does only the bundle copy (`history.ingest_session`).
+WORKING is reaffirmed continuously (the whole `working` family), so a missed UserPromptSubmit
+self-heals on the first tool call. WAITING is backstopped by `notification` (idle_prompt) for the
+cases where `Stop` never fires — a user interrupt (ESC) or an API-error turn end (StopFailure) — and
+Claude re-fires idle_prompt ~60s while the terminal is unfocused (tx workers always are).
+
+A real transition INTO WAITING / IDLE ALSO fires a history-ingest mirror (§11, S3) — keyed on the
+transition, not the event, so a re-fired idle_prompt never re-mirrors. Ingest runs DETACHED —
+`_trigger_ingest` re-invokes the hidden `ingest` pseudo-event (`tx hook ingest <tx-id>`) in a new
+session — so it never lengthens the turn (C7's `timeout:10` is comfortably met). The `ingest` event
+is not state-driven; it is dispatched before the state arm and does only the bundle copy.
 
 `Stop` and `PermissionRequest` are wired to the SAME shim by the installer (both → `post.sh` →
 `tx hook stop`), so C6 ("a permission-blocked session is waiting on you") needs no separate arm
@@ -46,6 +54,7 @@ holds a null-id placeholder, and the hook fills the id by resolving the newest u
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -60,19 +69,37 @@ from .session import ChatRef, Origin, Session, State
 # fired this", surviving the multi-pane / detached cases a `display-message` lookup would muddle.
 SESSION_ID_ENV = "TX_SESSION_ID"
 
-# Claude hook event (as named on the `tx hook` command line) → the state it records. Stop and
-# PermissionRequest share the `stop` event (the installer points both at one shim), so C6 is folded
-# in here rather than carried as a distinct event.
+# `tx hook` event (as named on the command line by each shim) → the state it records, collapsed to
+# the three live states (WORKING / WAITING / IDLE, §2). peon-ping's richer vocabulary
+# (working / done / needs-approval / idle / …) maps onto these. WORKING is reaffirmed by the whole
+# `working` family (PreToolUse, PostToolUse, PostToolUseFailure, SubagentStart, PreCompact), so a
+# missed UserPromptSubmit self-heals on the first tool call. `notification` is NOT in this table — it
+# is payload-dependent (resolved in `_state_for_event` / `_notification_is_yield`).
 STATE_FOR_EVENT: dict[str, State] = {
     "prompt-submit": State.WORKING,
+    "working": State.WORKING,
     "stop": State.WAITING,
     "session-end": State.IDLE,
 }
 
-# Events that ALSO fire a history-ingest mirror (§11 / chat-ops §3.3): every Stop is the per-turn
-# "on change" mirror, SessionEnd is the final one. The mirror runs DETACHED (`_trigger_ingest`), so
-# adding it here never lengthens the turn. prompt-submit is excluded — nothing new has landed yet.
-INGEST_EVENTS: frozenset[str] = frozenset({"stop", "session-end"})
+# Turn-boundary events that establish / complete a chat → run the (idempotent) ChatRef capture. The
+# high-frequency `working` reaffirmations and `notification` skip it (the chat is settled by then,
+# and running the load + project-dir glob on every PreToolUse would be pure waste).
+CHAT_REF_EVENTS: frozenset[str] = frozenset({"prompt-submit", "stop", "session-end"})
+
+# A real transition INTO one of these mirrors history (§11 / chat-ops §3.3): a turn ended (WAITING)
+# or the session ended (IDLE). Keyed on the resulting state + an actual transition (not the event),
+# so a re-fired idle_prompt never re-mirrors, and a missed Stop we learn of via idle_prompt still
+# does. The mirror runs DETACHED (`_trigger_ingest`), so it never lengthens the turn.
+INGEST_STATES: frozenset[State] = frozenset({State.WAITING, State.IDLE})
+
+# `Notification` subtypes that mean "the agent yielded — needs you" → WAITING. idle_prompt is the
+# missed-Stop backstop (Claude re-fires it ~60s while the terminal is unfocused, and tx workers are
+# detached tmux panes — always unfocused). The rest (auth_success, elicitation_complete/response) are
+# resume signals, not yields, so they are ignored.
+WAITING_NOTIFICATION_TYPES: frozenset[str] = frozenset(
+    {"idle_prompt", "permission_prompt", "elicitation_dialog"}
+)
 
 
 def dispatch(service: SessionService, argv: list[str]) -> int:
@@ -98,29 +125,63 @@ def dispatch(service: SessionService, argv: list[str]) -> int:
     if not session_id:
         return 0  # D4: hand-started session, no id baked → tx does not track it.
 
-    state = STATE_FOR_EVENT.get(event)
+    # The state this event records. `notification` needs the payload to tell a yield (idle / needs
+    # permission / question → WAITING) from a resume signal (auth ok / elicitation done → ignore), so
+    # it reads stdin; every other event maps by name alone. None → unknown / non-yield → no-op.
+    state = _state_for_event(event)
     if state is None:
-        return 0  # Unknown event (e.g. a future hook wired before its arm exists) → no-op.
+        return 0
 
-    # Origin-aware ChatRef capture (CHD6/F6) runs on EVERY state event (idempotent). prompt-submit
-    # sets it up; the post-first-prompt **Stop** is the load-bearing moment — on claude ≥2.1 a fork's
-    # transcript is written lazily on the first prompt (NOT at startup as chat-ops §1 #8 measured on
-    # 2.0.76), so the file a fork's null-id placeholder needs only exists by Stop. Capture runs BEFORE
-    # ingest so the filled id is on the record when the Stop mirror reads `session.chats`. Guarded:
-    # this does extra disk I/O (record load/save + a project-dir glob) and a hook must never fail a
-    # Claude turn (the contract above) — chat.py's synchronous write and the next event both backstop.
-    try:
-        _capture_chat_ref(service, session_id)
-    except Exception:
-        pass
+    # Origin-aware ChatRef capture (CHD6/F6) — only on the turn-boundary events that establish or
+    # complete a chat, NOT on the high-frequency `working` reaffirmations / `notification`. The
+    # post-first-prompt **Stop** is the load-bearing moment — on claude ≥2.1 a fork's transcript is
+    # written lazily on the first prompt — so capture runs BEFORE ingest, and is guarded because a
+    # hook must never fail a Claude turn (chat.py's synchronous write and the next event backstop it).
+    if event in CHAT_REF_EVENTS:
+        try:
+            _capture_chat_ref(service, session_id)
+        except Exception:
+            pass
 
-    # No-op when the id isn't in this home's store (D4 — old-tx / other-home session) or the record
-    # is already terminal (C3); `record_state` reports both as False, which the hook ignores.
-    service.record_state(session_id, state)
+    # No-op when the id isn't ours (D4), the record is terminal (C3), or the state is unchanged (a
+    # `working` reaffirmation / a re-fired idle_prompt) — `record_state` reports all of these as False.
+    changed = service.record_state(session_id, state)
 
-    if event in INGEST_EVENTS:
+    if changed and state in INGEST_STATES:
         _trigger_ingest(session_id)
     return 0
+
+
+def _state_for_event(event: str) -> State | None:
+    """Map a `tx hook` event to the state it records. `notification` is payload-dependent (only the
+    yield subtypes count); every other event is a static name → state lookup (`STATE_FOR_EVENT`)."""
+    if event == "notification":
+        return State.WAITING if _notification_is_yield() else None
+    return STATE_FOR_EVENT.get(event)
+
+
+def _notification_is_yield() -> bool:
+    """Whether a `Notification` means the agent yielded and needs you, from its `notification_type`
+    (the `notify` shim passes the payload through on stdin). See `WAITING_NOTIFICATION_TYPES`."""
+    return _read_payload().get("notification_type", "") in WAITING_NOTIFICATION_TYPES
+
+
+def _read_payload() -> dict:
+    """Parse the hook's JSON payload from stdin, tolerantly — `{}` for no payload / unreadable / bad
+    JSON. Only the `notify` shim leaves stdin connected; the others drain it (`cat >/dev/null`) and
+    the tmux / ingest paths have none. A hook must never fail a turn, so any error degrades to `{}`
+    (treated as a non-yield). `json.JSONDecodeError` is a `ValueError` subclass, so one except covers
+    both."""
+    try:
+        raw = sys.stdin.read().strip()
+    except Exception:
+        return {}
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return {}
 
 
 def _capture_chat_ref(service: SessionService, session_id: str) -> None:
