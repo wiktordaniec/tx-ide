@@ -25,9 +25,9 @@ You must have already read `agents/COMMON.md` — those conventions apply to you
    ```bash
    SELF=$(tx whoami)   # your display name (#S is your id — a process is tmux-named by its id)
    BASE=$(gh pr view --json baseRefName --jq .baseRefName)
-   tx spawn-nvim "$SELF-diff" --tag "nvim,$SELF" --cwd <worktree-path> --diff "$BASE"
+   tx spawn-nvim "$SELF-diff" --tag "$SELF" --cwd <worktree-path> --diff "$BASE"
    ```
 
-   The tag pins your worker's session name on the companion so both surface together when the user filters by it in `tx attach`.
+   The tag is your worker's session name as the companion's scope, so both surface together when the user filters by it in `tx attach`. The companion's `nvim` role is derived from its launch command — it is never a tag.
 
 Worktree convention: `.claude/worktrees/<session-name>` inside the repo.
