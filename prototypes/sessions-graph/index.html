@@ -1083,6 +1083,29 @@ $("zoom").addEventListener("input", (e) => { zoom = parseFloat(e.target.value); 
 $("fit").addEventListener("click", () => {
   zoom = 1; $("zoom").value = "1"; applyZoom(); centerView();
 });
+
+// Over the canvas the wheel zooms toward the pointer (Figma-style) instead of scrolling the
+// container: pin the world point under the cursor, rescale, then re-derive scroll so that point
+// stays put. macOS pinch arrives here as a ctrl+wheel event, so it zooms naturally too. Reads the
+// slider's own min/max so the two share one range, and writes the slider back so its thumb tracks.
+const ZOOM_MIN = parseFloat($("zoom").min), ZOOM_MAX = parseFloat($("zoom").max);
+canvas.addEventListener("wheel", (event) => {
+  event.preventDefault();                                // replace the container's native scroll
+  const rect = canvas.getBoundingClientRect();
+  const vx = event.clientX - rect.left, vy = event.clientY - rect.top;   // cursor within the viewport
+  const worldX = (canvas.scrollLeft + vx) / zoom;        // world point held fixed under the cursor
+  const worldY = (canvas.scrollTop + vy) / zoom;
+  let delta = event.deltaY;                              // fold line / page deltas down to pixels
+  if (event.deltaMode === 1) delta *= 16;
+  else if (event.deltaMode === 2) delta *= canvas.clientHeight;
+  const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom * Math.exp(-delta * 0.0035)));
+  if (next === zoom) return;                              // already railed at min / max — nothing to do
+  zoom = next;
+  applyZoom();                                            // grow / shrink the sizer before re-scrolling
+  canvas.scrollLeft = worldX * zoom - vx;
+  canvas.scrollTop = worldY * zoom - vy;
+  $("zoom").value = zoom;                                 // keep the slider thumb in sync
+}, { passive: false });
 $("shuffle").addEventListener("click", () => {
   pins = {}; savePins();
   for (const node of sim.values()) {
