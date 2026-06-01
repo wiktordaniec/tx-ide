@@ -173,6 +173,24 @@
   .node.ghost { background: transparent; border-style: dashed; cursor: default; }
   .node.ghost:hover { border-color: var(--border); }
 
+  /* "working" = a turn is running. Replicate Claude Code's thinking sparkle: the state dot becomes a
+     slowly-spinning, gently-pulsing green star, so an in-progress session reads as "something is
+     running". Pure transform + opacity — GPU-cheap, no halo (so it neither gets clipped by the card's
+     overflow:hidden nor brings back the glow dropped in fa47dbb). --twk is a per-dot phase offset
+     (set in nodeInner) so a screenful of working dots twinkles out of sync rather than in lockstep. */
+  .node.s-working .dot { background: transparent; display: inline-flex; align-items: center; justify-content: center; }
+  .node.s-working .dot::before {
+    content: "\2733";                       /* ✳ eight-spoked asterisk — the Claude Code sparkle family */
+    color: var(--green); font-size: 18px; line-height: 1;
+    animation: tw-spin 4s linear infinite, tw-pulse 1.6s ease-in-out infinite;
+    animation-delay: var(--twk, 0s), var(--twk, 0s);
+  }
+  @keyframes tw-spin  { to { transform: rotate(360deg); } }
+  @keyframes tw-pulse { 0%, 100% { opacity: .65; } 50% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) {
+    .node.s-working .dot::before { animation: none; opacity: 1; }
+  }
+
   .chips { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 5px; }
   .chip {
     font-size: 10.5px; padding: 1px 6px; border-radius: 999px;
@@ -750,7 +768,12 @@ function nodeInner(dataNode, simNode) {
     const color = (dataNode.derived.tag_colors && dataNode.derived.tag_colors[tag]) || "var(--dim)";
     return `<span class="chip" style="--chip:${color}">${escapeHtml(tag)}</span>`;
   }).join("");
-  return `<div class="row1"><span class="dot"></span>` +
+  // Working dots get a stable per-id phase offset (negative delay → already mid-twinkle on mount), so
+  // many running sessions don't pulse in lockstep. Stable across renders ⇒ doesn't restart on refresh.
+  const dot = dataNode.state === "working"
+    ? `<span class="dot" style="--twk:-${(hashFrac(dataNode.id) * 4).toFixed(2)}s"></span>`
+    : `<span class="dot"></span>`;
+  return `<div class="row1">${dot}` +
          `<span class="name">${escapeHtml(dataNode.name)}</span>${pin}</div>` +
          `<div class="chips">${role}${chips}</div>`;
 }
@@ -880,6 +903,13 @@ function highlightJson(text) {
 
 function escapeHtml(text) {
   return String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+// Stable 0..1 hash of a string — used to give each working dot a fixed twinkle phase offset.
+function hashFrac(text) {
+  let hash = 0;
+  for (let i = 0; i < text.length; i++) hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+  return (hash % 1000) / 1000;
 }
 
 // ---- pin / unpin --------------------------------------------------------------------------------
