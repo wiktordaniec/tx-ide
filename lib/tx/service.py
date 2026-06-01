@@ -20,7 +20,7 @@ import uuid
 from . import claude
 from .events import EventLog
 from .reconcile import Reconciler
-from .session import ChatRef, Kind, Origin, Session, State
+from .session import ChatRef, Kind, Origin, Role, Session, State
 from .spawn import SpawnSpec
 from .store import SessionStore
 from .tmux import Tmux, format_envelope
@@ -91,10 +91,12 @@ class SessionService:
 
         now = time.time()
         launch_env = {"TX_SESSION_ID": session_id, **spec.env}
+        command = spec.cmd
         chats: list[ChatRef] = []
-        if spec.chat:
+        if self._mints_original_chat(spec):
             chat_id = str(uuid.uuid4())
             launch_env["TX_CHAT_ID"] = chat_id
+            command = claude.inject_session_id(command, chat_id)
             chats.append(ChatRef(
                 id=chat_id,
                 role="original",
@@ -105,7 +107,7 @@ class SessionService:
             ))
 
         parent = self.tmux.current_session_name()
-        pid = self.tmux.new_session(name=tmux_name, cwd=spec.cwd, command=spec.cmd, env=launch_env)
+        pid = self.tmux.new_session(name=tmux_name, cwd=spec.cwd, command=command, env=launch_env)
         self.tmux.set_tx_id(tmux_name, session_id)
         # C2 (revised, measured on tmux 3.6a): NO per-session `session-closed` hook is registered
         # here. A session's OWN `session-closed` hook does not fire at its own close on 3.6a —
@@ -122,7 +124,7 @@ class SessionService:
             role=spec.role,
             state=State.initial_for(spec.role),
             cwd=spec.cwd,
-            cmd=spec.cmd,
+            cmd=command,
             tags=list(spec.tags),
             env=dict(spec.env),
             parent=parent,
@@ -134,6 +136,15 @@ class SessionService:
         self.store.save(session)
         self.log.append("spawn", f"{spec.name} [{spec.role.value}] {spec.cwd}")
         return session
+
+    def _mints_original_chat(self, spec: SpawnSpec) -> bool:
+        """Whether this spawn must mint a fresh `original` chat id. Every llm session owns a chat id
+        (mandatory — there is no opt-in flag): a plain `claude` spawn gets one minted here and its
+        command `--session-id`-injected so claude adopts exactly it, which makes the recorded id
+        equal claude's transcript filename. A command that already declares its own chat — fork's
+        `--resume … --fork-session`, handover/rollover/resume's `--session-id` / `--resume` — is
+        skipped (those ops record their own `ChatRef`). A non-llm session never mints."""
+        return spec.role == Role.LLM and not claude.command_declares_chat(spec.cmd)
 
     def _require_name_free(self, name: str) -> None:
         """Refuse a spawn/rename onto a display name a LIVE record already holds — the human-name

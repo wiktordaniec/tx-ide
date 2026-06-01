@@ -7,7 +7,7 @@ These conventions apply to every Claude Code session in this system: the tx-assi
 Use `tx spawn` (bare) and `tx spawn-nvim` (nvim companion). Both require `--tag` and refuse without it — no inheritance, no auto-magic, you pass the tags explicitly.
 
 ```bash
-tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--chat] [--env K=V ...]
+tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
 tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]
 ```
 
@@ -30,7 +30,7 @@ Both inject `COLORTERM=truecolor` and `TERM=xterm-256color`. `spawn-nvim` also f
 
 ## Session metadata
 
-Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` holding its `name`, `kind`, `role`, `tags`, `cwd`, `cmd`, `env`, `parent`, `pid`, and `chats`. One tmux pointer, `@tx_id` (set once at spawn), links the live session to its record, so the record survives a `kill-session` or a tmux restart. Spawning exports `TX_SESSION_ID` into the session; passing `--chat` to `tx spawn` also mints `TX_CHAT_ID` so the command can resume its transcript (e.g. `claude --session-id "$TX_CHAT_ID"`).
+Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` holding its `name`, `kind`, `role`, `tags`, `cwd`, `cmd`, `env`, `parent`, `pid`, and `chats`. One tmux pointer, `@tx_id` (set once at spawn), links the live session to its record, so the record survives a `kill-session` or a tmux restart. Spawning exports `TX_SESSION_ID` into the session; an llm spawn (`claude …`) also mints a chat id and injects it as `--session-id`, so every llm session's transcript is tracked and resumable (`tx resume`) with no extra ceremony — there is no `--chat` flag.
 
 Tags, kind, and role live in the record, not tmux options — read them by resolving `@tx_id`, and change tags through `tx tag <name> [tags]` (or the picker's Ctrl-T), never `tmux set @tag`/`@kind`. `role` (`llm` / `nvim` / `shell` / `other`) is derived from the launch command at spawn — there is no role tag and nothing to set by hand.
 

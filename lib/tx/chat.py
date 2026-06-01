@@ -543,8 +543,10 @@ class ChatOps:
         self.service.store.save(session)
 
     def _spawn_distiller(self, name: str, cwd: str, seed: str) -> Session:
-        """Spawn a temporary interactive claude (tagged `temporary`, no `--chat` — we do not ingest
-        the throwaway distiller), then seed it with the inline distill/summarize prompt (CHD4)."""
+        """Spawn a temporary interactive claude (tagged `temporary`), then seed it with the inline
+        distill/summarize prompt (CHD4). Like every llm session it gets a chat id minted + injected
+        by `_spawn` (mandatory — no opt-out flag); the throwaway bundle that ingests is harmless and
+        stays `temporary`-tagged for GC (exclude `temporary` from minting if it ever becomes noise)."""
         spec = SpawnSpec.for_process(name=name, tags=[DISTILLER_TAG], cwd=cwd, cmd=DISTILLER_COMMAND)
         distiller = self.service.spawn(spec)
         self._seed(distiller.tmux_name, seed)

@@ -55,17 +55,18 @@ class SpawnSpec:
     cmd: str
     tags: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
-    chat: bool = False  # mint a chat id (TX_CHAT_ID) + an "original" ChatRef
 
     @classmethod
     def for_process(
         cls, *, name: str, tags: list[str], cwd: str, cmd: str,
-        env: dict[str, str] | None = None, chat: bool = False,
+        env: dict[str, str] | None = None,
     ) -> SpawnSpec:
-        """A normal worker/agent/shell session (`tx spawn`)."""
+        """A normal worker/agent/shell session (`tx spawn`). An llm command always gets a chat id
+        minted + `--session-id`-injected by `SessionService._spawn` (mandatory, derived from the
+        role) — there is no chat flag to pass."""
         return cls(
             name=name, kind=Kind.PROCESS, role=infer_role(cmd), cwd=cwd, cmd=cmd,
-            tags=list(tags), env=dict(env or {}), chat=chat,
+            tags=list(tags), env=dict(env or {}),
         )
 
     @classmethod

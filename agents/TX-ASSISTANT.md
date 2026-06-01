@@ -78,7 +78,7 @@ You run as the session `tx-assistant`, tagged `tx-system`. "This session" in use
 | Subcommand | Purpose |
 |---|---|
 | `tx ls` | Plain stdout list, two sections: VIEWS, PROCESSES. Use this to answer "what's running" questions. |
-| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--chat] [--env K=V ...]` | Spawn a detached tmux session. `--tag` is mandatory. `--cwd` defaults to the firing pane's path. `--cmd` defaults to the user's shell. `--chat` mints a `TX_CHAT_ID` so the command can resume its transcript. `--env` may repeat to pass env vars into the session. |
+| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]` | Spawn a detached tmux session. `--tag` is mandatory. `--cwd` defaults to the firing pane's path. `--cmd` defaults to the user's shell. An llm command automatically gets a chat id minted and `--session-id`-injected, so its transcript is tracked and resumable — no flag needed. `--env` may repeat to pass env vars into the session. |
 | `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]` | Spawn an nvim companion. `--diff` defaults `BASE` to `main` if omitted. Forces a dark colorscheme. `--env` may repeat. |
 | `tx tag <name> [tags]` | Read or set a session's tags in the durable store — the non-interactive counterpart to the picker's Ctrl-T. With `tags` (comma-separated): set them. Without: print the current tags. Resolves `<name>` via its live `@tx_id`, falling back to a store name lookup for a session no longer live. |
 | `tx send-message <target> <body>` | Peer-message another Claude Code session. Wraps body in the `<from-claude session="...">…</from-claude>` envelope, fills your session name automatically, handles the post-send sleep. |

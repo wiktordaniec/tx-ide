@@ -120,8 +120,6 @@ class SpawnCommand(Command):
         parser.add_argument("--tag", required=True)
         parser.add_argument("--cwd")
         parser.add_argument("--cmd")
-        parser.add_argument("--chat", action="store_true",
-                            help="mint a chat id (TX_CHAT_ID) the command can resume")
         parser.add_argument("--env", action="append", type=_env_pair)
         args = parser.parse_args(argv)
         tags = _split_tags(args.tag)
@@ -129,7 +127,7 @@ class SpawnCommand(Command):
             parser.error("--tag requires at least one value")
         spec = SpawnSpec.for_process(
             name=args.name, tags=tags, cwd=args.cwd or self._default_cwd(),
-            cmd=args.cmd or _default_shell(), env=_parse_env(args.env), chat=args.chat,
+            cmd=args.cmd or _default_shell(), env=_parse_env(args.env),
         )
         session = self.service.spawn(spec)
         print(f"Spawned '{session.name}' (cwd={session.cwd}, tag={args.tag})")
