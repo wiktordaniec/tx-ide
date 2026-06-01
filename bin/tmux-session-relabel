@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+# Refresh @tx_name (display name + tags) on every live session so the labeled prefix+s
+# (choose-tree) shows names instead of uuids — a read-only display mirror the tmux fragment runs
+# just before choose-tree opens (no @tx_name upkeep in the spawn/rename/tag service paths).
+import os
+import sys
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "lib"))
+
+from tx.store import SessionStore  # noqa: E402 — repo lib path is injected above first
+from tx.tmux import Tmux  # noqa: E402
+
+
+def main() -> int:
+    tmux = Tmux()
+    # The set of tmux names that actually exist right now — label only these, so a stale record
+    # (tmux session already gone) is skipped without a failing set-option on a dead target.
+    live = set(tmux.list_sessions("#{session_name}"))
+    for session in SessionStore().all():
+        if session.tmux_name not in live:
+            continue
+        label = session.name
+        if session.tags:
+            label += " [" + ",".join(session.tags) + "]"
+        tmux.set_option(session.tmux_name, "@tx_name", label)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
