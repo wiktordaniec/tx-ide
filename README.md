@@ -24,6 +24,8 @@ holding its `name`, `kind`, `role`, `state`, `cwd`, `cmd`, `tags`, `env`, `paren
 live session to its record, so the record survives a `kill-session` or a tmux restart. Records are
 the single source of truth; `tags` and `kind` are **fields in the record**, not tmux options (read
 them by resolving `@tx_id`, change them through `tx tag` / `tx rename`, never `tmux set @tag`).
+`role` (`llm` / `nvim` / `shell` / `other`) is derived from the launch command at spawn — it is
+shown (its own column in `tx attach`), not set, and never belongs in `tags`.
 
 ### Views vs Processes
 
@@ -48,10 +50,13 @@ stamps vanished sessions `exited` and demotes a stuck `working` session back to 
 
 ### Tags
 
-Tags are free-form scope chips rendered in the picker and on pane borders. The convention is a kind
-tag plus a scope tag: AI workers are `llm,<scope>` (e.g. `llm,auth-review`), nvim companions mirror
-their parent's scope as `nvim,<scope>`. Set them at spawn (`--tag`), non-interactively with
-`tx tag`, or in the picker with `Ctrl-T`.
+Tags are free-form **scope** chips rendered in the picker and on pane borders — nothing else. A
+session's *role* (`llm` / `nvim` / `shell`) is **not** a tag: it is derived from the launch command
+and shown as its own ROLE column in `tx attach`, so never put `llm` / `nvim` / `shell` in `--tag`.
+The convention is just one scope per session — an AI worker tagged `auth-review`, its nvim companion
+tagged the same `auth-review` so the two surface together. Set tags at spawn (`--tag`),
+non-interactively with `tx tag`, or in the picker with `Ctrl-T`. The ROLE column is searchable, so
+filtering by `llm` / `nvim` still works.
 
 ### Chats and chat-operations
 
@@ -128,7 +133,7 @@ session, retag, message a peer. It follows `agents/TX-ASSISTANT.md`.
 ### The picker (`tx attach`)
 
 `tx attach` is the one interactive front-end, bound to `prefix+t` as a centered popup. It lists
-current (non-view) live sessions with their tag chips and attachment location, refreshing ~1 Hz
+current (non-view) live sessions with their role, tag chips, and attachment location, refreshing ~1 Hz
 (reconcile-on-read). Inside it:
 
 - type to filter; `-f QUERY` pre-fills the search.

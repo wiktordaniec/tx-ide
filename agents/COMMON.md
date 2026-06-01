@@ -13,26 +13,26 @@ tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]
 
 `--env` may repeat — pass any env vars the spawned process needs (e.g. `CLAUDE_REQUIRE_WORKTREE=1` for coding workers).
 
-**Tag convention** — a scope tag plus a kind tag (`llm` / `nvim`) is the pair:
-- AI worker session: `--tag llm,<scope>` (e.g. `llm,wrangler-p1`)
-- Nvim companion: `--tag nvim,<scope>` (use the same `<scope>` as the parent llm session)
+**Tag convention** — tags are **pure scope**. Do **not** put a session's role (`llm` / `nvim` / `shell`) in `--tag`: the role is derived automatically from the launch command and shown as its own ROLE column in `tx attach`, so a role tag is redundant — it just shows up twice (once in the ROLE column, once as a stray chip).
+- AI worker session: `--tag <scope>` (e.g. `wrangler-p1`)
+- Nvim companion: `--tag <scope>` — the **same** `<scope>` as the parent llm session
 
-`<scope>` describes the task (`wrangler-p1`, `PR-1840`, `auth-review`). The picker reads each session's tags from its durable record and chips each comma-separated value; same scope on both makes them surface together when you filter by it.
+`<scope>` describes the task (`wrangler-p1`, `PR-1840`, `auth-review`). The picker reads each session's tags from its durable record and chips each comma-separated value; the same scope on a worker and its companion makes them surface together when you filter by it. The ROLE column is searchable too (type `llm` / `nvim` in the picker), so dropping the role tag loses you nothing.
 
 **Naming:** human-readable, says what it's for (e.g. `wrangler-p1-diff`, `auth-review`). The tag does the filtering, not the name.
 
 ```bash
-tx spawn worker-auth --tag llm,auth --cwd ~/proj/auth --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max'
-tx spawn-nvim wrangler-p1-diff --tag nvim,wrangler-p1 --diff main
+tx spawn worker-auth --tag auth --cwd ~/proj/auth --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max'
+tx spawn-nvim wrangler-p1-diff --tag wrangler-p1 --diff main
 ```
 
 Both inject `COLORTERM=truecolor` and `TERM=xterm-256color`. `spawn-nvim` also forces `colorscheme tokyonight-moon` via `+CMD` because `tmux new-session -d` strips the OSC11 background hint and nvim's auto-mode would land on the light variant.
 
 ## Session metadata
 
-Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` holding its `name`, `kind`, `tags`, `cwd`, `cmd`, `env`, `parent`, `pid`, and `chats`. One tmux pointer, `@tx_id` (set once at spawn), links the live session to its record, so the record survives a `kill-session` or a tmux restart. Spawning exports `TX_SESSION_ID` into the session; passing `--chat` to `tx spawn` also mints `TX_CHAT_ID` so the command can resume its transcript (e.g. `claude --session-id "$TX_CHAT_ID"`).
+Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` holding its `name`, `kind`, `role`, `tags`, `cwd`, `cmd`, `env`, `parent`, `pid`, and `chats`. One tmux pointer, `@tx_id` (set once at spawn), links the live session to its record, so the record survives a `kill-session` or a tmux restart. Spawning exports `TX_SESSION_ID` into the session; passing `--chat` to `tx spawn` also mints `TX_CHAT_ID` so the command can resume its transcript (e.g. `claude --session-id "$TX_CHAT_ID"`).
 
-Tags and kind live in the record, not tmux options — read them by resolving `@tx_id`, and change tags through `tx tag <name> [tags]` (or the picker's Ctrl-T), never `tmux set @tag`/`@kind`.
+Tags, kind, and role live in the record, not tmux options — read them by resolving `@tx_id`, and change tags through `tx tag <name> [tags]` (or the picker's Ctrl-T), never `tmux set @tag`/`@kind`. `role` (`llm` / `nvim` / `shell` / `other`) is derived from the launch command at spawn — there is no role tag and nothing to set by hand.
 
 ## Inter-session communication
 

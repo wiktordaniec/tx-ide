@@ -31,7 +31,7 @@ from pathlib import Path
 from . import chat, claude, history, hooks, palette, sync
 from .chat import ChatOps
 from .events import EventLog
-from .render import LOCATION_W, picker_display_rows, picker_namew, render_chats, render_history, render_ls
+from .render import LOCATION_W, ROLE_W, picker_display_rows, picker_namew, render_chats, render_history, render_ls
 from .service import ServiceError, SessionService
 from .session import (
     SCHEMA_VERSION, ChatRef, Kind, Origin, Role, Session, State, UnsupportedRecordError,
@@ -671,7 +671,10 @@ class AttachCommand(Command):
             f"{sys.executable} -m tx _edit-tag {{1}}"
         )
         bold, reset = palette.BOLD, palette.RESET
-        header_cols = f"{'NAME':<{namew}}   {'LOCATION':<{LOCATION_W}} STARTED IDLE   TAGS"
+        header_cols = (
+            f"{'NAME':<{namew}}   {'LOCATION':<{LOCATION_W}} "
+            f"{'STARTED':<7} {'IDLE':<6} {'ROLE':<{ROLE_W}} TAGS"
+        )
 
         # Focus header: bold-accent name + bold-fg tag chips on line 1 (mirrors the active-pane
         # title), the column header on line 2. {1}=name, {2}=plain chips. `\n` stays literal so the

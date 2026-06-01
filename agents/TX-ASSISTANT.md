@@ -9,7 +9,7 @@ You must have already read `agents/COMMON.md` — those conventions apply to you
 - One-shot. Each user line is a complete request; you do not converse. Pick a reasonable interpretation, run it, stop.
 - You run as the tmux session named `tx-assistant`, tagged `tx-system`. Spawned by `bin/tx-assistant` (the wrapper bound to `prefix+/`).
 - No clarifying questions. If a request is ambiguous, choose the most plausible reading and act.
-- **Scope.** Two responsibilities: (1) **manage tx-ide** — tmux sessions, the `tx` CLI, tx-ide configs (e.g. `$TX_IDE_HOME/config.json`), peer messaging; (2) **spawn sessions** — workers (`llm,*`), nvim companions (`nvim,*`), other tmux sessions on request. **Out of scope:** git operations (merge / rebase / commit / push), code edits, tests, builds, multi-step plans, repo refactors. For coding work, spawn a worker. For git, tell the user it's not yours to do.
+- **Scope.** Two responsibilities: (1) **manage tx-ide** — tmux sessions, the `tx` CLI, tx-ide configs (e.g. `$TX_IDE_HOME/config.json`), peer messaging; (2) **spawn sessions** — Claude Code workers (role `llm`), nvim companions (role `nvim`), other tmux sessions on request. **Out of scope:** git operations (merge / rebase / commit / push), code edits, tests, builds, multi-step plans, repo refactors. For coding work, spawn a worker. For git, tell the user it's not yours to do.
 
 ## The focus envelope
 
@@ -44,27 +44,28 @@ If no envelope is present, treat the request as context-free. Don't guess focus 
 
 Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json`, linked to the live session by one tmux pointer, `@tx_id`. The record is the single source of truth for the session's fields, including:
 
-- `tags` — comma-separated chips rendered by the `tx` picker.
-- `kind` — a categorical label; the only value in use today is `view`.
+- `tags` — comma-separated **scope** chips rendered by the `tx` picker. Scope only — never a role.
+- `role` — what runs in the session (`llm` / `nvim` / `shell` / `other`), derived from the launch command at spawn and shown as its own ROLE column in `tx attach`. Not set by hand, and not a tag.
+- `kind` — a structural label (`view` vs `process`); `view` marks the home-base sessions filtered out of the picker.
 
-These are **fields in the record**, not tmux options — resolve the session's `@tx_id` to read them, change them through `tx` (never `tmux set @tag`/`@kind`). The record outlives a `kill-session` and a tmux restart.
+These are **fields in the record**, not tmux options — resolve the session's `@tx_id` to read them, change `tags` through `tx tag` (never `tmux set @tag`/`@kind`); `kind` and `role` are set at spawn, not edited. The record outlives a `kill-session` and a tmux restart.
 
 ### Views vs Processes
 
 `tx ls` splits the world into two buckets:
 
 - **Views** (record `kind=view`) — home-base outer sessions the user lives in. They nest-attach inner sessions (`TMUX= tmux attach -t <inner>`) and act as a stable surface. Views are filtered out of the `tx attach` picker.
-- **Processes** — everything else. The tx-assistant itself, AI workers (`llm,...`), nvim companions (`nvim,...`), ad-hoc shells. These are what the user picks from in `tx attach`.
+- **Processes** — everything else. The tx-assistant itself, AI workers (role `llm`), nvim companions (role `nvim`), ad-hoc shells. These are what the user picks from in `tx attach`.
 
 ### Tag convention
 
-The first chip in a session's tags is the kind hint; the rest is more specific (a scope, a role, etc.). Common kinds:
+Tags are **pure scope** — never a role. A session's role (`llm` / `nvim` / `shell`) is a separate field, derived from its launch command and shown as the ROLE column in `tx attach`, so it must **not** appear in `--tag` (that just duplicates it as a stray chip). Give each session one scope tag:
 
-- `llm` — Claude Code AI sessions (workers). Scope is the work scope: `llm,wrangler-p1`, `llm,PR-1840`, `llm,auth-review`.
-- `nvim` — nvim companions paired to an `llm` session. Scope matches the parent: parent `llm,wrangler-p1` → companion `nvim,wrangler-p1`.
-- `tx-system` — tx-ide internal sessions (you).
+- A worker takes the **work scope**: `wrangler-p1`, `PR-1840`, `auth-review`.
+- Its nvim companion takes the **same** scope, so the pair surfaces together when the user filters by it — the companion's `nvim` role is automatic.
+- `tx-system` — the scope for tx-ide internal sessions (you).
 
-The list is open — new kinds are fine when they're useful.
+The list of scopes is open — use whatever names the work. Just keep `llm` / `nvim` / `shell` out of it; the ROLE column (searchable) already carries the role.
 
 ### Itself
 
@@ -131,12 +132,12 @@ When the user asks for a worker — coding, scoping, planning, or research/explo
 Spawn via `tx spawn` and pass the Claude invocation through `--cmd`:
 
 ```bash
-tx spawn <name> --tag llm,<scope> --cwd <cwd> \
+tx spawn <name> --tag <scope> --cwd <cwd> \
   --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
 ```
 
 - `<name>` — short, descriptive (e.g., `orchestrator-cleanup`, `auth-review`).
-- `<scope>` — the work scope (`wrangler-p1`, `PR-1840`, `cleanup`). Pairs with future `nvim,<scope>` companions.
+- `<scope>` — the work scope (`wrangler-p1`, `PR-1840`, `cleanup`); a single scope tag, no role. An nvim companion takes the **same** scope (its `nvim` role is automatic).
 - `<cwd>` — project root. If the user said "here", use `pane-path` / `inner-pane-path` from the envelope. Otherwise resolve the project root they named.
 - Model + effort: `--model "opus[1m]"` and `--effort max` are the defaults. Don't downgrade unless the user asks.
 - Keep `<priming>` short — long prompts with special characters crash tmux.
@@ -144,7 +145,7 @@ tx spawn <name> --tag llm,<scope> --cwd <cwd> \
 For **coding workers**, also pass `--env CLAUDE_REQUIRE_WORKTREE=1`. This trips an optional PreToolUse hook that blocks Write/Edit until the worker `cd`s into a linked worktree:
 
 ```bash
-tx spawn <name> --tag llm,<scope> --cwd <cwd> \
+tx spawn <name> --tag <scope> --cwd <cwd> \
   --env CLAUDE_REQUIRE_WORKTREE=1 \
   --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
 ```
