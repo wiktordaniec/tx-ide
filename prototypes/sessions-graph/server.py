@@ -18,10 +18,13 @@ home it reads, exactly as for `tx` itself.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -42,6 +45,9 @@ from tx.tmux import Tmux                 # noqa: E402
 HERE = Path(__file__).resolve().parent
 PAGE = HERE / "index.html"
 DEFAULT_PORT = 8765
+# How often the shared poll loop rebuilds the feed and pushes any change to connected SSE clients.
+# One tmux reconcile per tick total (not per tab); the loop idles entirely when no tab is connected.
+POLL_INTERVAL_SECONDS = 1.0
 # Terminal app raised to the foreground after a focus so the user can type into the just-focused
 # pane right away (the double-click happened in the browser). Override with $TX_DASH_TERMINAL_APP.
 TERMINAL_APP = os.environ.get("TX_DASH_TERMINAL_APP", "iTerm")
@@ -93,6 +99,57 @@ def build_feed() -> dict:
         "home": str(sessions_dir()),
         "sessions": [session_payload(session, now) for session in sessions],
     }
+
+
+class FeedHub:
+    """One shared poll loop that fans live feed changes out to every connected SSE client.
+
+    The first cut had each browser tab poll `/api/sessions` on its own `setInterval`. Two problems:
+    every poll reconciles via a `tmux list-sessions` subprocess, so N tabs cost N subprocesses per
+    tick; and a browser throttles a backgrounded tab's timer to roughly once a minute, which is the
+    "it lags" — the dashboard sat stale while the user worked in another window. Here a single daemon
+    thread rebuilds the feed once per `POLL_INTERVAL_SECONDS`, hashes it, and pushes to all clients
+    only when it actually changed. The tmux-call count is independent of how many tabs are open, an
+    idle forest pushes nothing, and the loop blocks on a condition while no tab is connected so a
+    closed dashboard spawns no subprocesses at all."""
+
+    def __init__(self, interval: float = POLL_INTERVAL_SECONDS) -> None:
+        self._interval = interval
+        self._clients: set[queue.Queue] = set()
+        self._condition = threading.Condition()
+        self._last_hash: str | None = None
+
+    def start(self) -> None:
+        threading.Thread(target=self._poll_loop, name="feed-poll", daemon=True).start()
+
+    def subscribe(self) -> queue.Queue:
+        client: queue.Queue = queue.Queue()
+        with self._condition:
+            self._clients.add(client)
+            self._condition.notify()           # wake the loop if it was idling with no clients
+        return client
+
+    def unsubscribe(self, client: queue.Queue) -> None:
+        with self._condition:
+            self._clients.discard(client)
+
+    def _poll_loop(self) -> None:
+        while True:
+            with self._condition:
+                while not self._clients:
+                    self._condition.wait()     # nothing to serve — sleep until a tab connects
+            payload = json.dumps(build_feed())
+            digest = hashlib.sha1(payload.encode()).hexdigest()
+            if digest != self._last_hash:
+                self._last_hash = digest
+                with self._condition:
+                    clients = list(self._clients)
+                for client in clients:
+                    client.put(payload)
+            time.sleep(self._interval)
+
+
+hub = FeedHub()
 
 
 def _tmux_name(session: Session) -> str:
@@ -189,8 +246,11 @@ def message_assistant(target_id: str, request: str) -> tuple[int, dict]:
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
-    """Routes: `/api/sessions` (live JSON feed), `POST /api/focus` (jump the user's tmux to a
-    session's pane), and `/` (the page). Everything else 404s."""
+    """Routes: `/api/stream` (Server-Sent live feed — one shared poll loop fans changes out to every
+    tab, so the graph stays current even while its tab is unfocused), `/api/sessions` (one-shot JSON
+    feed for the initial paint, the manual refresh, and the on-focus resync), `POST /api/focus` (jump
+    the user's tmux to a session's pane), `POST /api/message` (type a request into the live
+    tx-assistant), and `/` (the page). Everything else 404s."""
 
     def _respond(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
@@ -199,8 +259,41 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _serve_stream(self) -> None:
+        """Hold the connection open and stream the feed as Server-Sent Events: one snapshot right
+        away so a just-opened (or just-refocused, after EventSource reconnects) tab is current at
+        once, then one each time the shared poll loop sees a change. A comment line every 15s keeps
+        the connection warm; a closed tab surfaces as a write error that ends this thread cleanly."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")   # don't let any proxy buffer the stream
+        self.end_headers()
+        client = hub.subscribe()
+        try:
+            self._sse_send(json.dumps(build_feed()))
+            while True:
+                try:
+                    self._sse_send(client.get(timeout=15))
+                except queue.Empty:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass                                      # tab went away — fall through to unsubscribe
+        finally:
+            hub.unsubscribe(client)
+
+    def _sse_send(self, payload: str) -> None:
+        # SSE frames are newline-delimited; json.dumps emits a single physical line (inner newlines
+        # in the pretty-printed `json` field are escaped), so one `data:` line carries the whole feed.
+        self.wfile.write(b"data: " + payload.encode() + b"\n\n")
+        self.wfile.flush()
+
     def do_GET(self) -> None:
-        if self.path.startswith("/api/sessions"):
+        if self.path.startswith("/api/stream"):
+            self._serve_stream()
+        elif self.path.startswith("/api/sessions"):
             self._respond(200, json.dumps(build_feed()).encode(), "application/json")
         elif self.path in ("/", "/index.html"):
             self._respond(200, PAGE.read_bytes(), "text/html; charset=utf-8")
@@ -227,6 +320,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 def main() -> None:
     port = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_PORT
     server = ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
+    hub.start()
     url = f"http://127.0.0.1:{port}/"
     print(f"tx-ide session graph  →  {url}")
     print(f"reading records from  {sessions_dir()}")

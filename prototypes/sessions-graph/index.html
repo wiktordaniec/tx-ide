@@ -293,7 +293,7 @@
     <span class="meta" id="summary">loading…</span>
     <span class="spacer"></span>
     <label class="control"><input type="search" id="filter" placeholder="filter name / tag…" autocomplete="off" /></label>
-    <label class="control toggle"><input type="checkbox" id="auto" checked /> auto-refresh</label>
+    <label class="control toggle"><input type="checkbox" id="auto" checked /> live</label>
     <span class="control">zoom <input type="range" id="zoom" min="0.5" max="1.5" step="0.1" value="1" /></span>
     <button id="fit" title="reset zoom &amp; recenter on the graph">1:1</button>
     <button id="shuffle" title="release every pinned node &amp; re-run the layout">⤮ shuffle</button>
@@ -357,7 +357,6 @@
 const NODE_W = 172, NODE_H = 40;          // card width; height is measured per node (NODE_H seeds it)
 const WORLD_W = 3600, WORLD_H = 2600;     // fixed virtual canvas the cluster floats inside
 const WORLD_CX = WORLD_W / 2, WORLD_CY = WORLD_H / 2;
-const REFRESH_MS = 5000;
 const PIN_KEY = "tx-graph-pins-v1";       // localStorage: { id: {x, y} } for dragged-and-pinned nodes
 
 // Force-sim tuning (an Obsidian-style spread: nodes repel, edges pull, a weak gravity keeps the
@@ -395,6 +394,7 @@ let zoom = 1;
 let isPanning = false;
 let lastFetchAt = 0;
 let firstRender = true;
+let pendingRender = false;        // a stream push that landed mid-interaction, to render once it ends
 
 // Physics state lives apart from the feed: id → sim node, persisted across refreshes so a reload of
 // the records never yanks a settled graph around. `links` is rebuilt from the visible forest.
@@ -420,19 +420,31 @@ function savePins() {
 }
 
 // ---- data fetch ---------------------------------------------------------------------------------
+// One-shot fetch — the initial paint, the manual refresh button, and the on-focus resync. Live
+// updates arrive on their own over the SSE stream (see connectStream); this is the pull path.
 async function fetchAndRender(userInitiated) {
-  // Don't yank the graph out from under an in-progress drag, pan, or open menu / composer.
   if ((isPanning || drag || menuFor !== null || composerFor !== null) && !userInitiated) return;
   try {
     const response = await fetch("/api/sessions", { cache: "no-store" });
-    feed = await response.json();
+    ingestFeed(await response.json(), userInitiated);
   } catch (error) {
     $("summary").textContent = "server unreachable — is server.py running?";
+  }
+}
+
+// Adopt a freshly-received feed (from the stream or a one-shot fetch) and render it — unless the
+// user is mid-drag / panning / has the menu or composer open, in which case defer the render to
+// flushPending() so a background update never yanks the graph out from under an interaction.
+function ingestFeed(next, userInitiated) {
+  feed = next;
+  lastFetchAt = Date.now();
+  if (!userInitiated && (isPanning || drag || menuFor !== null || composerFor !== null)) {
+    pendingRender = true;
     return;
   }
-  lastFetchAt = Date.now();
   render();
 }
+function flushPending() { if (pendingRender) render(); }   // render() clears the flag
 
 // ---- forest construction ------------------------------------------------------------------------
 // Each record becomes a node; the edge is record.parent matched by id OR name. Names are reusable
@@ -669,6 +681,7 @@ function render() {
   buildLegend();
   refreshDrawer();
   updateSummary(kept);
+  pendingRender = false;            // this paint reflects the latest feed; nothing left deferred
 
   if (firstRender && kept.length) { firstRender = false; ensureRunning(); centerView(); }
 }
@@ -689,6 +702,7 @@ function applyZoom() {
 // happened in syncSim. Element heights are measured here for accurate center-anchoring in paint().
 function mountNodes(kept) {
   const query = $("filter").value.trim().toLowerCase();
+  const measure = [];
   for (const dataNode of kept) {
     const node = sim.get(dataNode.id);
     if (!node) continue;
@@ -702,15 +716,25 @@ function mountNodes(kept) {
     }
     const dim = query && !dataNode.ghost &&
       !(dataNode.name.toLowerCase().includes(query) || (dataNode.tags || []).join(" ").toLowerCase().includes(query));
-    el.className = "node s-" + dataNode.state +
+    const className = "node s-" + dataNode.state +
       (dataNode.ghost ? " ghost" : "") +
       (node.pinned ? " pinned" : "") +
       (dataNode.id === selectedId ? " sel" : "") +
       (dataNode.id === menuFor ? " menu-active" : "") +
       (dim ? " dim" : "");
-    el.innerHTML = nodeInner(dataNode, node);
-    node.w = el.offsetWidth || NODE_W;
-    node.h = el.offsetHeight || NODE_H;
+    const html = nodeInner(dataNode, node);
+    const sig = className + " " + html;
+    if (node.sig === sig) continue;          // content unchanged — skip the write and its reflow
+    el.className = className;
+    el.innerHTML = html;
+    node.sig = sig;
+    measure.push(node);
+  }
+  // Measure only the nodes we just (re)wrote, and only after every write: this collapses what was
+  // one forced reflow per node into a single layout pass. Widths feed the AABB separation in tick().
+  for (const node of measure) {
+    node.w = node.el.offsetWidth || NODE_W;
+    node.h = node.el.offsetHeight || NODE_H;
   }
 }
 
@@ -894,6 +918,7 @@ function closeMenu() {
   menuFor = null;
   menu.hidden = true;
   for (const node of graph.querySelectorAll(".node.menu-active")) node.classList.remove("menu-active");
+  flushPending();                  // a stream push deferred while the menu was open can land now
 }
 
 function runMenuAction(act) {
@@ -943,7 +968,7 @@ function openComposer(id) {
   $("composer").hidden = false;
   $("cInput").focus();
 }
-function closeComposer() { composerFor = null; $("composer").hidden = true; }
+function closeComposer() { composerFor = null; $("composer").hidden = true; flushPending(); }
 async function sendToAssistant() {
   const request = $("cInput").value.trim();
   const id = composerFor;
@@ -1110,10 +1135,12 @@ window.addEventListener("mouseup", () => {
     drag = null;
     isPanning = false;
     canvas.classList.remove("panning");
+    flushPending();                                      // apply any stream push deferred during the drag
     return;
   }
   isPanning = false;
   canvas.classList.remove("panning");
+  flushPending();                                        // …or during a pan
 });
 
 // A plain click on empty canvas — not a node — closes the details drawer.
@@ -1123,8 +1150,37 @@ canvas.addEventListener("click", (event) => {
   if (selectedId) closeDrawer();
 });
 
-// ---- refresh loop -------------------------------------------------------------------------------
-setInterval(() => { if ($("auto").checked) fetchAndRender(false); }, REFRESH_MS);
+// ---- live updates -------------------------------------------------------------------------------
+// A Server-Sent stream replaces client-side polling: the server runs ONE shared poll loop and
+// pushes only when the feed actually changes, so the graph stays current even while this tab is
+// unfocused — a backgrounded tab's setInterval is throttled to ~once a minute, which was the lag.
+// EventSource auto-reconnects after a transient drop; on regaining visibility/focus we also fire a
+// one-shot fetch so a tab the browser froze while buried is instantly current the moment it's seen.
+let stream = null;
+function connectStream() {
+  if (stream) return;
+  stream = new EventSource("/api/stream");
+  stream.onmessage = (event) => {
+    let next;
+    try { next = JSON.parse(event.data); } catch { return; }
+    ingestFeed(next, false);
+  };
+}
+function disconnectStream() {
+  if (!stream) return;
+  stream.close();
+  stream = null;
+}
+
+$("auto").addEventListener("change", () => {
+  if ($("auto").checked) { connectStream(); fetchAndRender(true); } else disconnectStream();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && $("auto").checked) { connectStream(); fetchAndRender(true); }
+});
+window.addEventListener("focus", () => { if ($("auto").checked) fetchAndRender(true); });
+
+// keep the "↻ refresh (Ns)" label showing how stale the last update is (live counter)
 setInterval(() => {
   if (!lastFetchAt) return;
   const age = Math.round((Date.now() - lastFetchAt) / 1000);
@@ -1132,6 +1188,7 @@ setInterval(() => {
 }, 1000);
 
 fetchAndRender(true);
+if ($("auto").checked) connectStream();
 </script>
 </body>
 </html>
