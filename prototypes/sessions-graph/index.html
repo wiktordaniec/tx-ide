@@ -23,8 +23,7 @@
     --cyan: #7dcfff;
     --magenta: #bb9af7;
 
-    --node-w: 216px;
-    --node-h: 72px;
+    --node-w: 172px;
   }
 
   /* Per-state accent — semantics straight from session.py's State enum docstrings. */
@@ -132,39 +131,54 @@
   #sizer { position: relative; }
   #graph { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
   #edges { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
-  #edges path { fill: none; stroke: var(--border); stroke-width: 1.6; }
-  #edges path.lit { stroke: var(--accent); stroke-width: 2.2; }
+  #edges line { stroke: var(--border); stroke-width: 1.6; }
+  #edges line.lit { stroke: var(--accent); stroke-width: 2.4; }
 
+  /* A node is a compact card: state dot + name, with tag chips below. Everything else
+     (role / kind / idle / pid / chats / JSON) lives one keypress away in the details drawer. */
   .node {
     position: absolute;
     width: var(--node-w);
-    min-height: var(--node-h);
+    min-height: 34px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-left: 3px solid var(--state);
     border-radius: 8px;
-    padding: 8px 10px;
-    cursor: pointer;
+    padding: 6px 9px 7px;
+    cursor: grab;
     overflow: hidden;
-    transition: border-color .12s, box-shadow .12s, transform .08s;
+    transition: border-color .12s, box-shadow .12s;
   }
-  .node:hover { border-color: var(--state); transform: translateY(-1px); }
+  .node:hover { border-color: var(--state); }
   .node.sel { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(122,162,247,.45), 0 8px 24px -10px #000; }
-  .node.dim { opacity: .25; }
+  .node.dim { opacity: .22; }
+  .node.dragging { cursor: grabbing; z-index: 6; box-shadow: 0 12px 30px -12px #000; }
+  /* A pinned node holds the spot the user dropped it on; a faint inner ring marks it as fixed. */
+  .node.pinned { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--state) 45%, transparent); }
+  .node.needs { border-color: color-mix(in srgb, var(--state) 60%, var(--border)); }
 
   .node .row1 { display: flex; align-items: center; gap: 7px; }
   .node .dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--state); box-shadow: 0 0 7px -1px var(--state); }
+  .node.needs .dot { animation: pulse 1.5s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 6px -1px var(--state); }
+    50%      { box-shadow: 0 0 11px 2px var(--state); }
+  }
   .node .name {
     font-weight: 700; color: var(--fg); flex: 1 1 auto;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .node .st { flex: 0 0 auto; color: var(--state); font-size: 11px; font-weight: 600; }
-  .node .row2 { color: var(--muted); font-size: 11px; margin: 3px 0 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .node .row2 .warn { color: var(--warn); }
+  .node .pin {
+    flex: 0 0 auto; margin-left: 4px; font-size: 10px; line-height: 1; cursor: pointer;
+    opacity: .85; filter: saturate(.85);
+  }
+  .node .pin:hover { opacity: 1; }
+  .node .st { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
+  .node .ghosthint { color: var(--muted); font-size: 11px; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .node.ghost { background: transparent; border-style: dashed; cursor: default; }
-  .node.ghost:hover { transform: none; }
+  .node.ghost:hover { border-color: var(--border); }
 
-  .chips { display: flex; gap: 4px; flex-wrap: nowrap; overflow: hidden; }
+  .chips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 5px; max-height: 22px; overflow: hidden; }
   .chip {
     font-size: 10.5px; padding: 1px 6px; border-radius: 999px;
     color: var(--chip); border: 1px solid var(--chip);
@@ -182,7 +196,7 @@
   #empty .big { font-size: 15px; color: var(--dim); }
 
   /* ---- JSON drawer ------------------------------------------------------------------------ */
-  /* Side drawer — opens from the right; the top-down tree keeps the vertical axis to itself. */
+  /* Side drawer — opens from the right; holds the per-node detail the cards no longer show. */
   #drawer {
     position: fixed; top: 0; right: 0; height: 100%; width: min(480px, 90vw);
     background: var(--bg-deep);
@@ -223,7 +237,7 @@
   #toast.show { opacity: 1; transform: translate(-50%, 0); }
   #toast.err  { border-color: var(--red); border-left-color: var(--red); }
 
-  /* ---- one-click action menu (f / o / m) -------------------------------------------------- */
+  /* ---- one-click action menu (f / d / m) -------------------------------------------------- */
   #menu {
     position: fixed; z-index: 50; min-width: 188px;
     background: var(--surface-hi); border: 1px solid var(--border); border-radius: 10px;
@@ -280,12 +294,15 @@
     <label class="control"><input type="search" id="filter" placeholder="filter name / tag…" autocomplete="off" /></label>
     <label class="control toggle"><input type="checkbox" id="auto" checked /> auto-refresh</label>
     <span class="control">zoom <input type="range" id="zoom" min="0.5" max="1.5" step="0.1" value="1" /></span>
-    <button id="fit" title="reset zoom &amp; recenter">1:1</button>
+    <button id="fit" title="reset zoom &amp; recenter on the graph">1:1</button>
+    <button id="shuffle" title="release every pinned node &amp; re-run the layout">⤮ shuffle</button>
     <button id="refresh" title="reload records now">↻ refresh</button>
   </header>
 
   <div class="legend" id="legend">
     <span class="hint">states — click to show / hide:</span>
+    <span class="spacer"></span>
+    <span class="hint">drag a node to pin it · click for actions</span>
   </div>
 
   <div id="canvas">
@@ -336,11 +353,23 @@
 "use strict";
 
 // ---- constants ----------------------------------------------------------------------------------
-const NODE_W = 216, NODE_H = 72;
-const LEVEL_GAP = 90;   // vertical gap between tree depths (the graph grows top-down)
-const SIB_GAP = 30;     // horizontal gap between sibling subtrees
-const MARGIN = 32, ROOT_GAP = 40;
+const NODE_W = 172, NODE_H = 40;          // card width; height is measured per node (NODE_H seeds it)
+const WORLD_W = 3600, WORLD_H = 2600;     // fixed virtual canvas the cluster floats inside
+const WORLD_CX = WORLD_W / 2, WORLD_CY = WORLD_H / 2;
 const REFRESH_MS = 5000;
+const PIN_KEY = "tx-graph-pins-v1";       // localStorage: { id: {x, y} } for dragged-and-pinned nodes
+
+// Force-sim tuning (an Obsidian-style spread: nodes repel, edges pull, a weak gravity keeps the
+// whole thing framed). The sim sleeps when it settles, so a quiescent graph costs no CPU.
+const CHARGE = 14000;       // node↔node repulsion (inverse-square)
+const SPRING_LEN = 195;     // preferred edge length
+const SPRING_K = 0.03;      // edge stiffness
+const GRAVITY = 0.0016;     // gentle pull toward world center
+const DAMPING = 0.82;       // per-tick velocity retention
+const COOL = 0.985;         // alpha (temperature) decay per tick
+const ALPHA_MIN = 0.02;     // below this the sim sleeps
+const DRAG_ALPHA = 0.4;     // floor temperature while a node is dragged, so neighbors react
+const MAX_V = 90;           // velocity clamp
 
 // State semantics (kept in sync with lib/tx/session.py State enum docstrings).
 const STATE_INFO = {
@@ -354,23 +383,43 @@ const STATE_INFO = {
 const STATE_ORDER = ["working", "waiting", "idle", "alive", "exited", "archived"];
 
 // ---- mutable view state -------------------------------------------------------------------------
-let lastFeed = null;
+let feed = null;
 let hiddenStates = new Set(["archived"]);   // the user's explicit ask: archived starts hidden
 let selectedId = null;            // node whose JSON drawer is open
 let menuFor = null;               // node id the one-click action menu is anchored to
 let composerFor = null;           // node id the "message tx-assistant" composer is open for
-let zoomLevel = 1;
+let zoom = 1;
 let isPanning = false;
 let lastFetchAt = 0;
+let firstRender = true;
+
+// Physics state lives apart from the feed: id → sim node, persisted across refreshes so a reload of
+// the records never yanks a settled graph around. `links` is rebuilt from the visible forest.
+const sim = new Map();
+let links = [];
+let alpha = 0;                     // sim temperature; >ALPHA_MIN keeps the rAF loop ticking
+let running = false;
+let drag = null;                   // { node, moved, offX, offY, startGX, startGY } while dragging
+let suppressClick = false;        // a drag that moved must not also open the action menu
+let pins = loadPins();            // { id: {x, y} } — dragged nodes, restored on load
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("canvas"), sizer = $("sizer"), graph = $("graph"), svg = $("edges");
 
+const rand = (lo, hi) => lo + Math.random() * (hi - lo);
+
+// ---- pin persistence ----------------------------------------------------------------------------
+function loadPins() {
+  try { return JSON.parse(localStorage.getItem(PIN_KEY)) || {}; } catch { return {}; }
+}
+function savePins() {
+  try { localStorage.setItem(PIN_KEY, JSON.stringify(pins)); } catch { /* private mode — ignore */ }
+}
+
 // ---- data fetch ---------------------------------------------------------------------------------
 async function fetchAndRender(userInitiated) {
-  // Don't yank the graph out from under an in-progress drag or an open action menu.
-  if ((isPanning || menuFor !== null || composerFor !== null) && !userInitiated) return;
-  let feed;
+  // Don't yank the graph out from under an in-progress drag, pan, or open menu / composer.
+  if ((isPanning || drag || menuFor !== null || composerFor !== null) && !userInitiated) return;
   try {
     const response = await fetch("/api/sessions", { cache: "no-store" });
     feed = await response.json();
@@ -378,15 +427,14 @@ async function fetchAndRender(userInitiated) {
     $("summary").textContent = "server unreachable — is server.py running?";
     return;
   }
-  lastFeed = feed;
   lastFetchAt = Date.now();
   render();
 }
 
 // ---- forest construction ------------------------------------------------------------------------
-// Each record becomes a node; the edge is record.parent matched by NAME. Names are reusable
+// Each record becomes a node; the edge is record.parent matched by id OR name. Names are reusable
 // (D7), so when several records share a parent's name we link to the most relevant one (a live
-// record beats a terminal one, then most-recently-active). A parent name with no record at all
+// record beats a terminal one, then most-recently-active). A parent reference with no record at all
 // becomes a dashed "ghost" node so the lineage to a gone session is still visible.
 function buildNodes(feed) {
   const nodes = feed.sessions.map((entry) => ({
@@ -425,7 +473,7 @@ function buildNodes(feed) {
     return ranked[0];
   };
 
-  // Resolve each node's parent node (creating ghosts for absent parent names).
+  // Resolve each node's parent node (creating ghosts for absent parent references).
   const ghosts = new Map();
   for (const node of nodes) {
     if (!node.parentName) { node.parent = null; continue; }
@@ -434,7 +482,7 @@ function buildNodes(feed) {
     if (!ghosts.has(node.parentName)) {
       ghosts.set(node.parentName, {
         id: "ghost::" + node.parentName, name: node.parentName, parent: null,
-        state: "ghost", ghost: true, tags: [], lastActivity: 0, children: [],
+        state: "ghost", ghost: true, tags: [], lastActivity: 0,
       });
     }
     node.parent = ghosts.get(node.parentName);
@@ -443,7 +491,8 @@ function buildNodes(feed) {
 }
 
 // Visible forest: drop nodes whose state is filtered off, re-attach orphans to their nearest
-// visible ancestor, prune ghosts left with no visible descendants.
+// visible ancestor, prune ghosts left with no visible descendants. Sets `effParent` (the visible
+// parent each node should be sprung toward); the physics turns those into edges.
 function visibleForest(allNodes) {
   const hidden = (node) => !node.ghost && hiddenStates.has(node.state);
   const effectiveParent = (node) => {
@@ -452,7 +501,7 @@ function visibleForest(allNodes) {
     return cursor || null;
   };
 
-  for (const node of allNodes) { node.children = []; node.effParent = null; }
+  for (const node of allNodes) node.effParent = null;
   const visible = allNodes.filter((n) => !hidden(n));
   for (const node of visible) {
     if (node.ghost) continue;            // ghost roots get parented by their kids below
@@ -462,140 +511,268 @@ function visibleForest(allNodes) {
   const ghostKeep = new Set(visible.filter((n) => n.effParent && n.effParent.ghost).map((n) => n.effParent.id));
   const kept = visible.filter((n) => !n.ghost || ghostKeep.has(n.id));
 
-  for (const node of kept) {
-    if (node.effParent && kept.includes(node.effParent)) node.effParent.children.push(node);
-  }
-  const recency = (a, b) => b.lastActivity - a.lastActivity;
-  for (const node of kept) node.children.sort(recency);
-  const roots = kept.filter((n) => !n.effParent).sort(recency);
-  return { kept, roots };
+  const keptIds = new Set(kept.map((n) => n.id));
+  for (const node of kept) if (node.effParent && !keptIds.has(node.effParent.id)) node.effParent = null;
+  return { kept };
 }
 
-// ---- tidy top-down tree layout ------------------------------------------------------------------
-// Depth runs down the page (depth → y); siblings spread across it (a leaf cursor → x, with each
-// parent centered over its children). This suits a portrait monitor — the tree grows into the tall
-// axis instead of off the right edge.
-function layout(roots) {
-  let cursorX = MARGIN, maxDepth = 0;
-  const place = (node, depth, visited) => {
-    if (visited.has(node.id)) return;       // cycle guard (name reuse could, in theory, loop)
-    visited.add(node.id);
-    maxDepth = Math.max(maxDepth, depth);
-    node.y = MARGIN + depth * (NODE_H + LEVEL_GAP);
-    if (node.children.length === 0) {
-      node.x = cursorX;
-      cursorX += NODE_W + SIB_GAP;
-    } else {
-      node.children.forEach((child) => place(child, depth + 1, visited));
-      node.x = (node.children[0].x + node.children[node.children.length - 1].x) / 2;
+// ---- physics reconciliation ---------------------------------------------------------------------
+// Seed a brand-new sim node: pinned at its stored spot if it has one, else near its parent (so the
+// lineage reads as a cluster from the first frame), else near the world center.
+function newSimNode(id, dataNode) {
+  const node = { id, x: 0, y: 0, vx: 0, vy: 0, fx: null, fy: null, pinned: false, el: null, h: NODE_H, data: dataNode };
+  if (pins[id]) {
+    node.x = node.fx = pins[id].x;
+    node.y = node.fy = pins[id].y;
+    node.pinned = true;
+    return node;
+  }
+  const parent = dataNode.effParent && sim.get(dataNode.effParent.id);
+  if (parent) { node.x = parent.x + rand(-55, 55); node.y = parent.y + rand(70, 150); }
+  else { node.x = WORLD_CX + rand(-170, 170); node.y = WORLD_CY + rand(-130, 130); }
+  return node;
+}
+
+// Match the sim's node set to the visible forest. Returns whether membership changed (a change
+// reheats the sim so newcomers settle in; an unchanged set leaves a quiescent graph perfectly
+// still — no jitter on the 5s refresh, stable for screenshots).
+function syncSim(kept) {
+  const want = new Map(kept.map((n) => [n.id, n]));
+  let changed = false;
+
+  for (const id of [...sim.keys()]) {
+    if (!want.has(id)) {
+      const node = sim.get(id);
+      if (node.el) node.el.remove();
+      sim.delete(id);
+      changed = true;
     }
-  };
-  roots.forEach((root, index) => {
-    place(root, 0, new Set());
-    if (index < roots.length - 1) cursorX += ROOT_GAP;
-  });
-  const width = cursorX - SIB_GAP + MARGIN;
-  const height = MARGIN + maxDepth * (NODE_H + LEVEL_GAP) + NODE_H + MARGIN;
-  return { width: Math.max(width, NODE_W + 2 * MARGIN), height: Math.max(height, NODE_H + 2 * MARGIN) };
-}
-
-// ---- render -------------------------------------------------------------------------------------
-function render() {
-  if (!lastFeed) return;
-  const savedScroll = { left: canvas.scrollLeft, top: canvas.scrollTop };
-
-  const { all } = buildNodes(lastFeed);
-  const query = $("filter").value.trim().toLowerCase();
-  const { kept, roots } = visibleForest(all);
-  const dims = layout(roots);
-
-  // size + zoom
-  graph.style.width = dims.width + "px";
-  graph.style.height = dims.height + "px";
-  graph.style.transform = `scale(${zoomLevel})`;
-  sizer.style.width = dims.width * zoomLevel + "px";
-  sizer.style.height = dims.height * zoomLevel + "px";
-  svg.setAttribute("width", dims.width);
-  svg.setAttribute("height", dims.height);
-  svg.setAttribute("viewBox", `0 0 ${dims.width} ${dims.height}`);
-
-  // edges first (behind nodes)
-  const edgeMarkup = kept
-    .filter((n) => n.effParent && kept.includes(n.effParent))
-    .map((n) => {
-      const p = n.effParent;
-      const sx = p.x + NODE_W / 2, sy = p.y + NODE_H;   // parent bottom-center
-      const ex = n.x + NODE_W / 2, ey = n.y;            // child top-center
-      const my = (sy + ey) / 2;
-      const lit = (selectedId && (n.id === selectedId || p.id === selectedId)) ? " class=\"lit\"" : "";
-      return `<path${lit} d="M${sx},${sy} C${sx},${my} ${ex},${my} ${ex},${ey}" />`;
-    })
-    .join("");
-  svg.innerHTML = edgeMarkup;
-
-  // nodes
-  for (const old of [...graph.querySelectorAll(".node")]) old.remove();
-  for (const node of kept) {
-    graph.appendChild(buildNodeEl(node, query));
+  }
+  for (const [id, dataNode] of want) {
+    let node = sim.get(id);
+    if (!node) { node = newSimNode(id, dataNode); sim.set(id, node); changed = true; }
+    node.data = dataNode;
+    if (!(drag && drag.node === node)) {           // a node mid-drag owns its own fx/fy
+      if (pins[id]) { node.pinned = true; node.fx = pins[id].x; node.fy = pins[id].y; }
+      else { node.pinned = false; node.fx = null; node.fy = null; }
+    }
   }
 
-  // empty state
-  const total = lastFeed.sessions.length;
-  const showEmpty = kept.length === 0;
-  $("empty").classList.toggle("show", showEmpty);
-  $("emptyWhy").textContent = total === 0 ? "(no records under the sessions dir)" : "(everything is filtered out — re-enable a state above)";
+  links = [];
+  for (const dataNode of kept) {
+    if (!dataNode.effParent) continue;
+    const a = sim.get(dataNode.effParent.id), b = sim.get(dataNode.id);
+    if (a && b) links.push({ a, b, sourceId: a.id, targetId: b.id });
+  }
+  return changed;
+}
 
-  // summary
-  const home = lastFeed.home;
-  const shown = kept.filter((n) => !n.ghost).length;
-  $("summary").innerHTML = `<b>${total}</b> records · <b>${shown}</b> shown · <span title="${home}">${home.replace(/^.*\/(?=[^/]*\/[^/]*$)/, "…/")}</span>`;
+// ---- force simulation ---------------------------------------------------------------------------
+function ensureRunning() { if (!running) { running = true; requestAnimationFrame(tick); } }
+function reheat(target) { alpha = Math.max(alpha, target); ensureRunning(); }
+
+function tick() {
+  const nodes = [...sim.values()];
+  const n = nodes.length;
+  for (const node of nodes) { node.ax = 0; node.ay = 0; }
+
+  // repulsion — every pair pushes apart with inverse-square falloff
+  for (let i = 0; i < n; i++) {
+    const a = nodes[i];
+    for (let j = i + 1; j < n; j++) {
+      const b = nodes[j];
+      let dx = a.x - b.x, dy = a.y - b.y;
+      let d2 = dx * dx + dy * dy;
+      if (d2 < 1) { dx = rand(-1, 1); dy = rand(-1, 1); d2 = dx * dx + dy * dy + 0.01; }
+      const dist = Math.sqrt(d2);
+      const force = CHARGE / d2;
+      const fx = (dx / dist) * force, fy = (dy / dist) * force;
+      a.ax += fx; a.ay += fy;
+      b.ax -= fx; b.ay -= fy;
+    }
+  }
+  // springs — each edge pulls its endpoints toward SPRING_LEN apart
+  for (const link of links) {
+    const a = link.a, b = link.b;
+    let dx = b.x - a.x, dy = b.y - a.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+    const force = SPRING_K * (dist - SPRING_LEN);
+    const fx = (dx / dist) * force, fy = (dy / dist) * force;
+    a.ax += fx; a.ay += fy;
+    b.ax -= fx; b.ay -= fy;
+  }
+  // gentle gravity toward the world center keeps disconnected nodes from drifting off
+  for (const node of nodes) {
+    node.ax += (WORLD_CX - node.x) * GRAVITY;
+    node.ay += (WORLD_CY - node.y) * GRAVITY;
+  }
+
+  // integrate — pinned and dragged nodes are clamped to their fixed point
+  for (const node of nodes) {
+    if ((drag && drag.node === node) || node.pinned) {
+      node.x = node.fx; node.y = node.fy; node.vx = 0; node.vy = 0;
+      continue;
+    }
+    node.vx = (node.vx + node.ax) * DAMPING;
+    node.vy = (node.vy + node.ay) * DAMPING;
+    const speed = Math.hypot(node.vx, node.vy);
+    if (speed > MAX_V) { node.vx = node.vx / speed * MAX_V; node.vy = node.vy / speed * MAX_V; }
+    node.x += node.vx * alpha;
+    node.y += node.vy * alpha;
+  }
+  // with no pins, recenter the centroid so the cluster stays framed without a collapsing force
+  if (!drag && Object.keys(pins).length === 0 && n > 0) {
+    let cx = 0, cy = 0;
+    for (const node of nodes) { cx += node.x; cy += node.y; }
+    cx = cx / n - WORLD_CX; cy = cy / n - WORLD_CY;
+    for (const node of nodes) { node.x -= cx; node.y -= cy; }
+  }
+
+  alpha *= COOL;
+  paint();
+  if (drag) { alpha = Math.max(alpha, DRAG_ALPHA); requestAnimationFrame(tick); return; }
+  if (alpha > ALPHA_MIN) requestAnimationFrame(tick);
+  else running = false;
+}
+
+// ---- render = reconcile sim + (re)mount DOM ----------------------------------------------------
+function render() {
+  if (!feed) return;
+  const { all } = buildNodes(feed);
+  const { kept } = visibleForest(all);
+  const changed = syncSim(kept);
+
+  applyZoom();
+  mountNodes(kept);
+  buildEdges();
+  if (changed) reheat(0.9);
+  paint();
 
   buildLegend();
   refreshDrawer();
-  canvas.scrollTo(savedScroll.left, savedScroll.top);
+  updateSummary(kept);
+
+  if (firstRender && kept.length) { firstRender = false; ensureRunning(); centerView(); }
 }
 
-function buildNodeEl(node, query) {
-  const el = document.createElement("div");
-  el.className = "node s-" + node.state + (node.ghost ? " ghost" : "");
-  el.style.left = node.x + "px";
-  el.style.top = node.y + "px";
-  el.dataset.id = node.id;
-  if (node.id === selectedId) el.classList.add("sel");
-  if (query && !node.ghost && !(node.name.toLowerCase().includes(query) || node.tags.join(" ").toLowerCase().includes(query))) {
-    el.classList.add("dim");
-  }
+function applyZoom() {
+  graph.style.width = WORLD_W + "px";
+  graph.style.height = WORLD_H + "px";
+  graph.style.transform = `scale(${zoom})`;
+  sizer.style.width = WORLD_W * zoom + "px";
+  sizer.style.height = WORLD_H * zoom + "px";
+  svg.setAttribute("width", WORLD_W);
+  svg.setAttribute("height", WORLD_H);
+  svg.setAttribute("viewBox", `0 0 ${WORLD_W} ${WORLD_H}`);
+}
 
-  if (node.ghost) {
-    el.innerHTML =
-      `<div class="row1"><span class="dot"></span><span class="name">${escapeHtml(node.name)}</span>` +
-      `<span class="st">no record</span></div>` +
-      `<div class="row2">referenced as a parent — lineage only</div>`;
-    return el;
+// Diff the node elements against the kept set: reuse an existing element (keeps the action-menu
+// anchor and drag target stable), create the missing, refresh class + content. Removal already
+// happened in syncSim. Element heights are measured here for accurate center-anchoring in paint().
+function mountNodes(kept) {
+  const query = $("filter").value.trim().toLowerCase();
+  for (const dataNode of kept) {
+    const node = sim.get(dataNode.id);
+    if (!node) continue;
+    let el = node.el;
+    if (!el) {
+      el = document.createElement("div");
+      el.dataset.id = node.id;
+      el.title = dataNode.ghost ? "" : "drag to move · click for actions";
+      graph.appendChild(el);
+      node.el = el;
+    }
+    const needs = !dataNode.ghost && dataNode.derived && dataNode.derived.needs_attention;
+    const dim = query && !dataNode.ghost &&
+      !(dataNode.name.toLowerCase().includes(query) || (dataNode.tags || []).join(" ").toLowerCase().includes(query));
+    el.className = "node s-" + dataNode.state +
+      (dataNode.ghost ? " ghost" : "") +
+      (node.pinned ? " pinned" : "") +
+      (needs ? " needs" : "") +
+      (dataNode.id === selectedId ? " sel" : "") +
+      (dataNode.id === menuFor ? " menu-active" : "") +
+      (dim ? " dim" : "");
+    el.innerHTML = nodeInner(dataNode, node);
+    node.h = el.offsetHeight || NODE_H;
   }
+}
 
-  const chips = node.tags.map((tag) => {
-    const color = (node.derived.tag_colors && node.derived.tag_colors[tag]) || "var(--dim)";
+function nodeInner(dataNode, simNode) {
+  if (dataNode.ghost) {
+    return `<div class="row1"><span class="dot"></span><span class="name">${escapeHtml(dataNode.name)}</span>` +
+           `<span class="st">no record</span></div>` +
+           `<div class="ghosthint">parent — lineage only</div>`;
+  }
+  const pin = simNode.pinned ? `<span class="pin" title="pinned — click to release">📌</span>` : "";
+  const chips = (dataNode.tags || []).map((tag) => {
+    const color = (dataNode.derived.tag_colors && dataNode.derived.tag_colors[tag]) || "var(--dim)";
     return `<span class="chip" style="--chip:${color}">${escapeHtml(tag)}</span>`;
   }).join("");
+  return `<div class="row1"><span class="dot"></span>` +
+         `<span class="name">${escapeHtml(dataNode.name)}</span>${pin}</div>` +
+         (chips ? `<div class="chips">${chips}</div>` : "");
+}
 
-  el.innerHTML =
-    `<div class="row1"><span class="dot"></span>` +
-    `<span class="name">${escapeHtml(node.name)}</span>` +
-    `<span class="st">${node.state}</span></div>` +
-    `<div class="row2">${node.role} · ${node.kind} · idle <span class="warn">${node.derived.idle_rel}</span></div>` +
-    `<div class="chips">${chips}</div>`;
-  return el;
+function buildEdges() {
+  svg.replaceChildren();
+  for (const link of links) {
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    link.el = line;
+    svg.appendChild(line);
+  }
+}
+
+// The only per-frame work: place each node element from its sim center, redraw edges center-to-
+// center, and light the edges touching the selected node.
+function paint() {
+  for (const node of sim.values()) {
+    if (!node.el) continue;
+    node.el.style.left = (node.x - NODE_W / 2) + "px";
+    node.el.style.top = (node.y - (node.h || NODE_H) / 2) + "px";
+  }
+  for (const link of links) {
+    if (!link.el) continue;
+    link.el.setAttribute("x1", link.a.x);
+    link.el.setAttribute("y1", link.a.y);
+    link.el.setAttribute("x2", link.b.x);
+    link.el.setAttribute("y2", link.b.y);
+    const lit = selectedId && (link.sourceId === selectedId || link.targetId === selectedId);
+    link.el.classList.toggle("lit", !!lit);
+  }
+}
+
+function updateSummary(kept) {
+  const total = feed.sessions.length;
+  const shown = kept.filter((n) => !n.ghost).length;
+  const showEmpty = kept.length === 0;
+  $("empty").classList.toggle("show", showEmpty);
+  $("emptyWhy").textContent = total === 0
+    ? "(no records under the sessions dir)"
+    : "(everything is filtered out — re-enable a state above)";
+  const home = feed.home;
+  $("summary").innerHTML = `<b>${total}</b> records · <b>${shown}</b> shown · ` +
+    `<span title="${home}">${home.replace(/^.*\/(?=[^/]*\/[^/]*$)/, "…/")}</span>`;
+}
+
+// Scroll so the cluster's centroid sits in the middle of the viewport (accounting for zoom).
+function centerView() {
+  if (sim.size === 0) return;
+  let cx = 0, cy = 0;
+  for (const node of sim.values()) { cx += node.x; cy += node.y; }
+  cx /= sim.size; cy /= sim.size;
+  canvas.scrollLeft = Math.max(0, cx * zoom - canvas.clientWidth / 2);
+  canvas.scrollTop = Math.max(0, cy * zoom - canvas.clientHeight / 2);
 }
 
 // ---- legend / filter ----------------------------------------------------------------------------
 function buildLegend() {
   const counts = {};
-  if (lastFeed) for (const entry of lastFeed.sessions) {
+  if (feed) for (const entry of feed.sessions) {
     counts[entry.record.state] = (counts[entry.record.state] || 0) + 1;
   }
   const legend = $("legend");
   [...legend.querySelectorAll(".lchip")].forEach((c) => c.remove());
+  const anchor = legend.querySelector(".spacer");
   for (const state of STATE_ORDER) {
     const chip = document.createElement("span");
     chip.className = "lchip s-" + state;
@@ -607,23 +784,20 @@ function buildLegend() {
       if (hiddenStates.has(state)) hiddenStates.delete(state); else hiddenStates.add(state);
       render();
     });
-    legend.appendChild(chip);
+    legend.insertBefore(chip, anchor);
   }
 }
 
-// ---- drawer (JSON preview) ----------------------------------------------------------------------
-function openNode(id) {
-  selectedId = id;
-  render();
-}
+// ---- drawer (JSON details) ----------------------------------------------------------------------
+function openNode(id) { selectedId = id; render(); }
 function refreshDrawer() {
   const drawer = $("drawer");
   if (!selectedId) { drawer.classList.remove("open"); return; }
-  const entry = lastFeed.sessions.find((e) => e.record.id === selectedId);
+  const entry = feed.sessions.find((e) => e.record.id === selectedId);
   if (!entry) {                         // selected session vanished (e.g. went to a hidden state)
     if (selectedId.startsWith("ghost::")) {
       drawer.className = "s-ghost open";
-      $("dDot"); $("dName").textContent = selectedId.slice("ghost::".length);
+      $("dName").textContent = selectedId.slice("ghost::".length);
       $("dState").textContent = "no record";
       $("dSub").innerHTML = `<span>This name is referenced as a <b>parent</b> but has no record on disk — shown only to anchor its children's lineage.</span>`;
       $("json").innerHTML = "";
@@ -666,14 +840,26 @@ function escapeHtml(text) {
   return String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
-// ---- interactions -------------------------------------------------------------------------------
-// One click on a node opens a small action menu (f focus · d details · m message) anchored at it,
-// like a tmux display-menu. Press f/d/m or click a row to act; Esc or a click away closes it.
+// ---- pin / unpin --------------------------------------------------------------------------------
+function unpin(id) {
+  const node = sim.get(id);
+  if (!node) return;
+  node.pinned = false; node.fx = null; node.fy = null;
+  delete pins[id]; savePins();
+  closeMenu();
+  reheat(0.6);
+  render();
+}
+
+// ---- one-click action menu (f / d / m) ----------------------------------------------------------
+// A plain click on a node opens a small action menu (f focus · d details · m message) anchored at
+// it, like a tmux display-menu. Press f/d/m or click a row to act; Esc or a click away closes it.
 const menu = $("menu");
 
 function openMenu(id, nodeEl) {
   menuFor = id;
-  menu.classList.toggle("ghost", id.startsWith("ghost::"));   // a ghost node only supports "open"
+  alpha = 0;                                                  // freeze motion so the menu stays put
+  menu.classList.toggle("ghost", id.startsWith("ghost::"));   // a ghost node only supports "details"
   menu.hidden = false;
   const rect = nodeEl.getBoundingClientRect();
   const width = menu.offsetWidth || 188;
@@ -710,6 +896,13 @@ function runMenuAction(act) {
 }
 
 graph.addEventListener("click", (event) => {
+  if (suppressClick) { suppressClick = false; return; }      // this click merely ended a node drag
+  const pinEl = event.target.closest(".pin");
+  if (pinEl) {
+    const el = event.target.closest(".node");
+    if (el) unpin(el.dataset.id);
+    return;
+  }
   const nodeEl = event.target.closest(".node");
   if (nodeEl) openMenu(nodeEl.dataset.id, nodeEl);
 });
@@ -722,10 +915,11 @@ document.addEventListener("click", (event) => {          // a click away closes 
   closeMenu();
 });
 
+// ---- message-tx-assistant composer --------------------------------------------------------------
 // "m" opens a composer to type a request; it's sent to tx-assistant with this session's id + context.
 function openComposer(id) {
   composerFor = id;
-  const entry = lastFeed && lastFeed.sessions.find((e) => e.record.id === id);
+  const entry = feed && feed.sessions.find((e) => e.record.id === id);
   $("cName").textContent = entry ? entry.record.name : id;
   $("cInput").value = "";
   $("composer").hidden = false;
@@ -750,7 +944,7 @@ $("cSend").addEventListener("click", sendToAssistant);
 $("cCancel").addEventListener("click", closeComposer);
 $("composer").addEventListener("click", (event) => { if (event.target.id === "composer") closeComposer(); });
 $("cInput").addEventListener("keydown", (event) => {
-  event.stopPropagation();                       // keep the global f/o/m + Esc handler out of the input
+  event.stopPropagation();                       // keep the global f/d/m + Esc handler out of the input
   if (event.key === "Enter") sendToAssistant();
   else if (event.key === "Escape") closeComposer();
 });
@@ -769,7 +963,7 @@ async function focusSession(id) {
   }
 }
 
-// transient bottom-center status line for focus feedback
+// transient bottom-center status line for focus / message feedback
 let toastTimer = null;
 function toast(message, isError) {
   let element = document.getElementById("toast");
@@ -783,6 +977,8 @@ function toast(message, isError) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { element.className = ""; }, 1800);
 }
+
+// ---- keyboard -----------------------------------------------------------------------------------
 $("dClose").addEventListener("click", closeDrawer);
 document.addEventListener("keydown", (event) => {
   const typing = /^(INPUT|TEXTAREA)$/.test(event.target.tagName);
@@ -798,7 +994,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 $("copy").addEventListener("click", async () => {
-  const entry = lastFeed && lastFeed.sessions.find((e) => e.record.id === selectedId);
+  const entry = feed && feed.sessions.find((e) => e.record.id === selectedId);
   if (!entry) return;
   await navigator.clipboard.writeText(entry.json);
   const button = $("copy");
@@ -807,33 +1003,96 @@ $("copy").addEventListener("click", async () => {
   setTimeout(() => (button.textContent = original), 1200);
 });
 
+// ---- toolbar ------------------------------------------------------------------------------------
 $("refresh").addEventListener("click", () => fetchAndRender(true));
 $("filter").addEventListener("input", render);
-$("zoom").addEventListener("input", (e) => { zoomLevel = parseFloat(e.target.value); render(); });
+$("zoom").addEventListener("input", (e) => { zoom = parseFloat(e.target.value); applyZoom(); });
 $("fit").addEventListener("click", () => {
-  zoomLevel = 1; $("zoom").value = "1"; render(); canvas.scrollTo(0, 0);
+  zoom = 1; $("zoom").value = "1"; applyZoom(); centerView();
+});
+$("shuffle").addEventListener("click", () => {
+  pins = {}; savePins();
+  for (const node of sim.values()) {
+    node.pinned = false; node.fx = null; node.fy = null;
+    node.vx += rand(-50, 50); node.vy += rand(-50, 50);    // a kick so the layout actually reshuffles
+  }
+  reheat(1);
+  render();
 });
 
-// drag-to-pan the canvas (ignore drags that start on a node); track whether the press actually
-// moved, so the click that ends a pan-drag doesn't get mistaken for a plain click below.
+// ---- node drag + canvas pan ---------------------------------------------------------------------
+// Press on a node → potential drag; press on empty canvas → pan. Both resolve on the window so a
+// fast drag that leaves the element still tracks.
 let panStart = null, panMoved = false;
+
+// Clear a stale drag-suppression at the start of any fresh press. A moved-drag sets suppressClick
+// on mouseup so the trailing click can't open the menu; but if that mouseup lands off the graph no
+// click fires to reset it — this capture-phase reset makes sure the next press starts clean.
+window.addEventListener("mousedown", () => { suppressClick = false; }, true);
+
+graph.addEventListener("mousedown", (event) => {
+  const el = event.target.closest(".node");
+  if (!el || event.target.closest(".pin")) return;       // pin glyph handles its own click (unpin)
+  const node = sim.get(el.dataset.id);
+  if (!node || node.data.ghost) return;                  // ghosts are layout artifacts — not draggable
+  event.preventDefault();
+  const rect = graph.getBoundingClientRect();
+  const gx = (event.clientX - rect.left) / zoom, gy = (event.clientY - rect.top) / zoom;
+  drag = { node, moved: false, offX: gx - node.x, offY: gy - node.y, startGX: gx, startGY: gy };
+  el.classList.add("dragging");
+  closeMenu();
+  reheat(DRAG_ALPHA);
+});
+
 canvas.addEventListener("mousedown", (event) => {
-  if (event.target.closest(".node")) return;
+  if (event.target.closest(".node")) return;             // node press is a drag, handled above
   closeMenu();
   isPanning = true;
   panMoved = false;
   canvas.classList.add("panning");
   panStart = { x: event.clientX, y: event.clientY, left: canvas.scrollLeft, top: canvas.scrollTop };
 });
+
 window.addEventListener("mousemove", (event) => {
+  if (drag) {
+    const rect = graph.getBoundingClientRect();
+    const gx = (event.clientX - rect.left) / zoom, gy = (event.clientY - rect.top) / zoom;
+    if (!drag.moved && Math.hypot(gx - drag.startGX, gy - drag.startGY) > 3) drag.moved = true;
+    drag.node.fx = gx - drag.offX; drag.node.fy = gy - drag.offY;
+    drag.node.x = drag.node.fx; drag.node.y = drag.node.fy;
+    reheat(DRAG_ALPHA);
+    return;
+  }
   if (!isPanning) return;
   if (Math.abs(event.clientX - panStart.x) + Math.abs(event.clientY - panStart.y) > 4) panMoved = true;
   canvas.scrollLeft = panStart.left - (event.clientX - panStart.x);
   canvas.scrollTop = panStart.top - (event.clientY - panStart.y);
 });
-window.addEventListener("mouseup", () => { isPanning = false; canvas.classList.remove("panning"); });
 
-// A plain click on the main view — empty canvas, not a node — closes the details drawer.
+window.addEventListener("mouseup", () => {
+  if (drag) {
+    const node = drag.node;
+    if (node.el) node.el.classList.remove("dragging");
+    if (drag.moved) {
+      node.pinned = true;                                // dropped where the user let go — pin + persist
+      pins[node.id] = { x: node.fx, y: node.fy };
+      savePins();
+      suppressClick = true;                              // the trailing click must not open the menu
+      reheat(0.3);                                       // let neighbors ease around the new pin
+      render();                                          // reflect the pinned class + 📌 glyph
+    } else if (!node.pinned) {
+      node.fx = null; node.fy = null;                    // a click, not a move — leave it free
+    }
+    drag = null;
+    isPanning = false;
+    canvas.classList.remove("panning");
+    return;
+  }
+  isPanning = false;
+  canvas.classList.remove("panning");
+});
+
+// A plain click on empty canvas — not a node — closes the details drawer.
 canvas.addEventListener("click", (event) => {
   if (event.target.closest(".node")) return;   // node clicks are handled on the graph layer
   if (panMoved) return;                          // this click merely ended a pan-drag

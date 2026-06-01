@@ -4,8 +4,8 @@
 Reads the durable records under `$TX_IDE_HOME/sessions/<uuid>.json` through the real
 `SessionStore`, so the state model, the `needs_attention` gating, and the tag-chip colors
 match the `tx` picker exactly — no second source of truth to drift. It then serves the
-records to `index.html`, which lays them out as a tree (the record `parent` field, matched
-by name) and lets you click any node to read its full JSON.
+records to `index.html`, which lays them out as a force-directed graph (edges from the
+record `parent` field, matched by id or name) you can pan, drag, and click for details.
 
 Run it from anywhere:
 
@@ -82,8 +82,8 @@ def session_payload(session: Session, now: float) -> dict:
 
 
 def build_feed() -> dict:
-    """Load every record and shape the JSON the page renders, newest-activity first so the graph's
-    sibling order matches the picker's recency ordering."""
+    """Load every record and shape the JSON the page renders, newest-activity first (the picker's
+    recency ordering — the page seeds newcomers into the force layout in this order)."""
     now = time.time()
     sessions = sorted(
         SessionStore().all(), key=lambda session: session.last_activity or 0, reverse=True
