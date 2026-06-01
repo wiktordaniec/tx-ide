@@ -1,0 +1,854 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>tx-ide · session graph</title>
+<style>
+  /* tokyonight-night — mirrors shared/palette.sh so the page reads like the rest of tx-ide. */
+  :root {
+    --bg: #16161e;
+    --bg-deep: #15161e;
+    --panel: #1a1b26;
+    --surface: #1f2335;
+    --surface-hi: #24283b;
+    --border: #3b4261;
+    --fg: #c0caf5;
+    --dim: #a9b1d6;
+    --muted: #565f89;
+    --accent: #7aa2f7;
+    --warn: #e0af68;
+    --red: #f7768e;
+    --green: #9ece6a;
+    --cyan: #7dcfff;
+    --magenta: #bb9af7;
+
+    --node-w: 216px;
+    --node-h: 72px;
+  }
+
+  /* Per-state accent — semantics straight from session.py's State enum docstrings. */
+  .s-working  { --state: var(--cyan); }
+  .s-waiting  { --state: var(--red); }
+  .s-idle     { --state: var(--dim); }
+  .s-alive    { --state: var(--green); }
+  .s-exited   { --state: var(--muted); }
+  .s-archived { --state: var(--magenta); }
+  .s-ghost    { --state: var(--muted); }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 13px/1.45 ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ---- top toolbar ------------------------------------------------------------------------ */
+  header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .brand { font-weight: 700; color: var(--fg); letter-spacing: .3px; }
+  .brand .tx { color: var(--accent); }
+  .meta { color: var(--muted); font-size: 12px; }
+  .meta b { color: var(--dim); font-weight: 600; }
+  .spacer { flex: 1 1 auto; }
+
+  .control { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; }
+  .control input[type="search"] {
+    background: var(--bg-deep);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    border-radius: 6px;
+    padding: 5px 8px;
+    width: 160px;
+    font: inherit;
+  }
+  .control input[type="search"]:focus { outline: none; border-color: var(--accent); }
+  button {
+    background: var(--surface);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 10px;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  .toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+  input[type="range"] { accent-color: var(--accent); width: 96px; }
+
+  /* ---- legend / state filter -------------------------------------------------------------- */
+  .legend {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .legend .hint { color: var(--muted); font-size: 11px; margin-right: 2px; }
+  .lchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 9px 3px 7px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    cursor: pointer;
+    user-select: none;
+    color: var(--dim);
+    background: var(--surface);
+    font-size: 12px;
+    transition: opacity .12s, border-color .12s;
+  }
+  .lchip .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--state); box-shadow: 0 0 6px -1px var(--state); }
+  .lchip .n { color: var(--muted); font-size: 11px; }
+  .lchip[aria-pressed="false"] { opacity: .38; border-style: dashed; }
+  .lchip:hover { border-color: var(--state); }
+
+  /* ---- graph canvas ----------------------------------------------------------------------- */
+  #canvas {
+    position: relative;
+    flex: 1 1 auto;
+    overflow: auto;
+    cursor: grab;
+    background:
+      radial-gradient(circle at 1px 1px, rgba(122,162,247,.08) 1px, transparent 0) 0 0 / 26px 26px;
+  }
+  #canvas.panning { cursor: grabbing; }
+  #sizer { position: relative; }
+  #graph { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+  #edges { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+  #edges path { fill: none; stroke: var(--border); stroke-width: 1.6; }
+  #edges path.lit { stroke: var(--accent); stroke-width: 2.2; }
+
+  .node {
+    position: absolute;
+    width: var(--node-w);
+    min-height: var(--node-h);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--state);
+    border-radius: 8px;
+    padding: 8px 10px;
+    cursor: pointer;
+    overflow: hidden;
+    transition: border-color .12s, box-shadow .12s, transform .08s;
+  }
+  .node:hover { border-color: var(--state); transform: translateY(-1px); }
+  .node.sel { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(122,162,247,.45), 0 8px 24px -10px #000; }
+  .node.dim { opacity: .25; }
+
+  .node .row1 { display: flex; align-items: center; gap: 7px; }
+  .node .dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--state); box-shadow: 0 0 7px -1px var(--state); }
+  .node .name {
+    font-weight: 700; color: var(--fg); flex: 1 1 auto;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .node .st { flex: 0 0 auto; color: var(--state); font-size: 11px; font-weight: 600; }
+  .node .row2 { color: var(--muted); font-size: 11px; margin: 3px 0 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .node .row2 .warn { color: var(--warn); }
+  .node.ghost { background: transparent; border-style: dashed; cursor: default; }
+  .node.ghost:hover { transform: none; }
+
+  .chips { display: flex; gap: 4px; flex-wrap: nowrap; overflow: hidden; }
+  .chip {
+    font-size: 10.5px; padding: 1px 6px; border-radius: 999px;
+    color: var(--chip); border: 1px solid var(--chip);
+    background: color-mix(in srgb, var(--chip) 16%, transparent);
+    white-space: nowrap;
+  }
+
+  /* ---- empty state ------------------------------------------------------------------------ */
+  #empty {
+    position: absolute; inset: 0; display: none;
+    align-items: center; justify-content: center; flex-direction: column; gap: 8px;
+    color: var(--muted); text-align: center; pointer-events: none;
+  }
+  #empty.show { display: flex; }
+  #empty .big { font-size: 15px; color: var(--dim); }
+
+  /* ---- JSON drawer ------------------------------------------------------------------------ */
+  /* Side drawer — opens from the right; the top-down tree keeps the vertical axis to itself. */
+  #drawer {
+    position: fixed; top: 0; right: 0; height: 100%; width: min(480px, 90vw);
+    background: var(--bg-deep);
+    border-left: 1px solid var(--border);
+    box-shadow: -16px 0 40px -20px #000;
+    transform: translateX(100%);
+    transition: transform .18s ease;
+    display: flex; flex-direction: column; z-index: 20;
+  }
+  #drawer.open { transform: translateX(0); }
+  .dhead {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px; border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  .dhead .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--state); box-shadow: 0 0 8px -1px var(--state); }
+  .dhead .dname { font-weight: 700; font-size: 14px; flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dhead .dstate { color: var(--state); font-size: 12px; font-weight: 600; }
+  .dsub { flex: 0 0 auto; padding: 8px 14px; color: var(--muted); font-size: 11.5px; border-bottom: 1px solid var(--border); display: flex; gap: 14px; flex-wrap: wrap; }
+  .dsub b { color: var(--dim); font-weight: 600; }
+  .dbody { flex: 1 1 auto; overflow: auto; margin: 0; padding: 14px; }
+  pre#json { margin: 0; white-space: pre; font: 12px/1.55 inherit; tab-size: 2; }
+  pre#json .key  { color: var(--accent); }
+  pre#json .str  { color: var(--green); }
+  pre#json .num  { color: var(--warn); }
+  pre#json .bool { color: var(--magenta); }
+  pre#json .null { color: var(--red); }
+  .dfoot { flex: 0 0 auto; padding: 8px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; }
+
+  /* ---- focus toast ------------------------------------------------------------------------ */
+  #toast {
+    position: fixed; left: 50%; bottom: 22px; transform: translate(-50%, 12px);
+    background: var(--surface-hi); color: var(--fg);
+    border: 1px solid var(--accent); border-left: 3px solid var(--accent);
+    border-radius: 8px; padding: 8px 14px; font-size: 12.5px;
+    box-shadow: 0 8px 30px -12px #000; opacity: 0; pointer-events: none;
+    transition: opacity .15s, transform .15s; z-index: 40;
+  }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+  #toast.err  { border-color: var(--red); border-left-color: var(--red); }
+
+  /* ---- one-click action menu (f / o / m) -------------------------------------------------- */
+  #menu {
+    position: fixed; z-index: 50; min-width: 188px;
+    background: var(--surface-hi); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 16px 40px -16px #000; padding: 5px;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  #menu[hidden] { display: none; }
+  .mi {
+    display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+    background: transparent; border: 0; border-radius: 7px; padding: 7px 9px;
+    cursor: pointer; color: var(--fg); font: inherit;
+  }
+  .mi:hover:not(:disabled) { background: rgba(122,162,247,.16); }
+  .mi:disabled { opacity: .4; cursor: default; }
+  .mi kbd {
+    font: 11px/1 ui-monospace, monospace; background: var(--bg-deep); color: var(--accent);
+    border: 1px solid var(--border); border-radius: 5px; padding: 3px 6px; min-width: 16px; text-align: center;
+  }
+  .mi .ml { font-weight: 600; }
+  .mi .ms { margin-left: auto; color: var(--muted); font-size: 11px; }
+  #menu.ghost .mi[data-act="f"], #menu.ghost .mi[data-act="m"] { display: none; }
+  .node.menu-active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(122,162,247,.35); }
+
+  /* ---- message-tx-assistant composer ------------------------------------------------------ */
+  #composer {
+    position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.45);
+  }
+  #composer[hidden] { display: none; }
+  .cbox {
+    width: min(560px, 92vw); background: var(--bg-deep); border: 1px solid var(--border);
+    border-radius: 12px; box-shadow: 0 24px 60px -20px #000; padding: 16px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .chead { color: var(--dim); font-size: 13px; }
+  .chead b { color: var(--accent); }
+  .chead #cName { color: var(--fg); font-weight: 600; }
+  #cInput {
+    background: var(--panel); border: 1px solid var(--border); color: var(--fg);
+    border-radius: 8px; padding: 10px 12px; font: inherit; width: 100%;
+  }
+  #cInput:focus { outline: none; border-color: var(--accent); }
+  .cfoot { display: flex; align-items: center; gap: 10px; }
+  .chint { color: var(--muted); font-size: 11px; }
+  .cspacer { flex: 1; }
+  #cSend { border-color: var(--accent); color: var(--accent); }
+</style>
+</head>
+<body>
+  <header>
+    <span class="brand"><span class="tx">tx</span>-ide · sessions</span>
+    <span class="meta" id="summary">loading…</span>
+    <span class="spacer"></span>
+    <label class="control"><input type="search" id="filter" placeholder="filter name / tag…" autocomplete="off" /></label>
+    <label class="control toggle"><input type="checkbox" id="auto" checked /> auto-refresh</label>
+    <span class="control">zoom <input type="range" id="zoom" min="0.5" max="1.5" step="0.1" value="1" /></span>
+    <button id="fit" title="reset zoom &amp; recenter">1:1</button>
+    <button id="refresh" title="reload records now">↻ refresh</button>
+  </header>
+
+  <div class="legend" id="legend">
+    <span class="hint">states — click to show / hide:</span>
+  </div>
+
+  <div id="canvas">
+    <div id="sizer">
+      <div id="graph">
+        <svg id="edges"></svg>
+        <!-- node divs injected here -->
+      </div>
+    </div>
+    <div id="empty"><div class="big">no sessions to show</div><div id="emptyWhy"></div></div>
+  </div>
+
+  <aside id="drawer">
+    <div class="dhead">
+      <span class="dot" id="dDot"></span>
+      <span class="dname" id="dName">—</span>
+      <span class="dstate" id="dState"></span>
+      <button id="dClose" title="close (Esc)">✕</button>
+    </div>
+    <div class="dsub" id="dSub"></div>
+    <pre class="dbody" id="json"></pre>
+    <div class="dfoot">
+      <button id="copy">⧉ copy JSON</button>
+    </div>
+  </aside>
+
+  <div id="menu" hidden>
+    <button class="mi" data-act="f"><kbd>f</kbd><span class="ml">focus</span><span class="ms">tmux + iTerm</span></button>
+    <button class="mi" data-act="d"><kbd>d</kbd><span class="ml">details</span><span class="ms">JSON panel</span></button>
+    <button class="mi" data-act="m"><kbd>m</kbd><span class="ml">message</span><span class="ms">tx-assistant</span></button>
+  </div>
+
+  <div id="composer" hidden>
+    <div class="cbox">
+      <div class="chead">message <b>tx-assistant</b> about <span id="cName">—</span></div>
+      <input id="cInput" type="text" autocomplete="off"
+             placeholder='e.g. add tag "wip" · rename to foo · archive it' />
+      <div class="cfoot">
+        <span class="chint">sent as a request with this session's id + context · Enter to send · Esc to cancel</span>
+        <span class="cspacer"></span>
+        <button id="cCancel">cancel</button>
+        <button id="cSend">send</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+"use strict";
+
+// ---- constants ----------------------------------------------------------------------------------
+const NODE_W = 216, NODE_H = 72;
+const LEVEL_GAP = 90;   // vertical gap between tree depths (the graph grows top-down)
+const SIB_GAP = 30;     // horizontal gap between sibling subtrees
+const MARGIN = 32, ROOT_GAP = 40;
+const REFRESH_MS = 5000;
+
+// State semantics (kept in sync with lib/tx/session.py State enum docstrings).
+const STATE_INFO = {
+  working:  "running a turn",
+  waiting:  "turn done — needs you",
+  idle:     "alive, no active turn",
+  alive:    "live (non-llm)",
+  exited:   "tmux session gone",
+  archived: "intentionally retired",
+};
+const STATE_ORDER = ["working", "waiting", "idle", "alive", "exited", "archived"];
+
+// ---- mutable view state -------------------------------------------------------------------------
+let lastFeed = null;
+let hiddenStates = new Set(["archived"]);   // the user's explicit ask: archived starts hidden
+let selectedId = null;            // node whose JSON drawer is open
+let menuFor = null;               // node id the one-click action menu is anchored to
+let composerFor = null;           // node id the "message tx-assistant" composer is open for
+let zoomLevel = 1;
+let isPanning = false;
+let lastFetchAt = 0;
+
+const $ = (id) => document.getElementById(id);
+const canvas = $("canvas"), sizer = $("sizer"), graph = $("graph"), svg = $("edges");
+
+// ---- data fetch ---------------------------------------------------------------------------------
+async function fetchAndRender(userInitiated) {
+  // Don't yank the graph out from under an in-progress drag or an open action menu.
+  if ((isPanning || menuFor !== null || composerFor !== null) && !userInitiated) return;
+  let feed;
+  try {
+    const response = await fetch("/api/sessions", { cache: "no-store" });
+    feed = await response.json();
+  } catch (error) {
+    $("summary").textContent = "server unreachable — is server.py running?";
+    return;
+  }
+  lastFeed = feed;
+  lastFetchAt = Date.now();
+  render();
+}
+
+// ---- forest construction ------------------------------------------------------------------------
+// Each record becomes a node; the edge is record.parent matched by NAME. Names are reusable
+// (D7), so when several records share a parent's name we link to the most relevant one (a live
+// record beats a terminal one, then most-recently-active). A parent name with no record at all
+// becomes a dashed "ghost" node so the lineage to a gone session is still visible.
+function buildNodes(feed) {
+  const nodes = feed.sessions.map((entry) => ({
+    id: entry.record.id,
+    name: entry.record.name,
+    parentName: entry.record.parent,
+    state: entry.record.state,
+    role: entry.record.role,
+    kind: entry.record.kind,
+    tags: entry.record.tags,
+    lastActivity: entry.record.last_activity || 0,
+    derived: entry.derived,
+    json: entry.json,
+    ghost: false,
+  }));
+
+  const byName = new Map();
+  const byId = new Map();
+  for (const node of nodes) {
+    if (!byName.has(node.name)) byName.set(node.name, []);
+    byName.get(node.name).push(node);
+    byId.set(node.id, node);
+  }
+
+  const terminal = (state) => state === "exited" || state === "archived";
+  // A record's `parent` may be a parent's display name (older records) or its tmux_name / UUID
+  // (newer records — tx now id-names process sessions). Resolve an exact id first, then by name.
+  const pickParent = (ref, child) => {
+    if (ref !== child.id && byId.has(ref)) return byId.get(ref);
+    const candidates = (byName.get(ref) || []).filter((n) => n.id !== child.id);
+    if (candidates.length === 0) return null;
+    const ranked = candidates.slice().sort((a, b) => {
+      if (terminal(a.state) !== terminal(b.state)) return terminal(a.state) ? 1 : -1;
+      return b.lastActivity - a.lastActivity;
+    });
+    return ranked[0];
+  };
+
+  // Resolve each node's parent node (creating ghosts for absent parent names).
+  const ghosts = new Map();
+  for (const node of nodes) {
+    if (!node.parentName) { node.parent = null; continue; }
+    const found = pickParent(node.parentName, node);
+    if (found) { node.parent = found; continue; }
+    if (!ghosts.has(node.parentName)) {
+      ghosts.set(node.parentName, {
+        id: "ghost::" + node.parentName, name: node.parentName, parent: null,
+        state: "ghost", ghost: true, tags: [], lastActivity: 0, children: [],
+      });
+    }
+    node.parent = ghosts.get(node.parentName);
+  }
+  return { all: nodes.concat([...ghosts.values()]) };
+}
+
+// Visible forest: drop nodes whose state is filtered off, re-attach orphans to their nearest
+// visible ancestor, prune ghosts left with no visible descendants.
+function visibleForest(allNodes) {
+  const hidden = (node) => !node.ghost && hiddenStates.has(node.state);
+  const effectiveParent = (node) => {
+    let cursor = node.parent, guard = 0;
+    while (cursor && hidden(cursor) && guard++ < 1000) cursor = cursor.parent;
+    return cursor || null;
+  };
+
+  for (const node of allNodes) { node.children = []; node.effParent = null; }
+  const visible = allNodes.filter((n) => !hidden(n));
+  for (const node of visible) {
+    if (node.ghost) continue;            // ghost roots get parented by their kids below
+    node.effParent = effectiveParent(node);
+  }
+  // A ghost is only worth keeping if some visible node points at it.
+  const ghostKeep = new Set(visible.filter((n) => n.effParent && n.effParent.ghost).map((n) => n.effParent.id));
+  const kept = visible.filter((n) => !n.ghost || ghostKeep.has(n.id));
+
+  for (const node of kept) {
+    if (node.effParent && kept.includes(node.effParent)) node.effParent.children.push(node);
+  }
+  const recency = (a, b) => b.lastActivity - a.lastActivity;
+  for (const node of kept) node.children.sort(recency);
+  const roots = kept.filter((n) => !n.effParent).sort(recency);
+  return { kept, roots };
+}
+
+// ---- tidy top-down tree layout ------------------------------------------------------------------
+// Depth runs down the page (depth → y); siblings spread across it (a leaf cursor → x, with each
+// parent centered over its children). This suits a portrait monitor — the tree grows into the tall
+// axis instead of off the right edge.
+function layout(roots) {
+  let cursorX = MARGIN, maxDepth = 0;
+  const place = (node, depth, visited) => {
+    if (visited.has(node.id)) return;       // cycle guard (name reuse could, in theory, loop)
+    visited.add(node.id);
+    maxDepth = Math.max(maxDepth, depth);
+    node.y = MARGIN + depth * (NODE_H + LEVEL_GAP);
+    if (node.children.length === 0) {
+      node.x = cursorX;
+      cursorX += NODE_W + SIB_GAP;
+    } else {
+      node.children.forEach((child) => place(child, depth + 1, visited));
+      node.x = (node.children[0].x + node.children[node.children.length - 1].x) / 2;
+    }
+  };
+  roots.forEach((root, index) => {
+    place(root, 0, new Set());
+    if (index < roots.length - 1) cursorX += ROOT_GAP;
+  });
+  const width = cursorX - SIB_GAP + MARGIN;
+  const height = MARGIN + maxDepth * (NODE_H + LEVEL_GAP) + NODE_H + MARGIN;
+  return { width: Math.max(width, NODE_W + 2 * MARGIN), height: Math.max(height, NODE_H + 2 * MARGIN) };
+}
+
+// ---- render -------------------------------------------------------------------------------------
+function render() {
+  if (!lastFeed) return;
+  const savedScroll = { left: canvas.scrollLeft, top: canvas.scrollTop };
+
+  const { all } = buildNodes(lastFeed);
+  const query = $("filter").value.trim().toLowerCase();
+  const { kept, roots } = visibleForest(all);
+  const dims = layout(roots);
+
+  // size + zoom
+  graph.style.width = dims.width + "px";
+  graph.style.height = dims.height + "px";
+  graph.style.transform = `scale(${zoomLevel})`;
+  sizer.style.width = dims.width * zoomLevel + "px";
+  sizer.style.height = dims.height * zoomLevel + "px";
+  svg.setAttribute("width", dims.width);
+  svg.setAttribute("height", dims.height);
+  svg.setAttribute("viewBox", `0 0 ${dims.width} ${dims.height}`);
+
+  // edges first (behind nodes)
+  const edgeMarkup = kept
+    .filter((n) => n.effParent && kept.includes(n.effParent))
+    .map((n) => {
+      const p = n.effParent;
+      const sx = p.x + NODE_W / 2, sy = p.y + NODE_H;   // parent bottom-center
+      const ex = n.x + NODE_W / 2, ey = n.y;            // child top-center
+      const my = (sy + ey) / 2;
+      const lit = (selectedId && (n.id === selectedId || p.id === selectedId)) ? " class=\"lit\"" : "";
+      return `<path${lit} d="M${sx},${sy} C${sx},${my} ${ex},${my} ${ex},${ey}" />`;
+    })
+    .join("");
+  svg.innerHTML = edgeMarkup;
+
+  // nodes
+  for (const old of [...graph.querySelectorAll(".node")]) old.remove();
+  for (const node of kept) {
+    graph.appendChild(buildNodeEl(node, query));
+  }
+
+  // empty state
+  const total = lastFeed.sessions.length;
+  const showEmpty = kept.length === 0;
+  $("empty").classList.toggle("show", showEmpty);
+  $("emptyWhy").textContent = total === 0 ? "(no records under the sessions dir)" : "(everything is filtered out — re-enable a state above)";
+
+  // summary
+  const home = lastFeed.home;
+  const shown = kept.filter((n) => !n.ghost).length;
+  $("summary").innerHTML = `<b>${total}</b> records · <b>${shown}</b> shown · <span title="${home}">${home.replace(/^.*\/(?=[^/]*\/[^/]*$)/, "…/")}</span>`;
+
+  buildLegend();
+  refreshDrawer();
+  canvas.scrollTo(savedScroll.left, savedScroll.top);
+}
+
+function buildNodeEl(node, query) {
+  const el = document.createElement("div");
+  el.className = "node s-" + node.state + (node.ghost ? " ghost" : "");
+  el.style.left = node.x + "px";
+  el.style.top = node.y + "px";
+  el.dataset.id = node.id;
+  if (node.id === selectedId) el.classList.add("sel");
+  if (query && !node.ghost && !(node.name.toLowerCase().includes(query) || node.tags.join(" ").toLowerCase().includes(query))) {
+    el.classList.add("dim");
+  }
+
+  if (node.ghost) {
+    el.innerHTML =
+      `<div class="row1"><span class="dot"></span><span class="name">${escapeHtml(node.name)}</span>` +
+      `<span class="st">no record</span></div>` +
+      `<div class="row2">referenced as a parent — lineage only</div>`;
+    return el;
+  }
+
+  const chips = node.tags.map((tag) => {
+    const color = (node.derived.tag_colors && node.derived.tag_colors[tag]) || "var(--dim)";
+    return `<span class="chip" style="--chip:${color}">${escapeHtml(tag)}</span>`;
+  }).join("");
+
+  el.innerHTML =
+    `<div class="row1"><span class="dot"></span>` +
+    `<span class="name">${escapeHtml(node.name)}</span>` +
+    `<span class="st">${node.state}</span></div>` +
+    `<div class="row2">${node.role} · ${node.kind} · idle <span class="warn">${node.derived.idle_rel}</span></div>` +
+    `<div class="chips">${chips}</div>`;
+  return el;
+}
+
+// ---- legend / filter ----------------------------------------------------------------------------
+function buildLegend() {
+  const counts = {};
+  if (lastFeed) for (const entry of lastFeed.sessions) {
+    counts[entry.record.state] = (counts[entry.record.state] || 0) + 1;
+  }
+  const legend = $("legend");
+  [...legend.querySelectorAll(".lchip")].forEach((c) => c.remove());
+  for (const state of STATE_ORDER) {
+    const chip = document.createElement("span");
+    chip.className = "lchip s-" + state;
+    const pressed = !hiddenStates.has(state);
+    chip.setAttribute("aria-pressed", String(pressed));
+    chip.title = STATE_INFO[state];
+    chip.innerHTML = `<span class="dot"></span>${state}<span class="n">${counts[state] || 0}</span>`;
+    chip.addEventListener("click", () => {
+      if (hiddenStates.has(state)) hiddenStates.delete(state); else hiddenStates.add(state);
+      render();
+    });
+    legend.appendChild(chip);
+  }
+}
+
+// ---- drawer (JSON preview) ----------------------------------------------------------------------
+function openNode(id) {
+  selectedId = id;
+  render();
+}
+function refreshDrawer() {
+  const drawer = $("drawer");
+  if (!selectedId) { drawer.classList.remove("open"); return; }
+  const entry = lastFeed.sessions.find((e) => e.record.id === selectedId);
+  if (!entry) {                         // selected session vanished (e.g. went to a hidden state)
+    if (selectedId.startsWith("ghost::")) {
+      drawer.className = "s-ghost open";
+      $("dDot"); $("dName").textContent = selectedId.slice("ghost::".length);
+      $("dState").textContent = "no record";
+      $("dSub").innerHTML = `<span>This name is referenced as a <b>parent</b> but has no record on disk — shown only to anchor its children's lineage.</span>`;
+      $("json").innerHTML = "";
+      return;
+    }
+    drawer.classList.remove("open");
+    selectedId = null;
+    return;
+  }
+  const record = entry.record, derived = entry.derived;
+  drawer.className = "s-" + record.state + " open";
+  $("dName").textContent = record.name;
+  $("dState").textContent = record.state + (derived.needs_attention ? " · needs you" : "");
+  $("dSub").innerHTML =
+    `<span><b>${record.role}</b> · ${record.kind}</span>` +
+    `<span>started <b>${derived.started_rel}</b> ago</span>` +
+    `<span>idle <b>${derived.idle_rel}</b></span>` +
+    `<span>pid <b>${record.pid ?? "—"}</b></span>` +
+    `<span>${record.chats.length} chat(s)</span>`;
+  $("json").innerHTML = highlightJson(entry.json);
+}
+function closeDrawer() { selectedId = null; render(); }
+
+// Minimal JSON syntax highlighter — keys, strings, numbers, booleans, null.
+function highlightJson(text) {
+  const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return escaped.replace(
+    /("(\\.|[^"\\])*"(\s*:)?|\b(true|false)\b|\bnull\b|-?\d+(\.\d+)?([eE][+-]?\d+)?)/g,
+    (match) => {
+      let cls = "num";
+      if (/^"/.test(match)) cls = /:\s*$/.test(match) ? "key" : "str";
+      else if (/^(true|false)$/.test(match)) cls = "bool";
+      else if (match === "null") cls = "null";
+      return `<span class="${cls}">${match}</span>`;
+    }
+  );
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+// ---- interactions -------------------------------------------------------------------------------
+// One click on a node opens a small action menu (f focus · d details · m message) anchored at it,
+// like a tmux display-menu. Press f/d/m or click a row to act; Esc or a click away closes it.
+const menu = $("menu");
+
+function openMenu(id, nodeEl) {
+  menuFor = id;
+  menu.classList.toggle("ghost", id.startsWith("ghost::"));   // a ghost node only supports "open"
+  menu.hidden = false;
+  const rect = nodeEl.getBoundingClientRect();
+  const width = menu.offsetWidth || 188;
+  let left = rect.right + 8;
+  if (left + width > window.innerWidth - 8) left = rect.left - width - 8;   // flip if it would overflow
+  menu.style.left = Math.max(8, left) + "px";
+  menu.style.top = Math.min(rect.top, window.innerHeight - menu.offsetHeight - 8) + "px";
+  for (const node of graph.querySelectorAll(".node.menu-active")) node.classList.remove("menu-active");
+  nodeEl.classList.add("menu-active");
+}
+
+function closeMenu() {
+  if (menuFor === null) return;
+  menuFor = null;
+  menu.hidden = true;
+  for (const node of graph.querySelectorAll(".node.menu-active")) node.classList.remove("menu-active");
+}
+
+function runMenuAction(act) {
+  const id = menuFor;
+  closeMenu();
+  if (!id) return;
+  const ghost = id.startsWith("ghost::");
+  if (act === "d") {
+    if (ghost) openNode(id);
+    else openNode(id === selectedId ? (closeDrawer(), null) : id);
+  } else if (act === "f") {
+    if (ghost) { toast("ghost node — no live session", true); return; }
+    focusSession(id);
+  } else if (act === "m") {
+    if (ghost) { toast("ghost node — no live session", true); return; }
+    openComposer(id);
+  }
+}
+
+graph.addEventListener("click", (event) => {
+  const nodeEl = event.target.closest(".node");
+  if (nodeEl) openMenu(nodeEl.dataset.id, nodeEl);
+});
+menu.addEventListener("click", (event) => {
+  const item = event.target.closest(".mi");
+  if (item && !item.disabled) runMenuAction(item.dataset.act);
+});
+document.addEventListener("click", (event) => {          // a click away closes the menu
+  if (event.target.closest("#menu") || event.target.closest(".node")) return;
+  closeMenu();
+});
+
+// "m" opens a composer to type a request; it's sent to tx-assistant with this session's id + context.
+function openComposer(id) {
+  composerFor = id;
+  const entry = lastFeed && lastFeed.sessions.find((e) => e.record.id === id);
+  $("cName").textContent = entry ? entry.record.name : id;
+  $("cInput").value = "";
+  $("composer").hidden = false;
+  $("cInput").focus();
+}
+function closeComposer() { composerFor = null; $("composer").hidden = true; }
+async function sendToAssistant() {
+  const request = $("cInput").value.trim();
+  const id = composerFor;
+  if (!id || !request) { closeComposer(); return; }
+  closeComposer();
+  try {
+    const response = await fetch("/api/message", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, request }),
+    });
+    const data = await response.json();
+    toast(data.ok ? "sent to tx-assistant" : (data.error || "could not send"), !data.ok);
+  } catch { toast("server unreachable", true); }
+}
+$("cSend").addEventListener("click", sendToAssistant);
+$("cCancel").addEventListener("click", closeComposer);
+$("composer").addEventListener("click", (event) => { if (event.target.id === "composer") closeComposer(); });
+$("cInput").addEventListener("keydown", (event) => {
+  event.stopPropagation();                       // keep the global f/o/m + Esc handler out of the input
+  if (event.key === "Enter") sendToAssistant();
+  else if (event.key === "Escape") closeComposer();
+});
+
+async function focusSession(id) {
+  try {
+    const response = await fetch("/api/focus", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    const data = await response.json();
+    toast(data.ok ? `focused ${data.name}` : `${data.name || "session"}: ${data.error}`, !data.ok);
+  } catch {
+    toast("server unreachable", true);
+  }
+}
+
+// transient bottom-center status line for focus feedback
+let toastTimer = null;
+function toast(message, isError) {
+  let element = document.getElementById("toast");
+  if (!element) {
+    element = document.createElement("div");
+    element.id = "toast";
+    document.body.appendChild(element);
+  }
+  element.textContent = message;
+  element.className = "show" + (isError ? " err" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { element.className = ""; }, 1800);
+}
+$("dClose").addEventListener("click", closeDrawer);
+document.addEventListener("keydown", (event) => {
+  const typing = /^(INPUT|TEXTAREA)$/.test(event.target.tagName);
+  if (menuFor !== null && !typing) {                 // f/d/m drive the open action menu
+    if (event.key === "Escape") { closeMenu(); return; }
+    if (event.key === "f" || event.key === "d" || event.key === "m") {
+      event.preventDefault();                        // don't let the key also type into the composer
+      runMenuAction(event.key);
+      return;
+    }
+  }
+  if (event.key === "Escape") closeDrawer();
+});
+
+$("copy").addEventListener("click", async () => {
+  const entry = lastFeed && lastFeed.sessions.find((e) => e.record.id === selectedId);
+  if (!entry) return;
+  await navigator.clipboard.writeText(entry.json);
+  const button = $("copy");
+  const original = button.textContent;
+  button.textContent = "✓ copied";
+  setTimeout(() => (button.textContent = original), 1200);
+});
+
+$("refresh").addEventListener("click", () => fetchAndRender(true));
+$("filter").addEventListener("input", render);
+$("zoom").addEventListener("input", (e) => { zoomLevel = parseFloat(e.target.value); render(); });
+$("fit").addEventListener("click", () => {
+  zoomLevel = 1; $("zoom").value = "1"; render(); canvas.scrollTo(0, 0);
+});
+
+// drag-to-pan the canvas (ignore drags that start on a node); track whether the press actually
+// moved, so the click that ends a pan-drag doesn't get mistaken for a plain click below.
+let panStart = null, panMoved = false;
+canvas.addEventListener("mousedown", (event) => {
+  if (event.target.closest(".node")) return;
+  closeMenu();
+  isPanning = true;
+  panMoved = false;
+  canvas.classList.add("panning");
+  panStart = { x: event.clientX, y: event.clientY, left: canvas.scrollLeft, top: canvas.scrollTop };
+});
+window.addEventListener("mousemove", (event) => {
+  if (!isPanning) return;
+  if (Math.abs(event.clientX - panStart.x) + Math.abs(event.clientY - panStart.y) > 4) panMoved = true;
+  canvas.scrollLeft = panStart.left - (event.clientX - panStart.x);
+  canvas.scrollTop = panStart.top - (event.clientY - panStart.y);
+});
+window.addEventListener("mouseup", () => { isPanning = false; canvas.classList.remove("panning"); });
+
+// A plain click on the main view — empty canvas, not a node — closes the details drawer.
+canvas.addEventListener("click", (event) => {
+  if (event.target.closest(".node")) return;   // node clicks are handled on the graph layer
+  if (panMoved) return;                          // this click merely ended a pan-drag
+  if (selectedId) closeDrawer();
+});
+
+// ---- refresh loop -------------------------------------------------------------------------------
+setInterval(() => { if ($("auto").checked) fetchAndRender(false); }, REFRESH_MS);
+setInterval(() => {
+  if (!lastFetchAt) return;
+  const age = Math.round((Date.now() - lastFetchAt) / 1000);
+  $("refresh").textContent = `↻ refresh (${age}s)`;
+}, 1000);
+
+fetchAndRender(true);
+</script>
+</body>
+</html>
