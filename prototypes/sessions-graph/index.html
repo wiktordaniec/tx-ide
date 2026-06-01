@@ -741,7 +741,7 @@ function mountNodes(kept) {
       (dataNode.id === menuFor ? " menu-active" : "") +
       (dim ? " dim" : "");
     const html = nodeInner(dataNode, node);
-    const sig = className + " " + html;
+    const sig = className + "\x00" + html;
     if (node.sig === sig) continue;          // content unchanged — skip the write and its reflow
     el.className = className;
     el.innerHTML = html;
