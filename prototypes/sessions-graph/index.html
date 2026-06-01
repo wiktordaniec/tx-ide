@@ -135,34 +135,33 @@
   #edges line { stroke: var(--border); stroke-width: 1.6; }
   #edges line.lit { stroke: var(--accent); stroke-width: 2.4; }
 
-  /* A node is a compact card: state dot + name, with tag chips below. Everything else
-     (role / kind / idle / pid / chats / JSON) lives one keypress away in the details drawer. */
+  /* A node is a compact card: state dot + full name, with the role badge + tag chips below. The
+     dot encodes state, so the card carries no state-coloured border. Kind / idle / pid / chats /
+     JSON still live one keypress away in the details drawer. */
   .node {
     position: absolute;
     width: var(--node-w);
     min-height: 34px;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-left: 3px solid var(--state);
     border-radius: 8px;
     padding: 6px 9px 7px;
     cursor: grab;
     overflow: hidden;
     transition: border-color .12s, box-shadow .12s;
   }
-  .node:hover { border-color: var(--state); }
+  .node:hover { border-color: var(--dim); }
   .node.sel { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(122,162,247,.45), 0 8px 24px -10px #000; }
   .node.dim { opacity: .22; }
   .node.dragging { cursor: grabbing; z-index: 6; box-shadow: 0 12px 30px -12px #000; }
   /* A pinned node holds the spot the user dropped it on; a faint inner ring marks it as fixed. */
   .node.pinned { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--state) 45%, transparent); }
-  .node.needs { border-color: color-mix(in srgb, var(--state) 60%, var(--border)); }
 
   .node .row1 { display: flex; align-items: center; gap: 7px; }
   .node .dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--state); }
   .node .name {
     font-weight: 700; color: var(--fg); flex: 1 1 auto;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    overflow-wrap: anywhere;   /* show the whole name — long ones wrap instead of ellipsising */
   }
   .node .pin {
     flex: 0 0 auto; margin-left: 4px; font-size: 10px; line-height: 1; cursor: pointer;
@@ -174,12 +173,18 @@
   .node.ghost { background: transparent; border-style: dashed; cursor: default; }
   .node.ghost:hover { border-color: var(--border); }
 
-  .chips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 5px; max-height: 22px; overflow: hidden; }
+  .chips { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 5px; }
   .chip {
     font-size: 10.5px; padding: 1px 6px; border-radius: 999px;
     color: var(--chip); border: 1px solid var(--chip);
     background: color-mix(in srgb, var(--chip) 16%, transparent);
     white-space: nowrap;
+  }
+  /* Role badge — a neutral pill before the tags, so it reads as metadata rather than a tag. */
+  .role {
+    font-size: 9.5px; letter-spacing: .4px; text-transform: uppercase; white-space: nowrap;
+    padding: 1px 6px; border-radius: 999px;
+    color: var(--dim); border: 1px solid var(--border); background: var(--surface-hi);
   }
 
   /* ---- empty state ------------------------------------------------------------------------ */
@@ -678,13 +683,11 @@ function mountNodes(kept) {
       graph.appendChild(el);
       node.el = el;
     }
-    const needs = !dataNode.ghost && dataNode.derived && dataNode.derived.needs_attention;
     const dim = query && !dataNode.ghost &&
       !(dataNode.name.toLowerCase().includes(query) || (dataNode.tags || []).join(" ").toLowerCase().includes(query));
     el.className = "node s-" + dataNode.state +
       (dataNode.ghost ? " ghost" : "") +
       (node.pinned ? " pinned" : "") +
-      (needs ? " needs" : "") +
       (dataNode.id === selectedId ? " sel" : "") +
       (dataNode.id === menuFor ? " menu-active" : "") +
       (dim ? " dim" : "");
@@ -700,13 +703,14 @@ function nodeInner(dataNode, simNode) {
            `<div class="ghosthint">parent — lineage only</div>`;
   }
   const pin = simNode.pinned ? `<span class="pin" title="pinned — click to release">📌</span>` : "";
+  const role = `<span class="role">${escapeHtml(dataNode.role)}</span>`;
   const chips = (dataNode.tags || []).map((tag) => {
     const color = (dataNode.derived.tag_colors && dataNode.derived.tag_colors[tag]) || "var(--dim)";
     return `<span class="chip" style="--chip:${color}">${escapeHtml(tag)}</span>`;
   }).join("");
   return `<div class="row1"><span class="dot"></span>` +
          `<span class="name">${escapeHtml(dataNode.name)}</span>${pin}</div>` +
-         (chips ? `<div class="chips">${chips}</div>` : "");
+         `<div class="chips">${role}${chips}</div>`;
 }
 
 function buildEdges() {
