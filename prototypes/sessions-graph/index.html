@@ -1038,10 +1038,12 @@ graph.addEventListener("mousedown", (event) => {
   event.preventDefault();
   const rect = graph.getBoundingClientRect();
   const gx = (event.clientX - rect.left) / zoom, gy = (event.clientY - rect.top) / zoom;
-  drag = { node, moved: false, offX: gx - node.x, offY: gy - node.y, startGX: gx, startGY: gy };
-  el.classList.add("dragging");
+  // Hold the node where it is, but do NOT reheat: a plain click must not wake a settled sim — that
+  // residual motion is the "jump". The drag only warms the sim once it crosses the move threshold
+  // (in mousemove below), and openMenu() freezes the sim outright on a click that never moves.
+  node.fx = node.x; node.fy = node.y;
+  drag = { node, el, moved: false, offX: gx - node.x, offY: gy - node.y, startGX: gx, startGY: gy };
   closeMenu();
-  reheat(DRAG_ALPHA);
 });
 
 canvas.addEventListener("mousedown", (event) => {
@@ -1057,7 +1059,11 @@ window.addEventListener("mousemove", (event) => {
   if (drag) {
     const rect = graph.getBoundingClientRect();
     const gx = (event.clientX - rect.left) / zoom, gy = (event.clientY - rect.top) / zoom;
-    if (!drag.moved && Math.hypot(gx - drag.startGX, gy - drag.startGY) > 3) drag.moved = true;
+    if (!drag.moved) {
+      if (Math.hypot(gx - drag.startGX, gy - drag.startGY) <= 3) return;   // jitter — not a drag yet
+      drag.moved = true;                                  // crossed the threshold: now it's a real drag
+      if (drag.el) drag.el.classList.add("dragging");
+    }
     drag.node.fx = gx - drag.offX; drag.node.fy = gy - drag.offY;
     drag.node.x = drag.node.fx; drag.node.y = drag.node.fy;
     reheat(DRAG_ALPHA);
