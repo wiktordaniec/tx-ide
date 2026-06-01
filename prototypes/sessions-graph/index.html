@@ -26,11 +26,12 @@
     --node-w: 172px;
   }
 
-  /* Per-state accent — semantics straight from session.py's State enum docstrings. */
-  .s-working  { --state: var(--cyan); }
-  .s-waiting  { --state: var(--red); }
+  /* Per-state accent colour. Semantics from session.py's State enum; working=green / waiting=blue
+     are a deliberate dashboard choice — alive moves to cyan so it stays distinct from working. */
+  .s-working  { --state: var(--green); }
+  .s-waiting  { --state: var(--accent); }
   .s-idle     { --state: var(--dim); }
-  .s-alive    { --state: var(--green); }
+  .s-alive    { --state: var(--cyan); }
   .s-exited   { --state: var(--muted); }
   .s-archived { --state: var(--magenta); }
   .s-ghost    { --state: var(--muted); }
@@ -113,7 +114,7 @@
     font-size: 12px;
     transition: opacity .12s, border-color .12s;
   }
-  .lchip .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--state); box-shadow: 0 0 6px -1px var(--state); }
+  .lchip .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--state); }
   .lchip .n { color: var(--muted); font-size: 11px; }
   .lchip[aria-pressed="false"] { opacity: .38; border-style: dashed; }
   .lchip:hover { border-color: var(--state); }
@@ -158,12 +159,7 @@
   .node.needs { border-color: color-mix(in srgb, var(--state) 60%, var(--border)); }
 
   .node .row1 { display: flex; align-items: center; gap: 7px; }
-  .node .dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--state); box-shadow: 0 0 7px -1px var(--state); }
-  .node.needs .dot { animation: pulse 1.5s ease-in-out infinite; }
-  @keyframes pulse {
-    0%, 100% { box-shadow: 0 0 6px -1px var(--state); }
-    50%      { box-shadow: 0 0 11px 2px var(--state); }
-  }
+  .node .dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--state); }
   .node .name {
     font-weight: 700; color: var(--fg); flex: 1 1 auto;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -211,7 +207,7 @@
     flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
     padding: 12px 14px; border-bottom: 1px solid var(--border); background: var(--panel);
   }
-  .dhead .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--state); box-shadow: 0 0 8px -1px var(--state); }
+  .dhead .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--state); }
   .dhead .dname { font-weight: 700; font-size: 14px; flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .dhead .dstate { color: var(--state); font-size: 12px; font-weight: 600; }
   .dsub { flex: 0 0 auto; padding: 8px 14px; color: var(--muted); font-size: 11.5px; border-bottom: 1px solid var(--border); display: flex; gap: 14px; flex-wrap: wrap; }
