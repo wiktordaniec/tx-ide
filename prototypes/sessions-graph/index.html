@@ -402,7 +402,7 @@ const STATE_ORDER = ["working", "waiting", "idle", "alive", "exited", "archived"
 
 // ---- mutable view state -------------------------------------------------------------------------
 let feed = null;
-let hiddenStates = new Set(["archived"]);   // the user's explicit ask: archived starts hidden
+let hiddenStates = new Set(["exited", "archived"]);   // initial render shows only the live states (working/waiting/idle/alive); the terminal states start hidden, one legend-click away
 let selectedId = null;            // node whose JSON drawer is open
 let menuFor = null;               // node id the one-click action menu is anchored to
 let composerFor = null;           // node id the "message tx-assistant" composer is open for
