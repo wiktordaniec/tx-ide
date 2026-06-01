@@ -43,9 +43,14 @@ trap 'rm -f "$CONF"' EXIT
 # out the pane to glue into by asking tmux directly (`display-message -p #{pane_id}`), so the bind
 # doesn't need to plumb anything through. There is no mailbox anymore, so prefix+m is left bound to
 # its native `select-pane -m` (tx-ide no longer overrides it).
+#
+# The picker popup is `-w 118`: wide enough for NAME + the 25-col LOCATION + STARTED/IDLE/ROLE + tag
+# chips without wrapping, with ~5 cols of extra NAME headroom. Keep it in lockstep with
+# `_NAMEW_OVERHEAD` (lib/tx/render.py): that budget assumes LOCATION is 25, and the popup funds those
+# columns plus the extra NAME room so the NAME column isn't squeezed.
 if [ "$popups" = on ]; then
   cat >>"$CONF" <<'EOF'
-bind t display-popup -E -w 100 -h 30 -x C -y 1 -T " tx " "tx attach"
+bind t display-popup -E -w 118 -h 30 -x C -y 1 -T " tx " "tx attach"
 bind '/' command-prompt -p "tx-assistant>" {
   set-buffer -b tx-assistant-input "%%"
   run-shell -b "tx-assistant --from-buffer"
