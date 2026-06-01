@@ -94,7 +94,7 @@ session, retag, message a peer. It follows `agents/TX-ASSISTANT.md`.
 
 | Command | What it does |
 |---|---|
-| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd CMD] [--chat] [--env K=V …]` | Spawn a detached tmux session. `--tag` is mandatory; `--cwd` defaults to the firing pane's path; `--cmd` to your shell; `--chat` mints a `TX_CHAT_ID` the command can resume. |
+| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd CMD] [--env K=V …]` | Spawn a detached tmux session. `--tag` is mandatory; `--cwd` defaults to the firing pane's path; `--cmd` to your shell. An llm command (`claude …`) automatically gets a chat id minted and `--session-id`-injected, so its transcript is tracked and resumable — no flag needed. |
 | `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V …]` | Spawn a detached nvim companion. `--diff [BASE]` opens a diffview (base defaults to `main`). |
 | `tx spawn-view <name> [--tag TAGS] [--cwd DIR] [--cmd CMD] [--env K=V …]` | Spawn a detached view session (`kind=view`); `--tag` defaults to `views`. |
 

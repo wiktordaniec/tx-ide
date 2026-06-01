@@ -18,6 +18,7 @@ Ground truth measured on claude v2.0.76 (chat-ops.md §1):
 from __future__ import annotations
 
 import os
+import shlex
 from pathlib import Path
 
 from .storage import history_dir
@@ -141,3 +142,40 @@ def build_launch_command(
     if initial_prompt:
         command.append(initial_prompt)
     return command
+
+
+# ----- mandatory-chat minting (S1a) — every llm session owns a chat id ----------------------
+# A claude command either already declares the chat it will run (fork's `--resume … --fork-session`,
+# handover/rollover/resume's `--session-id` / `--resume`, a user's explicit `--continue` / `-c`) or
+# it is a fresh "original" chat that `SessionService._spawn` must mint an id for and inject. These
+# two helpers let the service ask that question and stamp the answer without importing the chat
+# module (which imports this one). The identity flags mirror chat.py's `_strip_identity` split.
+_CHAT_IDENTITY_FLAGS = frozenset(
+    {"--session-id", "--resume", "--fork-session", "--continue", "-c"}
+)
+
+
+def command_declares_chat(command: str) -> bool:
+    """Whether a claude command already names the chat it will run, so tx must NOT mint + inject a
+    fresh `--session-id`. True for fork / handover / rollover / resume (which carry `--session-id` or
+    `--resume` and record their own `ChatRef`) and a user's explicit `--continue` / `-c`. The token
+    match is over a `shlex` split so a flag merely *mentioned* inside a quoted priming prompt is not
+    mistaken for the real one. An unparseable command (unbalanced quotes — user input, the boundary)
+    is reported as declaring its own chat: we will not rewrite a command we cannot tokenize."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return True
+    return any(token in _CHAT_IDENTITY_FLAGS for token in tokens)
+
+
+def inject_session_id(command: str, session_id: str) -> str:
+    """Insert `--session-id <session_id>` immediately after the leading claude binary, keeping the
+    rest of the command verbatim. The caller guarantees a fresh claude command (role == llm and
+    `command_declares_chat` is False), so the first token is the binary and the tail — which may
+    carry a priming prompt with shell-significant characters we must not re-quote — is preserved
+    (only the whitespace separating the binary from the rest collapses to one space, exactly as the
+    launching shell would word-split it). A uuid needs no quoting, so the splice is exact."""
+    parts = command.split(None, 1)
+    head = f"{parts[0]} --session-id {session_id}"
+    return f"{head} {parts[1]}" if len(parts) > 1 else head

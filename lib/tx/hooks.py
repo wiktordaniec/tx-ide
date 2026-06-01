@@ -46,8 +46,8 @@ firing chat has a correct `ChatRef` on the record, reading provenance from the p
 drains the payload, so env is the only channel): `TX_CHAT_ROLE` (default `original`),
 `TX_CHAT_ORIGIN_TXID` (default self), `TX_CHAT_ORIGIN_CHAT`, and the pre-minted `TX_CHAT_ID`. This
 is the idempotent BACKSTOP — `chat.py` writes each op's `ChatRef` synchronously as the primary, and
-`SessionService._spawn` writes the `original` one for `--chat`; the hook only acts when something is
-missing. Its load-bearing case is completing a fork whose snapshot-diff (chat.py) missed: the record
+`SessionService._spawn` writes (and `--session-id`-injects) the `original` one for every llm spawn;
+the hook only acts when something is missing. Its load-bearing case is completing a fork whose snapshot-diff (chat.py) missed: the record
 holds a null-id placeholder, and the hook fills the id by resolving the newest unclaimed transcript
 (`chat.newest_unclaimed_transcript`). It never guesses a chat id it cannot determine.
 """
@@ -203,7 +203,7 @@ def _capture_chat_ref(service: SessionService, session_id: str) -> None:
         _complete_pending(service, session, role, origin_chat)
         return
     if any(reference.id == chat_id for reference in session.chats):
-        return  # already captured (spawn --chat / fork / handover / rollover wrote it) — no-op.
+        return  # already captured (llm spawn / fork / handover / rollover wrote it) — no-op.
     _create_chat_ref(service, session, chat_id, role, origin_txid, origin_chat)
 
 
