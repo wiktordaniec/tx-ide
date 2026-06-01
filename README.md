@@ -236,6 +236,7 @@ set -g @tx-ide-pane-borders    on                 # pane-border integration + co
 set -g @tx-ide-claude-scroll   on                 # C-u / C-d → PageUp / PageDown in Claude panes
 set -g @tx-ide-pane-keys       on                 # M-1..9 → select-pane
 set -g @tx-ide-window-keys     on                 # User0..8 → select-window
+set -g @tx-ide-session-labels  on                 # prefix+s shows each session's name + tags
 set -g @tx-ide-palette         tokyonight-night   # or 'off' to skip color overrides
 ```
 

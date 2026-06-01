@@ -8,6 +8,7 @@
 #   @tx-ide-claude-scroll   on|off   C-u/C-d → PageUp/PageDown in Claude panes
 #   @tx-ide-pane-keys       on|off   M-1..9 → select-pane
 #   @tx-ide-window-keys     on|off   User0..8 → select-window (terminal must send)
+#   @tx-ide-session-labels  on|off   prefix+s shows each session's name + tags (choose-tree)
 #   @tx-ide-palette         tokyonight-night|off   color overrides
 #
 # Composes a tmux.conf fragment and source-file's it, so tmux's own parser
@@ -19,6 +20,8 @@ set -u
 # The python shim (repo-relative), used by the after-new-window hook to read a session's kind
 # from the v2 store. Resolves $TX_IDE_HOME (default ~/.tx-ide) inside the package.
 TX="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tx"
+# Repo-relative relabeler the prefix+s bind runs to refresh @tx_name just before choose-tree opens.
+RELABEL="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tmux-session-relabel"
 
 option() {
   tmux show-option -gv "$1" 2>/dev/null || printf '%s' "$2"
@@ -29,6 +32,7 @@ pane_borders=$(option @tx-ide-pane-borders on)
 claude_scroll=$(option @tx-ide-claude-scroll on)
 pane_keys=$(option @tx-ide-pane-keys on)
 window_keys=$(option @tx-ide-window-keys on)
+session_labels=$(option @tx-ide-session-labels on)
 palette=$(option @tx-ide-palette tokyonight-night)
 
 CONF=$(mktemp -t tx-ide-bindings.XXXXXX)
@@ -69,6 +73,16 @@ set -g pane-border-format " [#P] #(tmux-pane-session-name #D) "
 EOF
   cat >>"$CONF" <<EOF
 set-hook -g after-new-window "if-shell 'test \"\$($TX _pane-kind \"#{@tx_id}\")\" = view' 'setw pane-border-status top'"
+EOF
+fi
+
+# --- Session labels in prefix+s (choose-tree) ---
+if [ "$session_labels" = on ]; then
+  cat >>"$CONF" <<EOF
+bind s {
+  run-shell "$RELABEL"
+  choose-tree -Zs -F '#{?session_format,#{?@tx_name,#{@tx_name}  ,}#{session_windows}w#{?session_attached, (attached),},#{?window_format,#{window_index}: #{window_name},#{pane_current_command}}}'
+}
 EOF
 fi
 
