@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Poke the running session-graph dashboard so it recomputes and pushes the "focused session" ring.
+# Run (backgrounded, via `run-shell -b`) by the tmux focus hooks in tmux/tx-ide.tmux on every pane /
+# window / session focus change — the terminal → viewer half of the focus link.
+#
+# Fire-and-forget, and a guaranteed no-op when the dashboard is down: the server advertises its port
+# in $TX_IDE_HOME/sessions-graph.port only while running and removes it on exit, so an absent file
+# means "nothing to poke" and we leave without touching the network. The server does the actual tmux
+# focus query on receipt; this script carries no state, it only rings the doorbell.
+set -u
+
+port_file="${TX_IDE_HOME:-$HOME/.tx-ide}/sessions-graph.port"
+[[ -r "$port_file" ]] || exit 0
+port="$(<"$port_file")"
+[[ -n "$port" ]] || exit 0
+
+# A tight timeout so a wedged server never delays the pane switch (the hook already backgrounds us,
+# but cap it anyway). The ring is best-effort: discard all output and never fail the hook.
+curl -s -m 0.3 -X POST "http://127.0.0.1:${port}/api/focus-changed" >/dev/null 2>&1 || true
