@@ -151,9 +151,10 @@
   }
   .node:hover { border-color: var(--dim); }
   .node.sel { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(122,162,247,.45), 0 8px 24px -10px #000; }
-  /* A node shift-selected into the multi-select group — a magenta ring, distinct from the blue .sel
-     drawer ring, so a node can be both group-picked and drawer-open at once. */
-  .node.picked { border-color: var(--magenta); box-shadow: 0 0 0 2px color-mix(in srgb, var(--magenta) 60%, transparent), 0 8px 24px -10px #000; }
+  /* A node shift-selected into the multi-select group — an amber OUTLINE (not box-shadow, so it
+     coexists with the pinned node's inset ring and the blue .sel glow rather than being overridden by
+     the later .node.pinned rule). Amber stays distinct from the blue drawer ring and magenta archived. */
+  .node.picked { outline: 2px solid var(--warn); outline-offset: 1px; }
   .node.dim { opacity: .22; }
   .node.dragging { cursor: grabbing; z-index: 6; box-shadow: 0 12px 30px -12px #000; }
   /* A pinned node holds the spot the user dropped it on; a faint inner ring marks it as fixed. */
@@ -313,24 +314,28 @@
   #selbar {
     position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%); z-index: 45;
     display: flex; align-items: center; gap: 8px;
-    background: var(--surface-hi); border: 1px solid var(--magenta);
+    background: var(--surface-hi); border: 1px solid var(--warn);
     border-radius: 999px; padding: 6px 8px 6px 14px; box-shadow: 0 8px 30px -12px #000;
   }
   #selbar[hidden] { display: none; }
   #selbar .selcount { color: var(--dim); font-size: 12.5px; }
-  #selbar .selcount b { color: var(--magenta); font-weight: 700; }
-  #selbar #selMsg { border-color: var(--magenta); color: var(--magenta); }
-  #selbar #selMsg:hover { background: color-mix(in srgb, var(--magenta) 16%, transparent); }
+  #selbar .selcount b { color: var(--warn); font-weight: 700; }
+  #selbar #selMsg { border-color: var(--warn); color: var(--warn); }
+  #selbar #selMsg:hover { background: color-mix(in srgb, var(--warn) 16%, transparent); }
 
   /* ---- marquee (shift-drag rubber-band select) -------------------------------------------- */
   /* A transient box drawn in viewport space while shift-dragging empty canvas; pointer-events:none
      so it never eats the drag. On release, nodes whose centers fall inside join the group. */
   #marquee {
     position: fixed; z-index: 44; pointer-events: none;
-    border: 1px dashed var(--magenta); border-radius: 3px;
-    background: color-mix(in srgb, var(--magenta) 12%, transparent);
+    border: 1px dashed var(--warn); border-radius: 3px;
+    background: color-mix(in srgb, var(--warn) 14%, transparent);
   }
   #marquee[hidden] { display: none; }
+
+  /* While Shift is held the canvas is in select mode — swap the pan/grab hand for a crosshair so the
+     modifier is visible before any click (toggled on <body> by the keydown/keyup handlers). */
+  body.selecting #canvas, body.selecting #canvas.panning, body.selecting .node { cursor: crosshair; }
 </style>
 </head>
 <body>
@@ -1070,7 +1075,7 @@ graph.addEventListener("click", (event) => {
   }
   const nodeEl = event.target.closest(".node");
   if (nodeEl) {
-    if (event.shiftKey) { toggleGroup(nodeEl.dataset.id); return; }   // shift+click curates the group
+    if (event.shiftKey) { closeMenu(); toggleGroup(nodeEl.dataset.id); return; }   // shift+click toggles group membership
     openMenu(nodeEl.dataset.id, nodeEl);
   }
 });
@@ -1199,6 +1204,12 @@ document.addEventListener("keydown", (event) => {
     closeDrawer();
   }
 });
+
+// Shift puts the canvas in "select mode" — show a crosshair (class on <body>) so the modifier is
+// visible before any click. blur clears it in case the keyup is missed while another window has focus.
+window.addEventListener("keydown", (event) => { if (event.key === "Shift") document.body.classList.add("selecting"); });
+window.addEventListener("keyup", (event) => { if (event.key === "Shift") document.body.classList.remove("selecting"); });
+window.addEventListener("blur", () => document.body.classList.remove("selecting"));
 
 $("copy").addEventListener("click", async () => {
   const entry = feed && feed.sessions.find((e) => e.record.id === selectedId);
