@@ -624,14 +624,18 @@ class AttachCommand(Command):
                             help="Enter focuses the existing pane hosting the session instead of "
                                  "nest-attaching here (popup-friendly)")
         parser.add_argument("--host", nargs="?", const="personal", metavar="ALIAS",
-                            help="pick from remote tmux on ssh ALIAS (not wired in S1b — C11/S1a)")
+                            help="attach a session on remote ssh ALIAS (default 'personal') by "
+                                 "running that host's own tx picker over ssh")
         parser.add_argument("--all", dest="mix", action="store_true",
-                            help="pick from local + remote (not wired in S1b — C11/S1a)")
+                            help="(unsupported) merged local+remote picker — use --host ALIAS")
         args = parser.parse_args(argv)
 
-        if args.host or args.mix:
-            print("tx attach: the remote picker (--host/--all) is a C11 non-store passthrough "
-                  "owned by S1a; it is not wired into the S1b local picker yet.", file=sys.stderr)
+        if args.host:
+            return self._attach_remote(args.host)
+        if args.mix:
+            print("tx attach --all (a merged local+remote picker) is not supported; use "
+                  "`tx attach --host ALIAS` to attach a remote host's sessions over ssh.",
+                  file=sys.stderr)
             return 2
 
         # Size the NAME column once (terminal width + longest live name) and export it so each
@@ -650,6 +654,23 @@ class AttachCommand(Command):
             return self._loop(args.jump, self._fzf_opts(namew, args.query), namew)
         finally:
             Path(arm_file).unlink(missing_ok=True)
+
+    # ----- remote attach (--host) ----------------------------------------------------------
+
+    def _attach_remote(self, host: str) -> int:
+        """`tx attach --host ALIAS` — attach a session on a REMOTE host by running that host's OWN
+        `tx attach` over ssh. The far side lists and attaches from its own records (correct
+        names / tags / state, no uuids), so there is nothing to reimplement or parse here — we just
+        open an ssh tty and launch the remote picker (a non-store passthrough, C11).
+
+        `-t` allocates the tty the remote fzf picker / tmux attach need. `$SHELL -lc` runs a login
+        shell on the remote so its PATH includes ~/.local/bin (where tx installs — a bare
+        `ssh host tx` often won't find it); it is single-quoted so it expands on the remote, not
+        here. Falls back to `tmux attach` when the remote has no tx, so it still connects."""
+        remote_command = (
+            '$SHELL -lc "if command -v tx >/dev/null 2>&1; then tx attach; else tmux attach; fi"'
+        )
+        return subprocess.run(["ssh", "-t", host, remote_command]).returncode
 
     # ----- fzf invocation ------------------------------------------------------------------
 
