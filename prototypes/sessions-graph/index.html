@@ -159,6 +159,19 @@
   .node.dragging { cursor: grabbing; z-index: 6; box-shadow: 0 12px 30px -12px #000; }
   /* A pinned node holds the spot the user dropped it on; a faint inner ring marks it as fixed. */
   .node.pinned { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--state) 45%, transparent); }
+  /* "focused" = the session in the user's ACTIVE tmux pane right now, pushed live over the SSE focus
+     channel by the terminal's focus hooks (the mirror of double-click-to-jump). A cyan ring drawn as a
+     separate ::after layer so it composes with the blue .sel glow, amber .picked outline, and pinned
+     inset ring — a node can be focused AND selected. ::after also dodges the card's overflow:hidden (an
+     outer box-shadow would be clipped); the class is toggled straight from the SSE event, not the rAF
+     paint loop, so it tracks focus even in a backgrounded tab whose timers are throttled. */
+  .node.focused::after {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    box-shadow: inset 0 0 0 2px var(--cyan);
+    animation: focus-pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes focus-pulse { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .node.focused::after { animation: none; opacity: 1; } }
 
   .node .row1 { display: flex; align-items: center; gap: 7px; }
   .node .dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--state); }
@@ -446,6 +459,7 @@ const STATE_ORDER = ["working", "waiting", "idle", "alive", "exited", "archived"
 let feed = null;
 let hiddenStates = new Set(["exited", "archived"]);   // initial render shows only the live states (working/waiting/idle/alive); the terminal states start hidden, one legend-click away
 let selectedId = null;            // node whose JSON drawer is open
+let focusedId = null;             // node for the session in the terminal's active pane (live SSE focus channel)
 let menuFor = null;               // node id the one-click action menu is anchored to
 let composerFor = null;           // node id the "message tx-assistant" composer is open for (single)
 let composerGroup = null;         // when the composer targets the multi-select group: a snapshot of its ids
@@ -791,6 +805,7 @@ function mountNodes(kept) {
       (dataNode.id === selectedId ? " sel" : "") +
       (selectedGroup.has(dataNode.id) ? " picked" : "") +
       (dataNode.id === menuFor ? " menu-active" : "") +
+      (dataNode.id === focusedId ? " focused" : "") +
       (dim ? " dim" : "");
     const html = nodeInner(dataNode, node);
     const sig = className + "\x00" + html;
@@ -1383,6 +1398,17 @@ canvas.addEventListener("click", (event) => {
 // unfocused — a backgrounded tab's setInterval is throttled to ~once a minute, which was the lag.
 // EventSource auto-reconnects after a transient drop; on regaining visibility/focus we also fire a
 // one-shot fetch so a tab the browser froze while buried is instantly current the moment it's seen.
+// The terminal's focused session arrives on a separate named `focus` SSE channel, pushed the instant a
+// tmux pane is switched (the focus hooks → server). Toggle the cyan ring with a DIRECT classList write
+// — never through render()/rAF — so it updates even when this tab is backgrounded and its animation
+// frames are throttled (the ring is pure CSS). mountNodes() reapplies it from focusedId, so a feed
+// repaint never drops it.
+function applyFocusClass() {
+  for (const node of sim.values()) {
+    if (node.el) node.el.classList.toggle("focused", node.id === focusedId);
+  }
+}
+
 let stream = null;
 function connectStream() {
   if (stream) return;
@@ -1392,6 +1418,15 @@ function connectStream() {
     try { next = JSON.parse(event.data); } catch { return; }
     ingestFeed(next, false);
   };
+  // Named `focus` events ride the same connection (re)established here, so every reconnect — including
+  // the visibility / window-focus resync below — re-syncs the ring from the snapshot the server sends
+  // on connect, healing a tab the browser had frozen.
+  stream.addEventListener("focus", (event) => {
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    focusedId = data.focused_id;
+    applyFocusClass();
+  });
 }
 function disconnectStream() {
   if (!stream) return;
