@@ -207,50 +207,68 @@ def _live_tx_assistant() -> Session | None:
     return None
 
 
-def _compose_message(target: Session, request: str) -> str:
-    """One single-line user instruction for tx-assistant: lead with the unambiguous id, carry
-    context, then the user's free-text. Collapsed to a single line (send-keys is one line)."""
-    request = " ".join(request.split())
+def _describe_target(target: Session) -> str:
+    """The unambiguous, id-led context fragment for one session — carried in the instruction so the
+    assistant's own `tx` calls target the right record despite the two-records-by-name collision."""
     tags = ",".join(target.tags) or "-"
     return (
-        f'Act on tx session id={target.id} name="{target.name}" kind={target.kind.value} '
-        f'role={target.role.value} state={target.state.value} tags={tags} cwd={target.cwd} '
-        f'parent={target.parent or "-"}. Use the id (not the name) as the tx target. '
-        f'User request: {request}'
+        f'id={target.id} name="{target.name}" kind={target.kind.value} '
+        f'role={target.role.value} state={target.state.value} tags={tags} '
+        f'cwd={target.cwd} parent={target.parent or "-"}'
     )
 
 
-def message_assistant(target_id: str, request: str) -> tuple[int, dict]:
-    """Compose a context+request line for the dashboard-selected session and type it into the LIVE
+def _compose_message(targets: list[Session], request: str) -> str:
+    """One single-line user instruction for tx-assistant: the id-led context for every target, then
+    the user's free-text request applied to all of them. Collapsed to a single line (send-keys is one
+    line). One target reads as a sentence; many are enumerated as bracketed fragments."""
+    request = " ".join(request.split())
+    if len(targets) == 1:
+        return (
+            f'Act on tx session {_describe_target(targets[0])}. '
+            f'Use the id (not the name) as the tx target. User request: {request}'
+        )
+    described = "; ".join(f"[{_describe_target(target)}]" for target in targets)
+    return (
+        f'Act on these {len(targets)} tx sessions: {described}. '
+        f'Use each id (not the name) as the tx target. User request: {request}'
+    )
+
+
+def message_assistant(target_ids: list[str], request: str) -> tuple[int, dict]:
+    """Compose a context+request line for the dashboard-selected session(s) and type it into the LIVE
     tx-assistant's pane (send-keys + the 0.3s Enter pause, exactly as bin/tx-assistant does). It is
     delivered as a plain user line — not a <from-claude> peer message — so the one-shot assistant
-    treats it as a command. The target's id is embedded so the assistant's own `tx` call is
+    treats it as a command. Each target's id is embedded so the assistant's own `tx` calls are
     unambiguous despite the two-records-by-name collision."""
     if not (request or "").strip():
         return 400, {"ok": False, "error": "empty request"}
+    if not target_ids:
+        return 400, {"ok": False, "error": "no sessions selected"}
 
-    target = next((session for session in SessionStore().all() if session.id == target_id), None)
-    if target is None:
+    by_id = {session.id: session for session in SessionStore().all()}
+    targets = [by_id[target_id] for target_id in target_ids if target_id in by_id]
+    if not targets:
         return 404, {"ok": False, "error": "no such session"}
 
     assistant = _live_tx_assistant()
     if assistant is None:
         return 200, {"ok": False, "error": "tx-assistant is not live"}
 
-    line = _compose_message(target, request)
+    line = _compose_message(targets, request)
     assistant_target = _tmux_name(assistant)
     subprocess.run(["tmux", "send-keys", "-t", assistant_target, "-l", "--", line])
     time.sleep(0.3)                               # the input box drops an Enter that arrives too fast
     subprocess.run(["tmux", "send-keys", "-t", assistant_target, "Enter"])
-    return 200, {"ok": True, "name": target.name, "assistant": assistant.id}
+    return 200, {"ok": True, "count": len(targets), "name": targets[0].name, "assistant": assistant.id}
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
     """Routes: `/api/stream` (Server-Sent live feed — one shared poll loop fans changes out to every
     tab, so the graph stays current even while its tab is unfocused), `/api/sessions` (one-shot JSON
     feed for the initial paint, the manual refresh, and the on-focus resync), `POST /api/focus` (jump
-    the user's tmux to a session's pane), `POST /api/message` (type a request into the live
-    tx-assistant), and `/` (the page). Everything else 404s."""
+    the user's tmux to a session's pane), `POST /api/message` (type a request about one session — `id`
+    — or a multi-select group — `ids` — into the live tx-assistant), and `/` (the page). Else 404s."""
 
     def _respond(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
@@ -306,7 +324,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/focus"):
             status, payload = focus_session(str(body.get("id", "")))
         elif self.path.startswith("/api/message"):
-            status, payload = message_assistant(str(body.get("id", "")), str(body.get("request", "")))
+            # `ids` (multi-select group) is preferred; `id` stays for the single-node path. This is a
+            # request boundary, so the shape is validated here rather than trusted downstream.
+            ids = body.get("ids")
+            target_ids = [str(value) for value in ids] if isinstance(ids, list) else [str(body.get("id", ""))]
+            status, payload = message_assistant(target_ids, str(body.get("request", "")))
         else:
             self._respond(404, b"not found\n", "text/plain; charset=utf-8")
             return
