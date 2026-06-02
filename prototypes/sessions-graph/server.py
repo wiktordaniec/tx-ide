@@ -38,13 +38,17 @@ sys.path.insert(0, str(REPO_ROOT / "lib"))
 from tx.palette import tag_cube          # noqa: E402  — path is set on the line above
 from tx.render import reltime            # noqa: E402
 from tx.session import Kind, Session     # noqa: E402
-from tx.storage import sessions_dir      # noqa: E402
+from tx.storage import sessions_dir, tx_ide_home   # noqa: E402
 from tx.store import SessionStore        # noqa: E402
 from tx.tmux import Tmux                 # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 PAGE = HERE / "index.html"
 DEFAULT_PORT = 8765
+# A running dashboard advertises its port here so the tmux focus hook (bin/tx-graph-focus-poke) can
+# POST /api/focus-changed to it — and finds nothing to poke when the dashboard is down (file absent).
+# Written on startup, removed on exit. `$TX_IDE_HOME` is resolved exactly as `tx` resolves it.
+ENDPOINT_FILE = tx_ide_home() / "sessions-graph.port"
 # How often the shared poll loop rebuilds the feed and pushes any change to connected SSE clients.
 # One tmux reconcile per tick total (not per tab); the loop idles entirely when no tab is connected.
 POLL_INTERVAL_SECONDS = 1.0
@@ -111,13 +115,20 @@ class FeedHub:
     thread rebuilds the feed once per `POLL_INTERVAL_SECONDS`, hashes it, and pushes to all clients
     only when it actually changed. The tmux-call count is independent of how many tabs are open, an
     idle forest pushes nothing, and the loop blocks on a condition while no tab is connected so a
-    closed dashboard spawns no subprocesses at all."""
+    closed dashboard spawns no subprocesses at all.
+
+    Focus rides a SECOND, named SSE channel on the same connections (`event: focus`). It is NOT on
+    the poll loop — terminal focus changes never touch a record, so there is nothing on disk to
+    notice. Instead a tmux hook POSTs `/api/focus-changed`, which calls `push_focus`; the change is
+    deduped and fanned out, so the ring moves the instant a pane is switched and a background tab —
+    which can't run its own timers — still updates, because the server is the one pushing."""
 
     def __init__(self, interval: float = POLL_INTERVAL_SECONDS) -> None:
         self._interval = interval
         self._clients: set[queue.Queue] = set()
         self._condition = threading.Condition()
         self._last_hash: str | None = None
+        self._last_focused_id: str | None = None
 
     def start(self) -> None:
         threading.Thread(target=self._poll_loop, name="feed-poll", daemon=True).start()
@@ -145,8 +156,24 @@ class FeedHub:
                 with self._condition:
                     clients = list(self._clients)
                 for client in clients:
-                    client.put(payload)
+                    client.put(("feed", payload))
             time.sleep(self._interval)
+
+    def push_focus(self) -> None:
+        """Recompute the terminal's focused session and fan it out as a named `focus` frame — but
+        only when it actually changed (deduped on `_last_focused_id`). Called by `/api/focus-changed`
+        (the tmux hook); thread-safe, so concurrent pokes collapse to one broadcast. A just-connected
+        tab gets the current focus directly in `_serve_stream`, so it never waits for the next
+        change."""
+        focused_id = compute_focused_id()
+        with self._condition:
+            if focused_id == self._last_focused_id:
+                return
+            self._last_focused_id = focused_id
+            clients = list(self._clients)
+        payload = json.dumps({"focused_id": focused_id})
+        for client in clients:
+            client.put(("focus", payload))
 
 
 hub = FeedHub()
@@ -157,6 +184,21 @@ def _tmux_name(session: Session) -> str:
     otherwise — process sessions live in tmux under their id. (Mirrors the newer
     `Session.tmux_name`; replicated inline because this prototype pins an older `lib/tx`.)"""
     return session.id if session.kind == Kind.PROCESS else session.name
+
+
+def compute_focused_id() -> str | None:
+    """The record id the page should ring: the terminal's focused inner session
+    (`Tmux.focused_session_name`) resolved to a record. tmux knows a session by its tmux-name (the
+    id for a PROCESS, the display name otherwise — `_tmux_name`), while the page keys nodes by record
+    id, so map across that. None when nothing is focused (detached / a plain pane / the picker) or
+    the focused session has no record on disk."""
+    inner_name = Tmux().focused_session_name()
+    if inner_name is None:
+        return None
+    for session in SessionStore().all():
+        if _tmux_name(session) == inner_name:
+            return session.id
+    return None
 
 
 def raise_terminal() -> None:
@@ -264,11 +306,13 @@ def message_assistant(target_ids: list[str], request: str) -> tuple[int, dict]:
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
-    """Routes: `/api/stream` (Server-Sent live feed — one shared poll loop fans changes out to every
-    tab, so the graph stays current even while its tab is unfocused), `/api/sessions` (one-shot JSON
-    feed for the initial paint, the manual refresh, and the on-focus resync), `POST /api/focus` (jump
-    the user's tmux to a session's pane), `POST /api/message` (type a request about one session — `id`
-    — or a multi-select group — `ids` — into the live tx-assistant), and `/` (the page). Else 404s."""
+    """Routes: `/api/stream` (Server-Sent live feed + named `focus` channel — one shared loop fans
+    changes out to every tab, so the graph stays current even while its tab is unfocused),
+    `/api/sessions` (one-shot JSON feed for the initial paint, the manual refresh, and the on-focus
+    resync), `POST /api/focus` (jump the user's tmux to a session's pane), `POST /api/focus-changed`
+    (the tmux hook's poke — recompute & push the focused ring), `POST /api/message` (type a request
+    about one session — `id` — or a multi-select group — `ids` — into the live tx-assistant), and `/`
+    (the page). Else 404s."""
 
     def _respond(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
@@ -278,10 +322,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _serve_stream(self) -> None:
-        """Hold the connection open and stream the feed as Server-Sent Events: one snapshot right
-        away so a just-opened (or just-refocused, after EventSource reconnects) tab is current at
-        once, then one each time the shared poll loop sees a change. A comment line every 15s keeps
-        the connection warm; a closed tab surfaces as a write error that ends this thread cleanly."""
+        """Hold the connection open and stream Server-Sent Events on two channels: the default
+        (unnamed) `feed` channel — one snapshot right away so a just-opened (or just-refocused, after
+        EventSource reconnects) tab is current at once, then one each time the poll loop sees a change
+        — and a named `focus` channel pushed by the tmux hook. The focus snapshot is sent on connect
+        too, so a reconnecting tab re-syncs the ring without waiting for the next pane switch. A
+        comment line every 15s keeps the connection warm; a closed tab surfaces as a write error that
+        ends this thread cleanly."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -290,10 +337,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         client = hub.subscribe()
         try:
-            self._sse_send(json.dumps(build_feed()))
+            self._sse_send("feed", json.dumps(build_feed()))
+            self._sse_send("focus", json.dumps({"focused_id": compute_focused_id()}))
             while True:
                 try:
-                    self._sse_send(client.get(timeout=15))
+                    event, payload = client.get(timeout=15)
+                    self._sse_send(event, payload)
                 except queue.Empty:
                     self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
@@ -302,10 +351,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         finally:
             hub.unsubscribe(client)
 
-    def _sse_send(self, payload: str) -> None:
+    def _sse_send(self, event: str, payload: str) -> None:
         # SSE frames are newline-delimited; json.dumps emits a single physical line (inner newlines
-        # in the pretty-printed `json` field are escaped), so one `data:` line carries the whole feed.
-        self.wfile.write(b"data: " + payload.encode() + b"\n\n")
+        # in the pretty-printed `json` field are escaped), so one `data:` line carries the whole
+        # payload. The default `feed` event stays unnamed so the page's `onmessage` receives it; any
+        # other channel (`focus`) gets a leading `event:` line, read via an `addEventListener`.
+        frame = b"" if event == "feed" else b"event: " + event.encode() + b"\n"
+        frame += b"data: " + payload.encode() + b"\n\n"
+        self.wfile.write(frame)
         self.wfile.flush()
 
     def do_GET(self) -> None:
@@ -321,7 +374,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(length) or b"{}") if self.path.startswith("/api/") else {}
-        if self.path.startswith("/api/focus"):
+        if self.path.startswith("/api/focus-changed"):
+            # The tmux hook's fire-and-forget poke (no body). Recompute the focused session and push
+            # it — checked BEFORE `/api/focus`, which would otherwise prefix-swallow this path.
+            hub.push_focus()
+            status, payload = 200, {"ok": True}
+        elif self.path.startswith("/api/focus"):
             status, payload = focus_session(str(body.get("id", "")))
         elif self.path.startswith("/api/message"):
             # `ids` (multi-select group) is preferred; `id` stays for the single-node path. This is a
@@ -343,15 +401,19 @@ def main() -> None:
     port = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_PORT
     server = ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
     hub.start()
+    ENDPOINT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ENDPOINT_FILE.write_text(str(port))           # advertise the port so the tmux focus hook can poke
     url = f"http://127.0.0.1:{port}/"
     print(f"tx-ide session graph  →  {url}")
     print(f"reading records from  {sessions_dir()}")
+    print(f"focus-hook endpoint   {ENDPOINT_FILE}")
     print("Ctrl-C to stop.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nbye.")
     finally:
+        ENDPOINT_FILE.unlink(missing_ok=True)     # stop advertising — the hook no-ops while we're down
         server.shutdown()
 
 
