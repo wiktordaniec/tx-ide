@@ -151,6 +151,10 @@
   }
   .node:hover { border-color: var(--dim); }
   .node.sel { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(122,162,247,.45), 0 8px 24px -10px #000; }
+  /* A node shift-selected into the multi-select group — an amber OUTLINE (not box-shadow, so it
+     coexists with the pinned node's inset ring and the blue .sel glow rather than being overridden by
+     the later .node.pinned rule). Amber stays distinct from the blue drawer ring and magenta archived. */
+  .node.picked { outline: 2px solid var(--warn); outline-offset: 1px; }
   .node.dim { opacity: .22; }
   .node.dragging { cursor: grabbing; z-index: 6; box-shadow: 0 12px 30px -12px #000; }
   /* A pinned node holds the spot the user dropped it on; a faint inner ring marks it as fixed. */
@@ -280,9 +284,10 @@
   .node.menu-active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(122,162,247,.35); }
 
   /* ---- message-tx-assistant composer ------------------------------------------------------ */
+  /* A bottom-anchored popup like the #menu — NOT a blocking modal: no full-screen backdrop, so the
+     graph stays visible and interactive, and a click anywhere outside closes it (see the doc handler). */
   #composer {
-    position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center;
-    background: rgba(0,0,0,.45);
+    position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 60;
   }
   #composer[hidden] { display: none; }
   .cbox {
@@ -302,6 +307,35 @@
   .chint { color: var(--muted); font-size: 11px; }
   .cspacer { flex: 1; }
   #cSend { border-color: var(--accent); color: var(--accent); }
+
+  /* ---- multi-select group bar ------------------------------------------------------------- */
+  /* Appears bottom-center whenever the shift-selected group is non-empty (and the composer isn't
+     using that slot): the count + the group's one action, message, + clear. */
+  #selbar {
+    position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%); z-index: 45;
+    display: flex; align-items: center; gap: 8px;
+    background: var(--surface-hi); border: 1px solid var(--warn);
+    border-radius: 999px; padding: 6px 8px 6px 14px; box-shadow: 0 8px 30px -12px #000;
+  }
+  #selbar[hidden] { display: none; }
+  #selbar .selcount { color: var(--dim); font-size: 12.5px; }
+  #selbar .selcount b { color: var(--warn); font-weight: 700; }
+  #selbar #selMsg { border-color: var(--warn); color: var(--warn); }
+  #selbar #selMsg:hover { background: color-mix(in srgb, var(--warn) 16%, transparent); }
+
+  /* ---- marquee (shift-drag rubber-band select) -------------------------------------------- */
+  /* A transient box drawn in viewport space while shift-dragging empty canvas; pointer-events:none
+     so it never eats the drag. On release, nodes whose centers fall inside join the group. */
+  #marquee {
+    position: fixed; z-index: 44; pointer-events: none;
+    border: 1px dashed var(--warn); border-radius: 3px;
+    background: color-mix(in srgb, var(--warn) 14%, transparent);
+  }
+  #marquee[hidden] { display: none; }
+
+  /* While Shift is held the canvas is in select mode — swap the pan/grab hand for a crosshair so the
+     modifier is visible before any click (toggled on <body> by the keydown/keyup handlers). */
+  body.selecting #canvas, body.selecting #canvas.panning, body.selecting .node { cursor: crosshair; }
 </style>
 </head>
 <body>
@@ -358,13 +392,21 @@
       <input id="cInput" type="text" autocomplete="off"
              placeholder='e.g. add tag "wip" · rename to foo · archive it' />
       <div class="cfoot">
-        <span class="chint">sent as a request with this session's id + context · Enter to send · Esc to cancel</span>
+        <span class="chint" id="cHint">sent as a request with this session's id + context · Enter to send · Esc to cancel</span>
         <span class="cspacer"></span>
         <button id="cCancel">cancel</button>
         <button id="cSend">send</button>
       </div>
     </div>
   </div>
+
+  <div id="selbar" hidden>
+    <span class="selcount"><b id="selN">0</b> selected</span>
+    <button id="selMsg" title="message tx-assistant about every selected session">message</button>
+    <button id="selClear" title="clear the selection (Esc)">clear</button>
+  </div>
+
+  <div id="marquee" hidden></div>
 
 <script>
 "use strict";
@@ -405,7 +447,10 @@ let feed = null;
 let hiddenStates = new Set(["exited", "archived"]);   // initial render shows only the live states (working/waiting/idle/alive); the terminal states start hidden, one legend-click away
 let selectedId = null;            // node whose JSON drawer is open
 let menuFor = null;               // node id the one-click action menu is anchored to
-let composerFor = null;           // node id the "message tx-assistant" composer is open for
+let composerFor = null;           // node id the "message tx-assistant" composer is open for (single)
+let composerGroup = null;         // when the composer targets the multi-select group: a snapshot of its ids
+let selectedGroup = new Set();    // ids shift-selected into the multi-select group (the "message many" set)
+let marquee = null;               // { startX, startY, moved } while a shift-drag rubber-band is active
 let zoom = 1;
 let isPanning = false;
 let lastFetchAt = 0;
@@ -436,10 +481,16 @@ function savePins() {
 }
 
 // ---- data fetch ---------------------------------------------------------------------------------
+// A background feed update is deferred while any of these interactions is mid-flight, so a stream
+// push never yanks the graph out from under the user (drag, pan, marquee, an open menu / composer).
+function interacting() {
+  return isPanning || drag !== null || marquee !== null || menuFor !== null || !$("composer").hidden;
+}
+
 // One-shot fetch — the initial paint, the manual refresh button, and the on-focus resync. Live
 // updates arrive on their own over the SSE stream (see connectStream); this is the pull path.
 async function fetchAndRender(userInitiated) {
-  if ((isPanning || drag || menuFor !== null || composerFor !== null) && !userInitiated) return;
+  if (interacting() && !userInitiated) return;
   try {
     const response = await fetch("/api/sessions", { cache: "no-store" });
     ingestFeed(await response.json(), userInitiated);
@@ -454,7 +505,7 @@ async function fetchAndRender(userInitiated) {
 function ingestFeed(next, userInitiated) {
   feed = next;
   lastFetchAt = Date.now();
-  if (!userInitiated && (isPanning || drag || menuFor !== null || composerFor !== null)) {
+  if (!userInitiated && interacting()) {
     pendingRender = true;
     return;
   }
@@ -686,6 +737,7 @@ function render() {
   if (!feed) return;
   const { all } = buildNodes(feed);
   const { kept } = visibleForest(all);
+  pruneSelection(kept);
   const changed = syncSim(kept);
 
   applyZoom();
@@ -697,6 +749,7 @@ function render() {
   buildLegend();
   refreshDrawer();
   updateSummary(kept);
+  updateSelBar();
   pendingRender = false;            // this paint reflects the latest feed; nothing left deferred
 
   if (firstRender && kept.length) { firstRender = false; ensureRunning(); centerView(); }
@@ -736,6 +789,7 @@ function mountNodes(kept) {
       (dataNode.ghost ? " ghost" : "") +
       (node.pinned ? " pinned" : "") +
       (dataNode.id === selectedId ? " sel" : "") +
+      (selectedGroup.has(dataNode.id) ? " picked" : "") +
       (dataNode.id === menuFor ? " menu-active" : "") +
       (dim ? " dim" : "");
     const html = nodeInner(dataNode, node);
@@ -921,6 +975,51 @@ function unpin(id) {
   render();
 }
 
+// ---- multi-select group (shift+click · shift-drag) ----------------------------------------------
+// Shift turns interaction into group curation: shift+click toggles a node's membership, shift-drag
+// boxes a region (see the canvas handlers). The group persists until cleared; its one action —
+// message — fans a single typed request out to every selected session via the composer (group mode).
+function toggleGroup(id) {
+  if (id.startsWith("ghost::")) return;                  // ghosts have no live session to act on
+  if (selectedGroup.has(id)) selectedGroup.delete(id); else selectedGroup.add(id);
+  render();
+}
+function clearSelection() {
+  if (selectedGroup.size === 0) return;
+  selectedGroup.clear();
+  render();
+}
+// Drop from the group any node no longer visible (filtered to a hidden state, or its record vanished),
+// mirroring how the drawer self-heals when its session disappears.
+function pruneSelection(kept) {
+  if (selectedGroup.size === 0) return;
+  const keptIds = new Set(kept.filter((node) => !node.ghost).map((node) => node.id));
+  for (const id of [...selectedGroup]) if (!keptIds.has(id)) selectedGroup.delete(id);
+}
+// Add every non-ghost node whose card center lies within the (viewport-space) rectangle. Testing each
+// element's own rect means zoom + scroll are already baked in — no world-coordinate conversion needed.
+function selectWithinRect(rect) {
+  let added = false;
+  for (const node of sim.values()) {
+    if (!node.el || node.data.ghost) continue;
+    const box = node.el.getBoundingClientRect();
+    const cx = box.left + box.width / 2, cy = box.top + box.height / 2;
+    if (cx >= rect.left && cx <= rect.right && cy >= rect.top && cy <= rect.bottom) {
+      selectedGroup.add(node.id); added = true;
+    }
+  }
+  if (added) render();
+}
+// The bottom-center bar shows the group's size + its actions; it yields the bottom slot to the
+// composer while that's open.
+function updateSelBar() {
+  const show = selectedGroup.size > 0 && $("composer").hidden;
+  $("selbar").hidden = !show;
+  if (show) $("selN").textContent = String(selectedGroup.size);
+}
+$("selClear").addEventListener("click", clearSelection);
+$("selMsg").addEventListener("click", () => openComposer());     // no id ⇒ group mode
+
 // ---- one-click action menu (f / d / m) ----------------------------------------------------------
 // A plain click on a node opens a small action menu (f focus · d details · m message) anchored at
 // it, like a tmux display-menu. Press f/d/m or click a row to act; Esc or a click away closes it.
@@ -975,7 +1074,10 @@ graph.addEventListener("click", (event) => {
     return;
   }
   const nodeEl = event.target.closest(".node");
-  if (nodeEl) openMenu(nodeEl.dataset.id, nodeEl);
+  if (nodeEl) {
+    if (event.shiftKey) { closeMenu(); toggleGroup(nodeEl.dataset.id); return; }   // shift+click toggles group membership
+    openMenu(nodeEl.dataset.id, nodeEl);
+  }
 });
 menu.addEventListener("click", (event) => {
   const item = event.target.closest(".mi");
@@ -987,33 +1089,65 @@ document.addEventListener("click", (event) => {          // a click away closes 
 });
 
 // ---- message-tx-assistant composer --------------------------------------------------------------
-// "m" opens a composer to type a request; it's sent to tx-assistant with this session's id + context.
+// The single-node "m" action, or the selection bar's "message", opens this bottom-anchored popup to
+// type a request. With an id it targets that one session; with no id it targets the whole shift-
+// selected group. The typed instruction is sent to tx-assistant with each target's id + context.
 function openComposer(id) {
-  composerFor = id;
-  const entry = feed && feed.sessions.find((e) => e.record.id === id);
-  $("cName").textContent = entry ? entry.record.name : id;
+  if (id) {
+    composerFor = id; composerGroup = null;
+    const entry = feed && feed.sessions.find((e) => e.record.id === id);
+    $("cName").textContent = entry ? entry.record.name : id;
+    $("cHint").textContent = "sent as a request with this session's id + context · Enter to send · Esc to cancel";
+  } else {
+    if (selectedGroup.size === 0) return;
+    composerFor = null; composerGroup = [...selectedGroup];
+    $("cName").textContent = composerLabel(composerGroup);
+    $("cHint").textContent = `one request applied to all ${composerGroup.length} · sent with each session's id + context · Enter to send · Esc to cancel`;
+  }
   $("cInput").value = "";
   $("composer").hidden = false;
+  updateSelBar();                                  // the composer now owns the bottom slot → hide the bar
   $("cInput").focus();
 }
-function closeComposer() { composerFor = null; $("composer").hidden = true; flushPending(); }
+
+// A compact header label for a group: "3 sessions — name-a, name-b, name-c (+1 more)".
+function composerLabel(ids) {
+  const names = ids.map((id) => {
+    const entry = feed && feed.sessions.find((e) => e.record.id === id);
+    return entry ? entry.record.name : id;
+  });
+  const extra = names.length - 3;
+  return `${ids.length} sessions — ${names.slice(0, 3).join(", ")}${extra > 0 ? ` (+${extra} more)` : ""}`;
+}
+
+function closeComposer() { composerFor = null; composerGroup = null; $("composer").hidden = true; updateSelBar(); flushPending(); }
 async function sendToAssistant() {
   const request = $("cInput").value.trim();
-  const id = composerFor;
-  if (!id || !request) { closeComposer(); return; }
+  const ids = composerGroup || (composerFor ? [composerFor] : []);
+  const wasGroup = composerGroup !== null;
+  if (!ids.length || !request) { closeComposer(); return; }
   closeComposer();
   try {
     const response = await fetch("/api/message", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, request }),
+      body: JSON.stringify(ids.length > 1 ? { ids, request } : { id: ids[0], request }),
     });
     const data = await response.json();
-    toast(data.ok ? "sent to tx-assistant" : (data.error || "could not send"), !data.ok);
+    if (data.ok && wasGroup) clearSelection();     // the group was handled — drop the selection
+    const sent = ids.length;
+    toast(data.ok ? (sent > 1 ? `sent ${sent} to tx-assistant` : "sent to tx-assistant")
+                  : (data.error || "could not send"), !data.ok);
   } catch { toast("server unreachable", true); }
 }
 $("cSend").addEventListener("click", sendToAssistant);
 $("cCancel").addEventListener("click", closeComposer);
-$("composer").addEventListener("click", (event) => { if (event.target.id === "composer") closeComposer(); });
+// No backdrop now, so close on any click outside the composer (mirrors the action menu). The opening
+// click (selbar "message" / menu "m") is inside #selbar / #menu, so it doesn't immediately re-close.
+document.addEventListener("click", (event) => {
+  if ($("composer").hidden) return;
+  if (event.target.closest("#composer") || event.target.closest("#selbar") || event.target.closest("#menu")) return;
+  closeComposer();
+});
 $("cInput").addEventListener("keydown", (event) => {
   event.stopPropagation();                       // keep the global f/d/m + Esc handler out of the input
   if (event.key === "Enter") sendToAssistant();
@@ -1061,8 +1195,21 @@ document.addEventListener("keydown", (event) => {
       return;
     }
   }
-  if (event.key === "Escape") closeDrawer();
+  // "m" with a group (and no menu in play) opens the group composer — keyboard parity with the bar.
+  if (event.key === "m" && !typing && menuFor === null && selectedGroup.size > 0 && $("composer").hidden) {
+    openComposer(); return;
+  }
+  if (event.key === "Escape") {                       // Esc clears the group first, else closes the drawer
+    if (selectedGroup.size > 0) { clearSelection(); return; }
+    closeDrawer();
+  }
 });
+
+// Shift puts the canvas in "select mode" — show a crosshair (class on <body>) so the modifier is
+// visible before any click. blur clears it in case the keyup is missed while another window has focus.
+window.addEventListener("keydown", (event) => { if (event.key === "Shift") document.body.classList.add("selecting"); });
+window.addEventListener("keyup", (event) => { if (event.key === "Shift") document.body.classList.remove("selecting"); });
+window.addEventListener("blur", () => document.body.classList.remove("selecting"));
 
 $("copy").addEventListener("click", async () => {
   const entry = feed && feed.sessions.find((e) => e.record.id === selectedId);
@@ -1125,6 +1272,7 @@ window.addEventListener("mousedown", () => { suppressClick = false; }, true);
 graph.addEventListener("mousedown", (event) => {
   const el = event.target.closest(".node");
   if (!el || event.target.closest(".pin")) return;       // pin glyph handles its own click (unpin)
+  if (event.shiftKey) { event.preventDefault(); return; } // shift+click toggles group membership (on click), never drags
   const node = sim.get(el.dataset.id);
   if (!node || node.data.ghost) return;                  // ghosts are layout artifacts — not draggable
   event.preventDefault();
@@ -1139,8 +1287,18 @@ graph.addEventListener("mousedown", (event) => {
 });
 
 canvas.addEventListener("mousedown", (event) => {
-  if (event.target.closest(".node")) return;             // node press is a drag, handled above
+  if (event.target.closest(".node")) return;             // node press is a drag / toggle, handled above
   closeMenu();
+  if (event.shiftKey) {                                   // shift-drag on empty canvas → rubber-band select
+    event.preventDefault();
+    panMoved = false;
+    marquee = { startX: event.clientX, startY: event.clientY, moved: false };
+    const box = $("marquee");
+    box.style.left = event.clientX + "px"; box.style.top = event.clientY + "px";
+    box.style.width = "0px"; box.style.height = "0px";
+    box.hidden = false;
+    return;
+  }
   isPanning = true;
   panMoved = false;
   canvas.classList.add("panning");
@@ -1148,6 +1306,16 @@ canvas.addEventListener("mousedown", (event) => {
 });
 
 window.addEventListener("mousemove", (event) => {
+  if (marquee) {
+    const x0 = marquee.startX, y0 = marquee.startY, x1 = event.clientX, y1 = event.clientY;
+    if (!marquee.moved && Math.hypot(x1 - x0, y1 - y0) > 3) marquee.moved = true;
+    const box = $("marquee");
+    box.style.left = Math.min(x0, x1) + "px";
+    box.style.top = Math.min(y0, y1) + "px";
+    box.style.width = Math.abs(x1 - x0) + "px";
+    box.style.height = Math.abs(y1 - y0) + "px";
+    return;
+  }
   if (drag) {
     const rect = graph.getBoundingClientRect();
     const gx = (event.clientX - rect.left) / zoom, gy = (event.clientY - rect.top) / zoom;
@@ -1168,6 +1336,14 @@ window.addEventListener("mousemove", (event) => {
 });
 
 window.addEventListener("mouseup", () => {
+  if (marquee) {
+    const box = $("marquee");
+    if (marquee.moved) { selectWithinRect(box.getBoundingClientRect()); panMoved = true; }   // suppress the trailing click
+    box.hidden = true;
+    marquee = null;
+    flushPending();
+    return;
+  }
   if (drag) {
     const node = drag.node;
     if (node.el) node.el.classList.remove("dragging");
@@ -1192,11 +1368,13 @@ window.addEventListener("mouseup", () => {
   flushPending();                                        // …or during a pan
 });
 
-// A plain click on empty canvas — not a node — closes the details drawer.
+// A plain click on empty canvas — not a node — drops the selection group and closes the drawer.
 canvas.addEventListener("click", (event) => {
   if (event.target.closest(".node")) return;   // node clicks are handled on the graph layer
-  if (panMoved) return;                          // this click merely ended a pan-drag
-  if (selectedId) closeDrawer();
+  if (panMoved) return;                          // this click merely ended a pan / marquee drag
+  if (event.shiftKey) return;                    // shift is the group-select modifier — never a "clear"
+  if (selectedGroup.size > 0) clearSelection();  // a plain click on empty space drops the group…
+  if (selectedId) closeDrawer();                 // …and closes the drawer
 });
 
 // ---- live updates -------------------------------------------------------------------------------
