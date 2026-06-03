@@ -256,6 +256,62 @@ class Tmux:
         attached. The one source the snapshot stamped on save reads (attachment-topology §4)."""
         return self.attachment_map().get(name, [])
 
+    def focused_session_name(self) -> str | None:
+        """The inner session the user is currently LOOKING at — the session nest-attached in the
+        active pane of the view host the user is driving. The mirror of the jump direction
+        (`pane_for_session`): jump moves the terminal to a node, this reads which node the terminal
+        is on, so the session graph can ring the focused one (M-focus, terminal → viewer).
+
+        Same client_tty ⇒ inner-session join as `_attachment_join`, but it also needs the
+        active-pane flags and per-client recency to pick *which* pane is focused, so it makes its
+        own two reads rather than widening that frozen pass. Kept in lockstep with
+        `_attachment_join` — if the client_tty⇒session mapping changes there, change it here too.
+
+        The user's outer client is a real terminal, so its `client_tty` is NOT any pane's
+        `pane_tty` (a nested attach's client tty IS its host pane's tty — that is the whole join).
+        The focused view host is the most-recently-active such outer client's session; tmux selects
+        window+pane per session, so that host has exactly one active pane (`window_active` &
+        `pane_active`). The inner session on that pane's tty is the answer. None when the user is
+        detached, the active pane hosts no nested session (a plain shell / the picker popup), or the
+        server is gone — every "nothing is focused" case the ring should treat as no ring.
+        """
+        _code, clients = self._run_quiet(
+            ["list-clients", "-F", "#{client_tty}\t#{client_session}\t#{client_activity}"]
+        )
+        _code, panes = self._run_quiet(
+            ["list-panes", "-a", "-F", "#{pane_tty}\t#{session_name}\t#{window_active}\t#{pane_active}"]
+        )
+
+        session_by_tty: dict[str, str] = {}
+        clients_by_recency: list[tuple[int, str, str]] = []  # (activity, client_tty, client_session)
+        for line in clients.splitlines():
+            fields = line.split("\t")
+            if len(fields) != 3:
+                continue
+            client_tty, client_session, activity = fields
+            session_by_tty[client_tty] = client_session
+            clients_by_recency.append((int(activity or 0), client_tty, client_session))
+
+        pane_ttys: set[str] = set()
+        active_pane_tty_by_host: dict[str, str] = {}
+        for line in panes.splitlines():
+            fields = line.split("\t")
+            if len(fields) != 4:
+                continue
+            pane_tty, host, window_active, pane_active = fields
+            pane_ttys.add(pane_tty)
+            if window_active == "1" and pane_active == "1":
+                active_pane_tty_by_host[host] = pane_tty
+
+        outer_clients = [client for client in clients_by_recency if client[1] not in pane_ttys]
+        if not outer_clients:
+            return None
+        focused_host = max(outer_clients, key=lambda client: client[0])[2]
+        focused_pane_tty = active_pane_tty_by_host.get(focused_host)
+        if focused_pane_tty is None:
+            return None
+        return session_by_tty.get(focused_pane_tty)
+
     def inner_for_pane(self, pane_id: str) -> str | None:
         """Reverse lookup (which inner session is nested in this pane), for `focus_envelope` — the
         same join, inverted (attachment-topology §3/§6)."""

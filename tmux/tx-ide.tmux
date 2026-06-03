@@ -9,6 +9,7 @@
 #   @tx-ide-pane-keys       on|off   M-1..9 → select-pane
 #   @tx-ide-window-keys     on|off   User0..8 → select-window (terminal must send)
 #   @tx-ide-session-labels  on|off   prefix+s shows each session's name + tags (choose-tree)
+#   @tx-ide-graph-focus     on|off   focus hooks → poke the session-graph dashboard's focus ring
 #   @tx-ide-palette         tokyonight-night|off   color overrides
 #
 # Composes a tmux.conf fragment and source-file's it, so tmux's own parser
@@ -22,6 +23,8 @@ set -u
 TX="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tx"
 # Repo-relative relabeler the prefix+s bind runs to refresh @tx_name just before choose-tree opens.
 RELABEL="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tmux-session-relabel"
+# Repo-relative poke the focus hooks run (backgrounded) to nudge the session-graph dashboard's ring.
+FOCUS_POKE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tx-graph-focus-poke"
 
 option() {
   tmux show-option -gv "$1" 2>/dev/null || printf '%s' "$2"
@@ -33,6 +36,7 @@ claude_scroll=$(option @tx-ide-claude-scroll on)
 pane_keys=$(option @tx-ide-pane-keys on)
 window_keys=$(option @tx-ide-window-keys on)
 session_labels=$(option @tx-ide-session-labels on)
+graph_focus=$(option @tx-ide-graph-focus on)
 palette=$(option @tx-ide-palette tokyonight-night)
 
 CONF=$(mktemp -t tx-ide-bindings.XXXXXX)
@@ -88,6 +92,29 @@ bind s {
   run-shell "$RELABEL"
   choose-tree -Zs -F '#{?session_format,#{?@tx_name,#{@tx_name}  ,}#{session_windows}w#{?session_attached, (attached),},#{?window_format,#{window_index}: #{window_name},#{pane_current_command}}}'
 }
+EOF
+fi
+
+# --- Session-graph focus hooks ---
+# The terminal → viewer half of the focus link: on every pane/window/session focus change, poke the
+# running session-graph dashboard (prototypes/sessions-graph) so it re-rings the node for the session
+# in the now-active pane. The poke is backgrounded (run-shell -b — never blocks the switch) and a
+# no-op when the dashboard is down (tx-graph-focus-poke exits early when no port file is advertised).
+# `focus-events on` is what makes pane-focus-in fire from the terminal. The hook set is deliberately
+# broad — the server dedups each poke, so over-firing is free, and the spread covers pane select, the
+# active-pane / active-window changes (whatever the cause), session switches, a pane exiting (focus
+# auto-reselect), and detach (clears the ring). Each is `set -g` (replace), so re-sourcing is idempotent.
+if [ "$graph_focus" = on ]; then
+  cat >>"$CONF" <<EOF
+set -g focus-events on
+set-hook -g pane-focus-in 'run-shell -b "$FOCUS_POKE"'
+set-hook -g after-select-pane 'run-shell -b "$FOCUS_POKE"'
+set-hook -g after-select-window 'run-shell -b "$FOCUS_POKE"'
+set-hook -g window-pane-changed 'run-shell -b "$FOCUS_POKE"'
+set-hook -g session-window-changed 'run-shell -b "$FOCUS_POKE"'
+set-hook -g client-session-changed 'run-shell -b "$FOCUS_POKE"'
+set-hook -g pane-exited 'run-shell -b "$FOCUS_POKE"'
+set-hook -g client-detached 'run-shell -b "$FOCUS_POKE"'
 EOF
 fi
 
