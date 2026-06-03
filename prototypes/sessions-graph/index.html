@@ -160,18 +160,16 @@
   /* A pinned node holds the spot the user dropped it on; a faint inner ring marks it as fixed. */
   .node.pinned { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--state) 45%, transparent); }
   /* "focused" = the session in the user's ACTIVE tmux pane right now, pushed live over the SSE focus
-     channel by the terminal's focus hooks (the mirror of double-click-to-jump). A cyan ring drawn as a
-     separate ::after layer so it composes with the blue .sel glow, amber .picked outline, and pinned
-     inset ring — a node can be focused AND selected. ::after also dodges the card's overflow:hidden (an
-     outer box-shadow would be clipped); the class is toggled straight from the SSE event, not the rAF
+     channel by the terminal's focus hooks (the mirror of double-click-to-jump). A steady ring in the
+     same tokyonight blue as the tmux active-pane border (--accent #7aa2f7), so the viewer's focus
+     marker reads as the same thing as the terminal's. Drawn as a separate ::after layer so it composes
+     with the .picked outline and the pinned inset ring; ::after also dodges the card's overflow:hidden,
+     which would clip an outer box-shadow. The class is toggled straight from the SSE event, not the rAF
      paint loop, so it tracks focus even in a backgrounded tab whose timers are throttled. */
   .node.focused::after {
     content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
-    box-shadow: inset 0 0 0 2px var(--cyan);
-    animation: focus-pulse 1.8s ease-in-out infinite;
+    box-shadow: inset 0 0 0 2px var(--accent);
   }
-  @keyframes focus-pulse { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
-  @media (prefers-reduced-motion: reduce) { .node.focused::after { animation: none; opacity: 1; } }
 
   .node .row1 { display: flex; align-items: center; gap: 7px; }
   .node .dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--state); }
