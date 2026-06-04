@@ -53,15 +53,6 @@ tx spawn <name> --tag <scope> --cwd <cwd> \
   --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
 ```
 
-### Worker types
-
-| Type | Reads | Produces |
-|---|---|---|
-| Scoping | the intent | a spec doc |
-| Planning | the spec doc | an implementation plan doc |
-| Coding | the plan doc | code + atomic commits + a draft PR (`gh pr create --draft`) |
-| Research / exploration | a question or codebase area | a findings doc |
-
 ### Worker priming
 
 `<priming>` **opens with the role-file read instruction** so the worker self-loads these conventions, then a short imperative telling it what to do. For a coding worker:
@@ -70,7 +61,7 @@ tx spawn <name> --tag <scope> --cwd <cwd> \
 Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/DEVELOPER.md as your first actions. Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.md, ~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/DEVELOPER.md, and ~/.tx-ide/user-agents/DEVELOPER.local.md (any user-agents/X.md replaces the shipped one; any user-agents/X.local.md extends it). Follow all of these for the duration of this session.
 ```
 
-Replace `DEVELOPER` with the role name for other worker types (`SCOPER`, `PLANNER`, `RESEARCHER`). Other roles only exist if a matching file has been dropped under `~/.tx-ide/user-agents/` — only `DEVELOPER.md` ships with tx-ide today. If a named role neither ships nor has a user-agent file, the role is unknown — don't guess.
+`DEVELOPER.md` is the only role tx-ide ships today. If you've dropped another role file under `~/.tx-ide/user-agents/`, swap its name in for `DEVELOPER`; a named role with no shipped or user-agent file is unknown — don't guess.
 
 Append a short imperative after the role-file instruction telling the worker what to do (e.g., `Then implement the plan at ~/Code/foo/.claude/plans/auth-rewrite.md.`).
 
