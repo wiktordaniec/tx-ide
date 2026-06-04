@@ -127,51 +127,10 @@ The schema is open — unknown keys are ignored. If the user names a knob you do
 
 ## Spawning workers
 
-When the user asks for a worker — coding, scoping, planning, or research/exploration — launch a Claude Code session with the right priming.
+When the user asks for a worker — coding, scoping, planning, or research/exploration — follow **COMMON § Spawning workers** for the recipe: the `tx spawn … --cmd 'claude …'` pattern, the model/effort defaults, `--env CLAUDE_REQUIRE_WORKTREE=1` for coding workers, the worker-types table, and the role-file priming string. Two things are yours as the assistant, layered on that recipe:
 
-Spawn via `tx spawn` and pass the Claude invocation through `--cmd`:
-
-```bash
-tx spawn <name> --tag <scope> --cwd <cwd> \
-  --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
-```
-
-- `<name>` — short, descriptive (e.g., `orchestrator-cleanup`, `auth-review`).
-- `<scope>` — the work scope (`wrangler-p1`, `PR-1840`, `cleanup`); a single scope tag, no role. An nvim companion takes the **same** scope (its `nvim` role is automatic).
-- `<cwd>` — project root. If the user said "here", use `pane-path` / `inner-pane-path` from the envelope. Otherwise resolve the project root they named.
-- Model + effort: `--model "opus[1m]"` and `--effort max` are the defaults. Don't downgrade unless the user asks.
-- Keep `<priming>` short — long prompts with special characters crash tmux.
-
-For **coding workers**, also pass `--env CLAUDE_REQUIRE_WORKTREE=1`. This trips an optional PreToolUse hook that blocks Write/Edit until the worker `cd`s into a linked worktree:
-
-```bash
-tx spawn <name> --tag <scope> --cwd <cwd> \
-  --env CLAUDE_REQUIRE_WORKTREE=1 \
-  --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
-```
-
-### Worker types
-
-| Type | Reads | Produces |
-|---|---|---|
-| Scoping | the user's intent | a spec doc |
-| Planning | the spec doc | an implementation plan doc |
-| Coding | the plan doc | code + atomic commits + a draft PR (`gh pr create --draft`) |
-| Research / exploration | a question or codebase area | findings doc |
-
-### Worker priming
-
-`<priming>` opens with the role-file read instruction. For a coding worker:
-
-```
-Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/DEVELOPER.md as your first actions. Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.md, ~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/DEVELOPER.md, and ~/.tx-ide/user-agents/DEVELOPER.local.md (any user-agents/X.md replaces the shipped one; any user-agents/X.local.md extends it). Follow all of these for the duration of this session.
-```
-
-Replace `DEVELOPER` with the role name for other worker types (`SCOPER`, `PLANNER`, `RESEARCHER`). Other roles only exist if the user has dropped a matching file under `~/.tx-ide/user-agents/` — only `DEVELOPER.md` ships with tx-ide today. If the user names a role that doesn't ship and doesn't have a user-agent file, tell them the role is unknown rather than guessing.
-
-Append a short imperative after the role-file instruction telling the worker what to do (e.g., `Then implement the plan at ~/Code/foo/.claude/plans/auth-rewrite.md.`).
-
-After spawning, tell the user the attach command: `tx attach` and filter by the scope tag.
+- `<cwd>` — if the user said "here", use `pane-path` / `inner-pane-path` from the focus envelope; otherwise resolve the project root they named.
+- After spawning, tell the user the attach command: `tx attach`, filtered by the scope tag.
 
 ## Peer messaging
 
