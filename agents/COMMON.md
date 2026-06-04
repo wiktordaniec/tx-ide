@@ -22,11 +22,48 @@ tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]
 **Naming:** human-readable, says what it's for (e.g. `wrangler-p1-diff`, `auth-review`). The tag does the filtering, not the name.
 
 ```bash
-tx spawn worker-auth --tag auth --cwd ~/proj/auth --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max'
-tx spawn-nvim wrangler-p1-diff --tag wrangler-p1 --diff main
+tx spawn build-watch --tag wrangler-p1 --cmd 'npm run watch'   # an ad-hoc process
+tx spawn-nvim wrangler-p1-diff --tag wrangler-p1 --diff main   # an nvim companion
 ```
 
+A Claude **worker** is also a `tx spawn`, but it needs a priming prompt in `--cmd` — see **§ Spawning workers** below. A bare `claude` with no priming never reads these conventions.
+
 Both inject `COLORTERM=truecolor` and `TERM=xterm-256color`. `spawn-nvim` also forces `colorscheme tokyonight-moon` via `+CMD` because `tmux new-session -d` strips the OSC11 background hint and nvim's auto-mode would land on the light variant.
+
+## Spawning workers
+
+When you need to delegate work — coding, scoping, planning, or research/exploration — spawn a Claude Code worker. The mechanics are `tx spawn` above; what turns a bare `claude` into a *worker* is the **priming prompt** passed through `--cmd`. Spawn one with no priming and it never reads these conventions — it has no role, no standards, no worktree discipline.
+
+```bash
+tx spawn <name> --tag <scope> --cwd <cwd> \
+  --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
+```
+
+- `<name>` — short, descriptive (`orchestrator-cleanup`, `auth-review`).
+- `<scope>` — the single work-scope tag (`wrangler-p1`, `PR-1840`, `cleanup`); no role. An nvim companion takes the **same** scope.
+- `<cwd>` — the project root the worker operates in.
+- Model + effort: `--model "opus[1m]"` and `--effort max` are the defaults; don't downgrade unless asked.
+- Keep `<priming>` short and single-line — long, quoted, special-char-laden prompts crash tmux input.
+
+For **coding workers**, also pass `--env CLAUDE_REQUIRE_WORKTREE=1`. It trips a PreToolUse hook that blocks Write/Edit until the worker `cd`s into a linked worktree:
+
+```bash
+tx spawn <name> --tag <scope> --cwd <cwd> \
+  --env CLAUDE_REQUIRE_WORKTREE=1 \
+  --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
+```
+
+### Worker priming
+
+`<priming>` **opens with the role-file read instruction** so the worker self-loads these conventions, then a short imperative telling it what to do. For a coding worker:
+
+```
+Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/DEVELOPER.md as your first actions. Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.md, ~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/DEVELOPER.md, and ~/.tx-ide/user-agents/DEVELOPER.local.md (any user-agents/X.md replaces the shipped one; any user-agents/X.local.md extends it). Follow all of these for the duration of this session.
+```
+
+`DEVELOPER.md` is the only role tx-ide ships today. If you've dropped another role file under `~/.tx-ide/user-agents/`, swap its name in for `DEVELOPER`; a named role with no shipped or user-agent file is unknown — don't guess.
+
+Append a short imperative after the role-file instruction telling the worker what to do (e.g., `Then implement the plan at ~/Code/foo/.claude/plans/auth-rewrite.md.`).
 
 ## Session metadata
 
