@@ -85,7 +85,9 @@
   button:hover { border-color: var(--accent); color: var(--accent); }
   .toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
 
-  /* ---- legend / state filter -------------------------------------------------------------- */
+  /* ---- shared filter bar (states · tags · kind) ------------------------------------------- */
+  /* One bar, reused across all three views (#filterbar): the state + tag selectors on graph/table,
+     the kind selector on messages. .legend is its chrome; renderFilterBar() fills the contents. */
   .legend {
     flex: 0 0 auto;
     display: flex;
@@ -115,6 +117,8 @@
   .lchip .n { color: var(--muted); font-size: 11px; }
   .lchip[aria-pressed="false"] { opacity: .38; border-style: dashed; }
   .lchip:hover { border-color: var(--state); }
+  /* A thin vertical rule between the bar's filter groups (states │ tags). */
+  .legend .fsep { flex: 0 0 auto; width: 1px; height: 16px; background: var(--border); margin: 0 6px; }
 
   /* ---- graph canvas ----------------------------------------------------------------------- */
   #canvas {
@@ -359,17 +363,17 @@
   }
   .tab:hover { color: var(--fg); border-color: var(--border); }
   .tab.active { color: var(--fg); background: var(--surface); border-color: var(--border); }
-  /* Each view's chrome shows only under its own body class — graph legend + layout buttons + canvas
-     on tab-graph, the grid + its state/tag bars on tab-table, the message grid + kind bar on
-     tab-messages. Pure CSS, no per-element JS toggling. */
-  body:not(.tab-graph) #legend, body:not(.tab-graph) .graph-only, body:not(.tab-graph) #canvas { display: none; }
-  body:not(.tab-table) #table, body:not(.tab-table) #tagbar, body:not(.tab-table) #statebar { display: none; }
-  body:not(.tab-messages) #messages, body:not(.tab-messages) #msgbar { display: none; }
+  /* Each view's body collapses under its own body class; the shared #filterbar stays mounted on every
+     tab and swaps its CONTENTS (states+tags for graph/table, kind for messages — see renderFilterBar).
+     The graph-only layout buttons + canvas still toggle by tab. Pure CSS, no per-element JS toggling. */
+  body:not(.tab-graph) .graph-only, body:not(.tab-graph) #canvas { display: none; }
+  body:not(.tab-table) #table { display: none; }
+  body:not(.tab-messages) #messages { display: none; }
 
-  /* ---- tag filter bar (table tab) --------------------------------------------------------- */
-  /* Click tag chips to show only sessions carrying any selected tag — the no-typing complement to
-     the search box (which still works, AND-combined with the tag picks). Reuses the .legend bar
-     chrome and the per-tag colours; a dimmed chip is off, a filled one is on. */
+  /* ---- tag selector (graph + table, inside #filterbar) ------------------------------------ */
+  /* Click tag chips to keep only sessions carrying any selected tag — the no-typing complement to
+     the search box (AND-combined with the tag picks). The table HIDES non-matching rows; the graph
+     DIMS non-matching nodes (like the search box). Per-tag colours; dimmed chip off, filled one on. */
   .tagchip {
     font: inherit; font-size: 11px; cursor: pointer;
     display: inline-flex; align-items: center; gap: 5px;
@@ -436,7 +440,6 @@
      reconstructed from chat history. Colour by who sent it: agent↔agent in the graph's accent
      blue, your messages in the multi-select amber. The full body opens in the shared drawer. */
   #messages { flex: 1 1 auto; overflow: auto; background: var(--bg); }
-  #msgbar { gap: 8px; }
   .kindchip {
     font: inherit; font-size: 11px; cursor: pointer; padding: 3px 11px; border-radius: 999px;
     color: var(--muted); border: 1px solid var(--border); background: transparent;
@@ -482,15 +485,9 @@
     <button id="refresh" title="reload records now">↻ refresh</button>
   </header>
 
-  <div class="legend" id="legend">
-    <span class="hint">states — click to show / hide:</span>
-    <span class="spacer"></span>
-    <span class="hint">drag a node to pin it · click for actions</span>
-  </div>
-
-  <div class="legend" id="statebar"><span class="hint">states — click to show / hide:</span></div>
-  <div class="legend" id="tagbar"><!-- tag filter chips, built by buildTagBar() from the visible states --></div>
-  <div class="legend" id="msgbar"><!-- kind filter chips (all / agent↔agent / you), built by renderMsgBar() --></div>
+  <!-- One filter bar, reused across all three views — renderFilterBar() fills it with the state + tag
+       selectors on graph/table and the kind selector on messages. -->
+  <div class="legend" id="filterbar"></div>
 
   <div id="canvas">
     <div id="sizer">
@@ -908,7 +905,7 @@ function render() {
   if (changed) reheat(0.9);
   paint();
 
-  buildLegend();
+  renderFilterBar();
   refreshDrawer();
   updateSummary(kept);
   updateSelBar();
@@ -961,9 +958,10 @@ function matchesQuery(record, query) {
   return haystack.includes(query);
 }
 
-// The tag bar's no-typing complement to the search box: once tags are picked, a row shows only if
-// it carries at least one of them (OR / union). No picks ⇒ no tag constraint. AND-combined with the
-// text query in renderTable, so the two filters narrow together.
+// The tag selector's no-typing complement to the search box: with tags picked, a session shows only
+// if it carries at least one of them (OR / union). No picks ⇒ no tag constraint. AND-combined with the
+// text query. Shared by both session views — the table hides a non-match (renderTable), the graph dims
+// it (mountNodes) — so the one #filterbar tag selector drives graph and table alike.
 function matchesTags(record) {
   if (selectedTags.size === 0) return true;
   return record.tags.some((tag) => selectedTags.has(tag));
@@ -975,8 +973,7 @@ function matchesState(record) { return !hiddenStates.has(record.state); }
 
 function renderTable() {
   if (!feed) return;
-  buildStateBar();
-  buildTagBar();
+  renderFilterBar();
   const query = $("filter").value.trim().toLowerCase();
   const rows = feed.sessions.filter((entry) =>
     matchesState(entry.record) && matchesTags(entry.record) && matchesQuery(entry.record, query));
@@ -1012,36 +1009,6 @@ function renderTable() {
   setSummary(rows.length);
   refreshDrawer();   // keep the details drawer in sync if it's open for a row (mirrors render() on the graph)
   pendingRender = false;   // this paint reflects the latest feed — clear the deferred flag (mirrors render())
-}
-
-// The table's state filter — the six state chips, sharing the graph's hiddenStates via the common
-// renderStateChips (clicks here re-render the table; the graph picks the change up on its next paint).
-function buildStateBar() { renderStateChips($("statebar"), renderTable); }
-
-// Build the tag filter bar from the tags carried by the VISIBLE states (per-tag counts + colours).
-// Selected chips drive matchesTags(); rebuilt each render so new tags surface and counts stay live.
-// Selection lives in selectedTags (not the DOM), so a rebuild never loses what the user picked.
-function buildTagBar() {
-  const counts = new Map();
-  const colors = {};
-  for (const entry of feed.sessions) {
-    if (hiddenStates.has(entry.record.state)) continue;   // only surface tags carried by the visible states
-    for (const tag of entry.record.tags) {
-      counts.set(tag, (counts.get(tag) || 0) + 1);
-      if (!(tag in colors)) colors[tag] = (entry.derived.tag_colors && entry.derived.tag_colors[tag]) || "var(--dim)";
-    }
-  }
-  // A pick whose sessions are now all hidden drops off the bar — clear it from the selection too, so
-  // what's selected always matches a visible chip (no invisible filter narrowing the table).
-  for (const tag of [...selectedTags]) if (!counts.has(tag)) selectedTags.delete(tag);
-  const chips = [...counts.keys()].sort().map((tag) => {
-    const on = selectedTags.has(tag);
-    return `<button class="tagchip${on ? " on" : ""}" data-tag="${escapeHtml(tag)}" style="--chip:${colors[tag]}" ` +
-           `aria-pressed="${on}">${escapeHtml(tag)}<span class="n">${counts.get(tag)}</span></button>`;
-  }).join("");
-  const clear = selectedTags.size
-    ? `<span class="spacer"></span><button class="tagclear">clear ${selectedTags.size}</button>` : "";
-  $("tagbar").innerHTML = `<span class="hint">tags — click to filter:</span>${chips}${clear}`;
 }
 
 // Header summary line, shared by both views — total records, shown count, abbreviated home dir.
@@ -1123,7 +1090,7 @@ function messageMatches(m, query) {
 }
 
 function renderMessages() {
-  renderMsgBar();
+  renderFilterBar();
   if (!messagesFeed) {
     $("msgEmpty").hidden = false; $("msgEmpty").textContent = "loading messages…";
     $("summary").textContent = "loading…"; return;
@@ -1159,26 +1126,6 @@ function renderMessages() {
   $("summary").innerHTML = `<b>${messagesFeed.messages.length}</b> messages · <b>${rows.length}</b> shown`;
   refreshMessageDrawer();
   pendingRender = false;
-}
-
-// The kind filter bar — all / agent↔agent / you, with live counts over the text+scope-filtered set
-// (minus the kind itself, so each count is what picking it would reveal). Reuses the .legend chrome.
-function renderMsgBar() {
-  if (!messagesFeed) { $("msgbar").innerHTML = ""; return; }
-  const query = $("filter").value.trim().toLowerCase();
-  const pool = messagesFeed.messages.filter((m) => msgScopeMatch(m) && msgTextMatch(m, query));
-  const counts = {
-    all: pool.length,
-    agent: pool.filter((m) => m.kind === "agent").length,
-    you: pool.filter((m) => m.kind === "you").length,
-  };
-  const chips = [["all", "all"], ["agent", "agent↔agent"], ["you", "you"]].map(([key, label]) =>
-    `<button class="kindchip${messageKind === key ? " on" : ""}" data-kind="${key}" aria-pressed="${messageKind === key}">` +
-    `${label}<span class="n">${counts[key]}</span></button>`).join("");
-  const scope = messageScope
-    ? `<span class="spacer"></span><button class="tagclear" data-clearscope="1">scope: ${escapeHtml(shortName(messageScope))} ✕</button>`
-    : "";
-  $("msgbar").innerHTML = `<span class="hint">kind — click to filter:</span>${chips}${scope}`;
 }
 
 function msgSortBy(key) {
@@ -1250,8 +1197,11 @@ function mountNodes(kept) {
       graph.appendChild(el);
       node.el = el;
     }
-    const dim = query && !dataNode.ghost &&
-      !(dataNode.name.toLowerCase().includes(query) || (dataNode.tags || []).join(" ").toLowerCase().includes(query));
+    // Dim a node the active filters exclude — failing the search box OR the shared tag selector
+    // (matchesTags). Ghosts (lineage-only) never dim. The graph dims; the table hides the same set.
+    const matchesSearch = !query ||
+      dataNode.name.toLowerCase().includes(query) || (dataNode.tags || []).join(" ").toLowerCase().includes(query);
+    const dim = !dataNode.ghost && (!matchesSearch || !matchesTags(dataNode));
     const className = "node s-" + dataNode.state +
       (dataNode.ghost ? " ghost" : "") +
       (node.pinned ? " pinned" : "") +
@@ -1346,30 +1296,100 @@ function centerView() {
   canvas.scrollTop = Math.max(0, cy * zoom - canvas.clientHeight / 2);
 }
 
-// ---- legend / filter ----------------------------------------------------------------------------
-// Render the six state chips into `container`, reflecting hiddenStates; a click toggles that state's
-// visibility and runs afterToggle. Shared by the graph legend (afterToggle=render) and the table's
-// state bar (afterToggle=renderTable), so both views filter through one hiddenStates set — the table
-// therefore starts on the same states as the graph (exited/archived hidden) and they stay in step.
-function renderStateChips(container, afterToggle) {
+// ---- shared filter bar (states · tags · kind) ---------------------------------------------------
+// ONE bar (#filterbar), reused across all three views. renderFilterBar() fills it with the state +
+// tag selectors on the graph/table tabs (both filter the session feed) and the kind selector on the
+// messages tab. The whole bar is rebuilt as a string each render and chip clicks run through one
+// delegated listener (below), so there are no per-chip listeners to re-bind. hiddenStates (state) and
+// selectedTags (tags) are shared by graph + table, so toggling either re-renders whichever view is up.
+function renderFilterBar() {
+  const bar = $("filterbar");
+  if (activeTab === "messages") { bar.innerHTML = kindSectionHtml(); return; }
+  const pinHint = activeTab === "graph"
+    ? `<span class="spacer"></span><span class="hint">drag a node to pin it · click for actions</span>` : "";
+  bar.innerHTML = `<span class="hint">states — click to show / hide:</span>${stateChipsHtml()}${tagSectionHtml()}${pinHint}`;
+}
+
+// The six state chips, reflecting hiddenStates with live per-state counts. data-state drives the
+// delegated toggle; no per-chip listener. The default (exited/archived hidden) lives in hiddenStates,
+// shared by both session views, so they open on — and stay on — the same states.
+function stateChipsHtml() {
   const counts = {};
   if (feed) for (const entry of feed.sessions) counts[entry.record.state] = (counts[entry.record.state] || 0) + 1;
-  [...container.querySelectorAll(".lchip")].forEach((chip) => chip.remove());
-  const anchor = container.querySelector(".spacer");   // graph legend pins a trailing hint here; the table bar has none (null ⇒ append)
-  for (const state of STATE_ORDER) {
-    const chip = document.createElement("span");
-    chip.className = "lchip s-" + state;
-    chip.setAttribute("aria-pressed", String(!hiddenStates.has(state)));
-    chip.title = STATE_INFO[state];
-    chip.innerHTML = `<span class="dot"></span>${state}<span class="n">${counts[state] || 0}</span>`;
-    chip.addEventListener("click", () => {
-      if (hiddenStates.has(state)) hiddenStates.delete(state); else hiddenStates.add(state);
-      afterToggle();
-    });
-    container.insertBefore(chip, anchor);
-  }
+  return STATE_ORDER.map((state) =>
+    `<span class="lchip s-${state}" data-state="${state}" aria-pressed="${!hiddenStates.has(state)}" title="${STATE_INFO[state]}">` +
+    `<span class="dot"></span>${state}<span class="n">${counts[state] || 0}</span></span>`).join("");
 }
-function buildLegend() { renderStateChips($("legend"), render); }
+
+// The tag selector — one chip per tag carried by the VISIBLE states (per-tag counts + colours),
+// preceded by a separator + label. Omitted entirely when the visible states carry no tags, so the bar
+// never shows a dangling label. A pick whose sessions all went hidden drops off the bar AND out of
+// selectedTags, so what's selected always matches a visible chip.
+function tagSectionHtml() {
+  const counts = new Map();
+  const colors = {};
+  if (feed) for (const entry of feed.sessions) {
+    if (hiddenStates.has(entry.record.state)) continue;   // only surface tags carried by the visible states
+    for (const tag of entry.record.tags) {
+      counts.set(tag, (counts.get(tag) || 0) + 1);
+      if (!(tag in colors)) colors[tag] = (entry.derived.tag_colors && entry.derived.tag_colors[tag]) || "var(--dim)";
+    }
+  }
+  for (const tag of [...selectedTags]) if (!counts.has(tag)) selectedTags.delete(tag);
+  if (counts.size === 0) return "";
+  const chips = [...counts.keys()].sort().map((tag) => {
+    const on = selectedTags.has(tag);
+    return `<button class="tagchip${on ? " on" : ""}" data-tag="${escapeHtml(tag)}" style="--chip:${colors[tag]}" ` +
+           `aria-pressed="${on}">${escapeHtml(tag)}<span class="n">${counts.get(tag)}</span></button>`;
+  }).join("");
+  const clear = selectedTags.size ? `<button class="tagclear" data-cleartags="1">clear ${selectedTags.size}</button>` : "";
+  return `<span class="fsep"></span><span class="hint">tags — click to filter:</span>${chips}${clear}`;
+}
+
+// The kind selector (messages tab) — all / agent↔agent / you, with live counts over the text+scope-
+// filtered set (minus the kind itself, so each count is what picking it would reveal). State and tags
+// don't apply to messages, so the bar shows only this here.
+function kindSectionHtml() {
+  if (!messagesFeed) return "";
+  const query = $("filter").value.trim().toLowerCase();
+  const pool = messagesFeed.messages.filter((m) => msgScopeMatch(m) && msgTextMatch(m, query));
+  const counts = {
+    all: pool.length,
+    agent: pool.filter((m) => m.kind === "agent").length,
+    you: pool.filter((m) => m.kind === "you").length,
+  };
+  const chips = [["all", "all"], ["agent", "agent↔agent"], ["you", "you"]].map(([key, label]) =>
+    `<button class="kindchip${messageKind === key ? " on" : ""}" data-kind="${key}" aria-pressed="${messageKind === key}">` +
+    `${label}<span class="n">${counts[key]}</span></button>`).join("");
+  const scope = messageScope
+    ? `<span class="spacer"></span><button class="tagclear" data-clearscope="1">scope: ${escapeHtml(shortName(messageScope))} ✕</button>`
+    : "";
+  return `<span class="hint">kind — click to filter:</span>${chips}${scope}`;
+}
+
+// One delegated handler for every chip in the shared bar. After a toggle, paintActive() re-renders the
+// active view, which rebuilds the bar from the updated filter state (state/tag clicks reach graph +
+// table; kind/scope clicks only ever fire on the messages tab).
+$("filterbar").addEventListener("click", (event) => {
+  const stateChip = event.target.closest(".lchip");
+  if (stateChip) {
+    const state = stateChip.dataset.state;
+    if (hiddenStates.has(state)) hiddenStates.delete(state); else hiddenStates.add(state);
+    paintActive();
+    return;
+  }
+  if (event.target.closest("[data-cleartags]")) { selectedTags.clear(); paintActive(); return; }
+  const tagChip = event.target.closest(".tagchip");
+  if (tagChip) {
+    const tag = tagChip.dataset.tag;
+    if (selectedTags.has(tag)) selectedTags.delete(tag); else selectedTags.add(tag);
+    paintActive();
+    return;
+  }
+  if (event.target.closest("[data-clearscope]")) { messageScope = null; renderMessages(); return; }
+  const kindChip = event.target.closest(".kindchip");
+  if (kindChip) { messageKind = kindChip.dataset.kind; renderMessages(); }
+});
 
 // ---- drawer (JSON details) ----------------------------------------------------------------------
 function openNode(id) { selectedId = id; selectedMessage = null; paintActive(); }   // paintActive (not render) so "details" works from the table tab too
@@ -1785,15 +1805,6 @@ $("tbody").addEventListener("contextmenu", (event) => {
   event.preventDefault();                      // swap the native context menu for our focus/details/message menu
   openRowMenu(row.dataset.id, event.clientX, event.clientY);
 });
-$("tagbar").addEventListener("click", (event) => {
-  if (event.target.closest(".tagclear")) { selectedTags.clear(); renderTable(); return; }
-  const chip = event.target.closest(".tagchip");
-  if (!chip) return;
-  const tag = chip.dataset.tag;
-  if (selectedTags.has(tag)) selectedTags.delete(tag); else selectedTags.add(tag);
-  renderTable();
-});
-
 // Messages tab — sort on a header, open a body in the drawer, scope to a clicked session name, or
 // double-click to focus the recipient's pane. Bound once via delegation on the stable containers.
 $("msgHead").addEventListener("click", (event) => {
@@ -1809,13 +1820,6 @@ $("msgBody").addEventListener("click", (event) => {
 $("msgBody").addEventListener("dblclick", (event) => {
   const row = event.target.closest("tr");
   if (row && row.dataset.recipient) focusSession(row.dataset.recipient);
-});
-$("msgbar").addEventListener("click", (event) => {
-  if (event.target.closest("[data-clearscope]")) { messageScope = null; renderMessages(); return; }
-  const chip = event.target.closest(".kindchip");
-  if (!chip) return;
-  messageKind = chip.dataset.kind;
-  renderMessages();
 });
 
 // Over the canvas the wheel zooms toward the pointer (Figma-style) instead of scrolling the
@@ -2043,6 +2047,7 @@ setInterval(() => {
   $("refresh").textContent = `↻ refresh (${age}s)`;
 }, 1000);
 
+renderFilterBar();          // paint the bar's state chips immediately, before the first feed lands
 fetchAndRender(true);
 if ($("auto").checked) connectStream();
 </script>
