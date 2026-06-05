@@ -855,6 +855,8 @@ function render() {
 const COLUMNS = [
   { key: "name", label: "name", sortVal: (e) => e.record.name.toLowerCase(),
     cell: (e) => `<span class="tname"><span class="dot"></span>${escapeHtml(e.record.name)}</span>` },
+  { key: "last_activity", label: "last interacted", sortVal: (e) => e.record.last_activity || 0,
+    cell: (e) => timeCell(e.record.last_activity, e.derived.idle_rel) },
   { key: "state", label: "state", sortVal: (e) => e.record.state,
     cell: (e) => `<span class="tstate">${escapeHtml(e.record.state)}</span>` },
   { key: "role", label: "role", sortVal: (e) => e.record.role,
@@ -863,8 +865,6 @@ const COLUMNS = [
     cell: (e) => `<span class="tchips">${tableChips(e)}</span>` },
   { key: "created_at", label: "created", sortVal: (e) => e.record.created_at || 0,
     cell: (e) => timeCell(e.record.created_at, e.derived.started_rel) },
-  { key: "last_activity", label: "last interacted", sortVal: (e) => e.record.last_activity || 0,
-    cell: (e) => timeCell(e.record.last_activity, e.derived.idle_rel) },
 ];
 // Time columns default newest-first (desc); text columns A→Z (asc).
 const TIME_KEYS = new Set(["created_at", "last_activity"]);
