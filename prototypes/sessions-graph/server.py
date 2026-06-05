@@ -35,6 +35,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "lib"))
 
+from tx.messages import collect_messages, source_signature  # noqa: E402
 from tx.palette import tag_cube          # noqa: E402  — path is set on the line above
 from tx.render import reltime            # noqa: E402
 from tx.session import Kind, Session     # noqa: E402
@@ -105,6 +106,20 @@ def build_feed() -> dict:
     }
 
 
+def build_messages_feed() -> dict:
+    """The message stream the Messages tab renders — every inter-agent + user message reconstructed
+    from `~/.tx-ide` chat history (`tx.messages`, no model), each with a relative-time string for the
+    table. Served on demand and pushed over the `messages` SSE channel when a transcript changes."""
+    now = time.time()
+    return {
+        "generated_at": now,
+        "messages": [
+            {**message.to_dict(), "rel": reltime(message.ts, now) if message.ts else ""}
+            for message in collect_messages()
+        ],
+    }
+
+
 class FeedHub:
     """One shared poll loop that fans live feed changes out to every connected SSE client.
 
@@ -121,7 +136,12 @@ class FeedHub:
     the poll loop — terminal focus changes never touch a record, so there is nothing on disk to
     notice. Instead a tmux hook POSTs `/api/focus-changed`, which calls `push_focus`; the change is
     deduped and fanned out, so the ring moves the instant a pane is switched and a background tab —
-    which can't run its own timers — still updates, because the server is the one pushing."""
+    which can't run its own timers — still updates, because the server is the one pushing.
+
+    Messages ride a THIRD, named channel (`event: messages`) on the same poll loop. Rebuilding the
+    message feed scans transcripts (~170 ms), too heavy for every tick, so the loop first hashes a
+    cheap stat-only `source_signature` and only rebuilds + pushes when a transcript actually grew —
+    the same idle-pushes-nothing discipline as the record feed."""
 
     def __init__(self, interval: float = POLL_INTERVAL_SECONDS) -> None:
         self._interval = interval
@@ -129,6 +149,7 @@ class FeedHub:
         self._condition = threading.Condition()
         self._last_hash: str | None = None
         self._last_focused_id: str | None = None
+        self._last_messages_sig: str | None = None
 
     def start(self) -> None:
         threading.Thread(target=self._poll_loop, name="feed-poll", daemon=True).start()
@@ -157,7 +178,21 @@ class FeedHub:
                     clients = list(self._clients)
                 for client in clients:
                     client.put(("feed", payload))
+            self._push_messages_if_changed()
             time.sleep(self._interval)
+
+    def _push_messages_if_changed(self) -> None:
+        """Rebuild + fan out the message feed only when a transcript actually changed — gated on the
+        cheap stat-only signature so the heavy scan never runs on an idle tick."""
+        signature = source_signature()
+        if signature == self._last_messages_sig:
+            return
+        self._last_messages_sig = signature
+        payload = json.dumps(build_messages_feed())
+        with self._condition:
+            clients = list(self._clients)
+        for client in clients:
+            client.put(("messages", payload))
 
     def push_focus(self) -> None:
         """Recompute the terminal's focused session and fan it out as a named `focus` frame — but
@@ -309,10 +344,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
     """Routes: `/api/stream` (Server-Sent live feed + named `focus` channel — one shared loop fans
     changes out to every tab, so the graph stays current even while its tab is unfocused),
     `/api/sessions` (one-shot JSON feed for the initial paint, the manual refresh, and the on-focus
-    resync), `POST /api/focus` (jump the user's tmux to a session's pane), `POST /api/focus-changed`
-    (the tmux hook's poke — recompute & push the focused ring), `POST /api/message` (type a request
-    about one session — `id` — or a multi-select group — `ids` — into the live tx-assistant), and `/`
-    (the page). Else 404s."""
+    resync), `/api/messages` (one-shot message feed for the Messages tab; also pushed live on the
+    `messages` SSE channel), `POST /api/focus` (jump the user's tmux to a session's pane),
+    `POST /api/focus-changed` (the tmux hook's poke — recompute & push the focused ring),
+    `POST /api/message` (type a request about one session — `id` — or a multi-select group — `ids` —
+    into the live tx-assistant), and `/` (the page). Else 404s."""
 
     def _respond(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
@@ -322,13 +358,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _serve_stream(self) -> None:
-        """Hold the connection open and stream Server-Sent Events on two channels: the default
+        """Hold the connection open and stream Server-Sent Events on three channels: the default
         (unnamed) `feed` channel — one snapshot right away so a just-opened (or just-refocused, after
         EventSource reconnects) tab is current at once, then one each time the poll loop sees a change
-        — and a named `focus` channel pushed by the tmux hook. The focus snapshot is sent on connect
-        too, so a reconnecting tab re-syncs the ring without waiting for the next pane switch. A
-        comment line every 15s keeps the connection warm; a closed tab surfaces as a write error that
-        ends this thread cleanly."""
+        — a named `focus` channel pushed by the tmux hook, and a named `messages` channel pushed by
+        the poll loop when a transcript changes. The focus and messages snapshots are sent on connect
+        too, so a reconnecting tab re-syncs without waiting for the next change. A comment line every
+        15s keeps the connection warm; a closed tab surfaces as a write error that ends this thread
+        cleanly."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -339,6 +376,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             self._sse_send("feed", json.dumps(build_feed()))
             self._sse_send("focus", json.dumps({"focused_id": compute_focused_id()}))
+            self._sse_send("messages", json.dumps(build_messages_feed()))
             while True:
                 try:
                     event, payload = client.get(timeout=15)
@@ -366,6 +404,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_stream()
         elif self.path.startswith("/api/sessions"):
             self._respond(200, json.dumps(build_feed()).encode(), "application/json")
+        elif self.path.startswith("/api/messages"):
+            self._respond(200, json.dumps(build_messages_feed()).encode(), "application/json")
         elif self.path in ("/", "/index.html"):
             self._respond(200, PAGE.read_bytes(), "text/html; charset=utf-8")
         else:

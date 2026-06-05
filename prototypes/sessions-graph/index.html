@@ -359,8 +359,12 @@
   }
   .tab:hover { color: var(--fg); border-color: var(--border); }
   .tab.active { color: var(--fg); background: var(--surface); border-color: var(--border); }
-  body.tab-table #legend, body.tab-table .graph-only, body.tab-table #canvas { display: none; }
-  body.tab-graph #table, body.tab-graph #tagbar, body.tab-graph #statebar { display: none; }
+  /* Each view's chrome shows only under its own body class — graph legend + layout buttons + canvas
+     on tab-graph, the grid + its state/tag bars on tab-table, the message grid + kind bar on
+     tab-messages. Pure CSS, no per-element JS toggling. */
+  body:not(.tab-graph) #legend, body:not(.tab-graph) .graph-only, body:not(.tab-graph) #canvas { display: none; }
+  body:not(.tab-table) #table, body:not(.tab-table) #tagbar, body:not(.tab-table) #statebar { display: none; }
+  body:not(.tab-messages) #messages, body:not(.tab-messages) #msgbar { display: none; }
 
   /* ---- tag filter bar (table tab) --------------------------------------------------------- */
   /* Click tag chips to show only sessions carrying any selected tag — the no-typing complement to
@@ -384,29 +388,29 @@
      session, filtered by the shared search box. Reuses the card vocabulary: the state dot + colour
      (var(--state), set by the row's s-<state> class) and the tag .chip pills. */
   #table { flex: 1 1 auto; overflow: auto; background: var(--bg); }
-  table#sessTable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  #sessTable thead th {
+  table.grid { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .grid thead th {
     position: sticky; top: 0; z-index: 2;                 /* header stays put while the body scrolls */
     text-align: left; font-weight: 600; color: var(--dim);
     background: var(--panel); border-bottom: 1px solid var(--border);
     padding: 8px 12px; white-space: nowrap; cursor: pointer; user-select: none;
   }
-  #sessTable thead th:hover { color: var(--accent); }
-  #sessTable thead th.sorted { color: var(--fg); }
-  #sessTable thead th .arrow { color: var(--accent); margin-left: 5px; font-size: 10px; }
-  #sessTable tbody td {
+  .grid thead th:hover { color: var(--accent); }
+  .grid thead th.sorted { color: var(--fg); }
+  .grid thead th .arrow { color: var(--accent); margin-left: 5px; font-size: 10px; }
+  .grid tbody td {
     padding: 7px 12px; border-bottom: 1px solid var(--surface-hi);
     white-space: nowrap; vertical-align: middle; color: var(--dim);
   }
-  #sessTable tbody tr { cursor: pointer; }               /* double-click to focus · right-click for actions */
-  #sessTable tbody tr:hover td { background: var(--surface); }
+  .grid tbody tr { cursor: pointer; }               /* double-click to focus · right-click for actions */
+  .grid tbody tr:hover td { background: var(--surface); }
   /* the keyboard selection — the row the arrow keys are parked on, the one you act on (f focuses it).
      A solid neutral fill + a left caret, deliberately NOT blue: blue is the iTerm-focus ring below.
      Placed BEFORE .focused so that on a row that is both, the blue ring wins the shared first cell —
      the two never fight, and fill (your selection) vs ring (the live terminal) stays unmistakable. */
-  #sessTable tbody tr.cursor td { background: var(--surface-hi); }
-  #sessTable tbody tr.cursor td:first-child { box-shadow: inset 3px 0 0 var(--fg); }
-  #sessTable tbody tr.menu-active td { background: var(--surface-hi); }   /* row whose action menu is open */
+  .grid tbody tr.cursor td { background: var(--surface-hi); }
+  .grid tbody tr.cursor td:first-child { box-shadow: inset 3px 0 0 var(--fg); }
+  .grid tbody tr.menu-active td { background: var(--surface-hi); }   /* row whose action menu is open */
   /* the iTerm-focused row — the session in the terminal's ACTIVE tmux pane (live SSE focus channel).
      Ringed in the tmux active-pane blue (--accent), the SAME marker the graph node uses
      (.node.focused::after), so the table, the graph, and the terminal all read as one thing. Drawn
@@ -414,9 +418,9 @@
      on every cell, capped left on the first cell and right on the last. Comes after .cursor so its
      ring wins the shared first cell; no fill, so a row that is both selection AND live shows the blue
      ring over the selection's neutral band. */
-  #sessTable tbody tr.focused td { box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent); }
-  #sessTable tbody tr.focused td:first-child { box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent), inset 2px 0 0 var(--accent); }
-  #sessTable tbody tr.focused td:last-child { box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent), inset -2px 0 0 var(--accent); }
+  .grid tbody tr.focused td { box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent); }
+  .grid tbody tr.focused td:first-child { box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent), inset 2px 0 0 var(--accent); }
+  .grid tbody tr.focused td:last-child { box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent), inset -2px 0 0 var(--accent); }
   .tname { display: inline-flex; align-items: center; gap: 8px; color: var(--fg); font-weight: 600; }
   .tname .dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--state); }
   .trole { font-size: 10px; letter-spacing: .4px; text-transform: uppercase; color: var(--muted); }
@@ -426,6 +430,39 @@
   .ttime.never { color: var(--muted); }
   #tableEmpty { padding: 28px 16px; color: var(--muted); text-align: center; }
   #tableEmpty[hidden] { display: none; }
+
+  /* ---- messages view --------------------------------------------------------------------- */
+  /* A third grid (shares the .grid table chrome) over the inter-agent + user messages
+     reconstructed from chat history. Colour by who sent it: agent↔agent in the graph's accent
+     blue, your messages in the multi-select amber. The full body opens in the shared drawer. */
+  #messages { flex: 1 1 auto; overflow: auto; background: var(--bg); }
+  #msgbar { gap: 8px; }
+  .kindchip {
+    font: inherit; font-size: 11px; cursor: pointer; padding: 3px 11px; border-radius: 999px;
+    color: var(--muted); border: 1px solid var(--border); background: transparent;
+  }
+  .kindchip:hover { color: var(--fg); }
+  .kindchip.on { color: var(--fg); border-color: var(--fg); background: var(--surface); }
+  .kindchip .n { color: var(--muted); font-size: 10px; margin-left: 6px; }
+  .kindchip[data-kind="agent"].on { color: var(--accent); border-color: var(--accent); }
+  .kindchip[data-kind="you"].on { color: var(--warn); border-color: var(--warn); }
+  .mkind { font-size: 10px; letter-spacing: .4px; text-transform: uppercase; font-weight: 600; color: var(--muted); }
+  .k-agent .mkind { color: var(--accent); }
+  .k-you .mkind { color: var(--warn); }
+  .mfrom { color: var(--fg); font-weight: 600; }
+  .mfrom.you { color: var(--warn); }
+  .marrow { color: var(--muted); margin: 0 5px; }
+  .mto { color: var(--dim); }
+  .scopelink { cursor: pointer; }
+  .scopelink:hover { text-decoration: underline; color: var(--fg); }
+  .mvia { font-size: 10px; color: var(--muted); }
+  .mbody { color: var(--dim); }
+  #msgEmpty { padding: 28px 16px; color: var(--muted); text-align: center; }
+  #msgEmpty[hidden] { display: none; }
+  /* the shared drawer, repurposed for one message: wrap the body, tint the header dot by kind */
+  #json.wrap { white-space: pre-wrap; word-break: break-word; color: var(--fg); font: 13px/1.6 inherit; }
+  #drawer.msg-agent { --state: var(--accent); }
+  #drawer.msg-you { --state: var(--warn); }
 </style>
 </head>
 <body class="tab-graph">
@@ -434,6 +471,7 @@
     <span class="tabs">
       <button class="tab active" data-tab="graph">graph</button>
       <button class="tab" data-tab="table">table</button>
+      <button class="tab" data-tab="messages">messages</button>
     </span>
     <span class="meta" id="summary">loading…</span>
     <span class="spacer"></span>
@@ -452,6 +490,7 @@
 
   <div class="legend" id="statebar"><span class="hint">states — click to show / hide:</span></div>
   <div class="legend" id="tagbar"><!-- tag filter chips, built by buildTagBar() from the visible states --></div>
+  <div class="legend" id="msgbar"><!-- kind filter chips (all / agent↔agent / you), built by renderMsgBar() --></div>
 
   <div id="canvas">
     <div id="sizer">
@@ -464,11 +503,19 @@
   </div>
 
   <div id="table">
-    <table id="sessTable">
+    <table id="sessTable" class="grid">
       <thead><tr id="thRow"></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
     <div id="tableEmpty" hidden></div>
+  </div>
+
+  <div id="messages">
+    <table id="msgTable" class="grid">
+      <thead><tr id="msgHead"></tr></thead>
+      <tbody id="msgBody"></tbody>
+    </table>
+    <div id="msgEmpty" hidden></div>
   </div>
 
   <aside id="drawer">
@@ -481,7 +528,7 @@
     <div class="dsub" id="dSub"></div>
     <pre class="dbody" id="json"></pre>
     <div class="dfoot">
-      <button id="copy">⧉ copy JSON</button>
+      <button id="copy">⧉ copy</button>
     </div>
   </aside>
 
@@ -562,10 +609,15 @@ let isPanning = false;
 let lastFetchAt = 0;
 let firstRender = true;
 let pendingRender = false;        // a stream push that landed mid-interaction, to render once it ends
-let activeTab = "graph";          // which view is showing — "graph" (force layout) or "table" (grid)
+let activeTab = "graph";          // which view is showing — "graph" (force layout), "table" (grid), or "messages"
 let tableSort = { key: "last_activity", dir: "desc" };   // table: active sort column + direction (newest-first default, matching the feed order)
 let selectedTags = new Set();     // table: tags picked in the tag bar — a row shows if it carries ANY of them (empty ⇒ no tag filter)
 let cursorId = null;              // table: record id of the keyboard-highlighted row (arrow keys move it, f focuses it) — independent of focusedId (terminal pane) and selectedId (drawer)
+let messagesFeed = null;          // messages: the /api/messages payload ({ messages:[…] }) — from the SSE `messages` channel or a one-shot fetch
+let messagesSort = { key: "ts", dir: "desc" };   // messages: active sort column + direction (newest-first default)
+let messageKind = "all";          // messages: kind filter — "all" | "agent" | "you"
+let messageScope = null;          // messages: a session name clicked to narrow to its conversation (null ⇒ all)
+let selectedMessage = null;       // messages: uuid of the message whose full body is open in the drawer
 
 // Physics state lives apart from the feed: id → sim node, persisted across refreshes so a reload of
 // the records never yanks a settled graph around. `links` is rebuilt from the visible forest.
@@ -1003,15 +1055,22 @@ function setSummary(shown) {
 // internal render() calls stay direct (they only run while the graph tab is up).
 function paintActive() {
   if (activeTab === "table") renderTable();
+  else if (activeTab === "messages") renderMessages();
   else render();
 }
 
 function setTab(tab) {
   if (tab === activeTab) return;
   activeTab = tab;
-  document.body.classList.toggle("tab-table", tab === "table");
   document.body.classList.toggle("tab-graph", tab === "graph");
+  document.body.classList.toggle("tab-table", tab === "table");
+  document.body.classList.toggle("tab-messages", tab === "messages");
   for (const button of document.querySelectorAll(".tab")) button.classList.toggle("active", button.dataset.tab === tab);
+  // The drawer is shared across views — drop whichever selection doesn't belong to the one we enter,
+  // and close it so it never shows a stale session/message after a switch.
+  if (tab === "messages") selectedId = null; else selectedMessage = null;
+  $("drawer").classList.remove("open");
+  if (tab === "messages" && !messagesFeed) fetchMessages();   // first open before the SSE snapshot lands
   paintActive();
 }
 
@@ -1020,6 +1079,147 @@ function sortBy(key) {
   if (tableSort.key === key) tableSort.dir = tableSort.dir === "asc" ? "desc" : "asc";
   else tableSort = { key, dir: defaultDir(key) };
   renderTable();
+}
+
+// ---- messages view ------------------------------------------------------------------------------
+// A third grid over the inter-agent + user messages reconstructed from chat history (/api/messages,
+// pushed live on the `messages` SSE channel). Shares the .grid table chrome + the header search box,
+// and repurposes the drawer to show one message's full body. Kind chips and a clicked session name
+// narrow the rows; double-click focuses the recipient's pane (the same /api/focus path as the table).
+const MSG_COLUMNS = [
+  { key: "ts", label: "time", sortVal: (m) => m.ts,
+    cell: (m) => `<span class="ttime" title="${escapeHtml(new Date(m.ts * 1000).toLocaleString())}">${escapeHtml(m.rel || "—")}</span>` },
+  { key: "sender", label: "from", sortVal: (m) => m.sender.toLowerCase(),
+    cell: (m) => m.kind === "you"
+      ? `<span class="mfrom you">you</span>`
+      : `<span class="mfrom scopelink" data-scope="${escapeHtml(m.sender)}">${escapeHtml(shortName(m.sender))}</span>` },
+  { key: "recipient", label: "to", sortVal: (m) => m.recipient.toLowerCase(),
+    cell: (m) => `<span class="marrow">→</span><span class="mto scopelink" data-scope="${escapeHtml(m.recipient)}">${escapeHtml(shortName(m.recipient))}</span>` },
+  { key: "kind", label: "kind", sortVal: (m) => m.kind + m.via,
+    cell: (m) => `<span class="mkind">${m.kind === "agent" ? "agent" : "you"}</span> <span class="mvia">${escapeHtml(m.via)}</span>` },
+  { key: "body", label: "message", sortVal: (m) => m.body.toLowerCase(),
+    cell: (m) => `<span class="mbody">${escapeHtml(truncate(m.body, 140))}</span>` },
+];
+const MSG_TIME_KEYS = new Set(["ts"]);
+function msgDefaultDir(key) { return MSG_TIME_KEYS.has(key) ? "desc" : "asc"; }
+
+// One-line preview for the cell — collapse whitespace, ellipsis past n chars (full body in the drawer).
+function truncate(text, n) {
+  const oneLine = String(text).replace(/\s+/g, " ").trim();
+  return oneLine.length > n ? oneLine.slice(0, n - 1) + "…" : oneLine;
+}
+// A recipient/sender that is a bare uuid (its session record was rm'd) shows shortened.
+function shortName(name) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(name) ? name.slice(0, 8) + "…" : name;
+}
+
+function msgTextMatch(m, query) {
+  if (!query) return true;
+  return `${m.sender} ${m.recipient} ${m.body} ${m.via}`.toLowerCase().includes(query);
+}
+function msgScopeMatch(m) { return !messageScope || m.sender === messageScope || m.recipient === messageScope; }
+function messageMatches(m, query) {
+  return (messageKind === "all" || m.kind === messageKind) && msgScopeMatch(m) && msgTextMatch(m, query);
+}
+
+function renderMessages() {
+  renderMsgBar();
+  if (!messagesFeed) {
+    $("msgEmpty").hidden = false; $("msgEmpty").textContent = "loading messages…";
+    $("summary").textContent = "loading…"; return;
+  }
+  const query = $("filter").value.trim().toLowerCase();
+  const rows = messagesFeed.messages.filter((m) => messageMatches(m, query));
+
+  const column = MSG_COLUMNS.find((candidate) => candidate.key === messagesSort.key);
+  const direction = messagesSort.dir === "asc" ? 1 : -1;
+  rows.sort((a, b) => {
+    const va = column.sortVal(a), vb = column.sortVal(b);
+    return va < vb ? -direction : va > vb ? direction : 0;
+  });
+
+  $("msgHead").innerHTML = MSG_COLUMNS.map((col) => {
+    const sorted = col.key === messagesSort.key;
+    const arrow = sorted ? `<span class="arrow">${messagesSort.dir === "asc" ? "▲" : "▼"}</span>` : "";
+    return `<th data-key="${col.key}" class="${sorted ? "sorted" : ""}">${col.label}${arrow}</th>`;
+  }).join("");
+
+  $("msgBody").innerHTML = rows.map((m) => {
+    const cells = MSG_COLUMNS.map((col) => `<td>${col.cell(m)}</td>`).join("");
+    const focused = m.recipient_id === focusedId ? " focused" : "";      // recipient is in the terminal's active pane
+    const active = m.uuid === selectedMessage ? " menu-active" : "";      // row whose body is open in the drawer
+    return `<tr class="k-${m.kind}${focused}${active}" data-uuid="${escapeHtml(m.uuid)}" data-recipient="${escapeHtml(m.recipient_id)}" title="click for the full message · double-click to focus the recipient">${cells}</tr>`;
+  }).join("");
+
+  const empty = $("msgEmpty");
+  empty.hidden = rows.length > 0;
+  empty.textContent = messagesFeed.messages.length === 0
+    ? "no messages reconstructed from chat history yet"
+    : "no messages match these filters";
+  $("summary").innerHTML = `<b>${messagesFeed.messages.length}</b> messages · <b>${rows.length}</b> shown`;
+  refreshMessageDrawer();
+  pendingRender = false;
+}
+
+// The kind filter bar — all / agent↔agent / you, with live counts over the text+scope-filtered set
+// (minus the kind itself, so each count is what picking it would reveal). Reuses the .legend chrome.
+function renderMsgBar() {
+  if (!messagesFeed) { $("msgbar").innerHTML = ""; return; }
+  const query = $("filter").value.trim().toLowerCase();
+  const pool = messagesFeed.messages.filter((m) => msgScopeMatch(m) && msgTextMatch(m, query));
+  const counts = {
+    all: pool.length,
+    agent: pool.filter((m) => m.kind === "agent").length,
+    you: pool.filter((m) => m.kind === "you").length,
+  };
+  const chips = [["all", "all"], ["agent", "agent↔agent"], ["you", "you"]].map(([key, label]) =>
+    `<button class="kindchip${messageKind === key ? " on" : ""}" data-kind="${key}" aria-pressed="${messageKind === key}">` +
+    `${label}<span class="n">${counts[key]}</span></button>`).join("");
+  const scope = messageScope
+    ? `<span class="spacer"></span><button class="tagclear" data-clearscope="1">scope: ${escapeHtml(shortName(messageScope))} ✕</button>`
+    : "";
+  $("msgbar").innerHTML = `<span class="hint">kind — click to filter:</span>${chips}${scope}`;
+}
+
+function msgSortBy(key) {
+  if (messagesSort.key === key) messagesSort.dir = messagesSort.dir === "asc" ? "desc" : "asc";
+  else messagesSort = { key, dir: msgDefaultDir(key) };
+  renderMessages();
+}
+
+// Click a message row → its full body in the shared drawer (click the same row again to close).
+function openMessage(uuid) {
+  selectedMessage = uuid === selectedMessage ? null : uuid;
+  selectedId = null;
+  renderMessages();
+}
+function refreshMessageDrawer() {
+  const drawer = $("drawer");
+  if (!selectedMessage) { drawer.classList.remove("open", "msg-agent", "msg-you"); return; }
+  const m = messagesFeed && messagesFeed.messages.find((candidate) => candidate.uuid === selectedMessage);
+  if (!m) { selectedMessage = null; drawer.classList.remove("open", "msg-agent", "msg-you"); return; }
+  drawer.className = `open msg-${m.kind}`;
+  $("dName").textContent = `${m.sender} → ${shortName(m.recipient)}`;
+  $("dState").textContent = `${m.kind === "agent" ? "agent↔agent" : "your message"} · ${m.via}`;
+  $("dSub").innerHTML =
+    `<span>${escapeHtml(new Date(m.ts * 1000).toLocaleString())}</span>` +
+    `<span>chat <b>${escapeHtml(m.chat_id.slice(0, 8))}…</b></span>` +
+    `<span>recipient <b>${escapeHtml(shortName(m.recipient))}</b></span>`;
+  const body = $("json");
+  body.classList.add("wrap");
+  body.textContent = m.body;
+}
+
+// One-shot message fetch — the first time the tab is opened (before the SSE snapshot) and the manual
+// refresh. Live updates otherwise arrive on the `messages` SSE channel (see connectStream).
+async function fetchMessages() {
+  try {
+    const response = await fetch("/api/messages", { cache: "no-store" });
+    messagesFeed = await response.json();
+    if (activeTab === "messages") renderMessages();
+  } catch {
+    if (activeTab === "messages") { $("msgEmpty").hidden = false; $("msgEmpty").textContent = "server unreachable — is server.py running?"; }
+  }
 }
 
 function applyZoom() {
@@ -1172,9 +1372,10 @@ function renderStateChips(container, afterToggle) {
 function buildLegend() { renderStateChips($("legend"), render); }
 
 // ---- drawer (JSON details) ----------------------------------------------------------------------
-function openNode(id) { selectedId = id; paintActive(); }   // paintActive (not render) so "details" works from the table tab too
+function openNode(id) { selectedId = id; selectedMessage = null; paintActive(); }   // paintActive (not render) so "details" works from the table tab too
 function refreshDrawer() {
   const drawer = $("drawer");
+  $("json").classList.remove("wrap");   // drop the message-body wrap mode if the drawer last showed a message
   if (!selectedId) { drawer.classList.remove("open"); return; }
   const entry = feed.sessions.find((e) => e.record.id === selectedId);
   if (!entry) {                         // selected session vanished (e.g. went to a hidden state)
@@ -1202,7 +1403,7 @@ function refreshDrawer() {
     `<span>${record.chats.length} chat(s)</span>`;
   $("json").innerHTML = highlightJson(entry.json);
 }
-function closeDrawer() { selectedId = null; paintActive(); }
+function closeDrawer() { selectedId = null; selectedMessage = null; paintActive(); }
 
 // Minimal JSON syntax highlighter — keys, strings, numbers, booleans, null.
 function highlightJson(text) {
@@ -1538,9 +1739,16 @@ window.addEventListener("keyup", (event) => { if (event.key === "Shift") documen
 window.addEventListener("blur", () => document.body.classList.remove("selecting"));
 
 $("copy").addEventListener("click", async () => {
-  const entry = feed && feed.sessions.find((e) => e.record.id === selectedId);
-  if (!entry) return;
-  await navigator.clipboard.writeText(entry.json);
+  let text = null;
+  if (selectedMessage) {
+    const m = messagesFeed && messagesFeed.messages.find((x) => x.uuid === selectedMessage);
+    text = m ? m.body : null;
+  } else {
+    const entry = feed && feed.sessions.find((e) => e.record.id === selectedId);
+    text = entry ? entry.json : null;
+  }
+  if (text == null) return;
+  await navigator.clipboard.writeText(text);
   const button = $("copy");
   const original = button.textContent;
   button.textContent = "✓ copied";
@@ -1548,7 +1756,7 @@ $("copy").addEventListener("click", async () => {
 });
 
 // ---- toolbar ------------------------------------------------------------------------------------
-$("refresh").addEventListener("click", () => fetchAndRender(true));
+$("refresh").addEventListener("click", () => { fetchAndRender(true); fetchMessages(); });
 $("filter").addEventListener("input", paintActive);
 $("fit").addEventListener("click", () => {
   zoom = 1; applyZoom(); centerView();
@@ -1584,6 +1792,30 @@ $("tagbar").addEventListener("click", (event) => {
   const tag = chip.dataset.tag;
   if (selectedTags.has(tag)) selectedTags.delete(tag); else selectedTags.add(tag);
   renderTable();
+});
+
+// Messages tab — sort on a header, open a body in the drawer, scope to a clicked session name, or
+// double-click to focus the recipient's pane. Bound once via delegation on the stable containers.
+$("msgHead").addEventListener("click", (event) => {
+  const header = event.target.closest("th");
+  if (header) msgSortBy(header.dataset.key);
+});
+$("msgBody").addEventListener("click", (event) => {
+  const link = event.target.closest(".scopelink");          // a sender/recipient name → narrow to its conversation
+  if (link) { messageScope = link.dataset.scope; renderMessages(); return; }
+  const row = event.target.closest("tr");
+  if (row && row.dataset.uuid) openMessage(row.dataset.uuid);
+});
+$("msgBody").addEventListener("dblclick", (event) => {
+  const row = event.target.closest("tr");
+  if (row && row.dataset.recipient) focusSession(row.dataset.recipient);
+});
+$("msgbar").addEventListener("click", (event) => {
+  if (event.target.closest("[data-clearscope]")) { messageScope = null; renderMessages(); return; }
+  const chip = event.target.closest(".kindchip");
+  if (!chip) return;
+  messageKind = chip.dataset.kind;
+  renderMessages();
 });
 
 // Over the canvas the wheel zooms toward the pointer (Figma-style) instead of scrolling the
@@ -1755,6 +1987,11 @@ function applyFocusClass() {
   for (const row of document.querySelectorAll("#tbody tr")) {
     row.classList.toggle("focused", row.dataset.id === focusedId);
   }
+  // And the message rows whose recipient is the focused session, so the conversation with the active
+  // pane stands out (the table's recipient column maps a message to its session).
+  for (const row of document.querySelectorAll("#msgBody tr")) {
+    row.classList.toggle("focused", row.dataset.recipient === focusedId);
+  }
 }
 
 let stream = null;
@@ -1774,6 +2011,15 @@ function connectStream() {
     try { data = JSON.parse(event.data); } catch { return; }
     focusedId = data.focused_id;
     applyFocusClass();
+  });
+  // Named `messages` events ride the same connection: a snapshot on connect, then a push whenever a
+  // transcript changes. Adopt it always (so the tab is current the moment it's opened) but only
+  // repaint when it's the active view.
+  stream.addEventListener("messages", (event) => {
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    messagesFeed = data;
+    if (activeTab === "messages") renderMessages();
   });
 }
 function disconnectStream() {
