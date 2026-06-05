@@ -1478,6 +1478,13 @@ function moveCursor(delta) {
   applyCursorClass();
 }
 
+// Park the cursor on a specific row — the mouse path. A left-click selects a row, the same selection
+// the arrow keys move; the row is already on-screen, so applyCursorClass's scrollIntoView is a no-op.
+function setCursor(id) {
+  cursorId = id;
+  applyCursorClass();
+}
+
 // transient bottom-center status line for focus / message feedback
 let toastTimer = null;
 function toast(message, isError) {
@@ -1555,6 +1562,10 @@ for (const button of document.querySelectorAll(".tab")) {
 $("thRow").addEventListener("click", (event) => {
   const header = event.target.closest("th");
   if (header) sortBy(header.dataset.key);
+});
+$("tbody").addEventListener("click", (event) => {
+  const row = event.target.closest("tr");
+  if (row && row.dataset.id) setCursor(row.dataset.id);   // single-click selects the row, like an arrow key
 });
 $("tbody").addEventListener("dblclick", (event) => {
   const row = event.target.closest("tr");
