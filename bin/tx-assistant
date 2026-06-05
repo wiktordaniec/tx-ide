@@ -66,9 +66,11 @@ ensure_session() {
   # installed code regardless of $PATH.
   "$repo/bin/tx" spawn "$session" --tag tx-system --cwd "$repo" --cmd "$claude_cmd" >/dev/null
   target=$("$repo/bin/tx" _tmux-name "$session" 2>/dev/null)
-  # Wait for claude's input box to render (its prefix char is `❯`, not `>`).
+  # Wait for claude's input box to render. Match the bare prompt glyph `❯` (U+276F): claude renders
+  # it followed by a NON-BREAK space (U+00A0), so the old `'❯ '` (glyph + ASCII space) never matched
+  # and this loop always ran the full ~10 s before send-keys fired blind.
   for _ in $(seq 1 20); do
-    tmux capture-pane -p -t "$target" 2>/dev/null | grep -q '❯ ' && break
+    tmux capture-pane -p -t "$target" 2>/dev/null | grep -q '❯' && break
     sleep 0.5
   done
   state=created
