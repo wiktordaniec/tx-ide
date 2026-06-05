@@ -48,6 +48,16 @@ def history_dir() -> Path:
     return tx_ide_home() / "history"
 
 
+def chat_ops_dir() -> Path:
+    """`$TX_IDE_HOME/chat-ops/` — transient op-specs `<op-id>/` for in-flight handover/rollover.
+
+    A handover/rollover writes its full spec here so the distiller triggers completion with one short
+    verb (`tx _chat-op-finish <op-id>`) instead of echoing a long exact command, and a detached
+    watchdog can finish the op deterministically if the distiller flakes (S4 reliability). Each op
+    owns a directory so an atomic `claim/` mkdir gives the finish single-execution. Throwaway."""
+    return tx_ide_home() / "chat-ops"
+
+
 def log_path() -> Path:
     """`$TX_IDE_HOME/log.jsonl` — the single append-only provenance log (D8, `EventLog`)."""
     return tx_ide_home() / "log.jsonl"

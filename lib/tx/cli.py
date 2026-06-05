@@ -1339,47 +1339,33 @@ class RolloverCommand(Command):
         return 0
 
 
-class RolloverFinishCommand(Command):
-    name = "_rollover-finish"
-    summary = "Internal: the rollover async tail — respawn the pane onto the fresh chat (CHD5)."
+class ChatOpFinishCommand(Command):
+    name = "_chat-op-finish"
+    summary = "Internal: complete a handover/rollover from its op-spec (idempotent, CHD5)."
 
     def run(self, argv: list[str]) -> int:
-        """Called by the rollover distiller once its note is written (or fired detached for
-        `--self-catch-up`). `note` is empty in the self-catch-up case (the successor reads the
-        bundle instead). Does the `respawn-pane -k` + minimal seed + `ChatRef{role:rollover}`."""
+        """The distiller's one short trigger (`tx _chat-op-finish <op-id>`) and the watchdog's
+        fallback — both safe to call (idempotent via an atomic claim). Reads the op-spec written by
+        `handover`/`rollover` and spawns the worker / respawns the pane accordingly."""
         parser = self._parser()
-        parser.add_argument("txid")
-        parser.add_argument("source_chat")
-        parser.add_argument("new_chat")
-        parser.add_argument("pane")
-        parser.add_argument("note", nargs="?", default="")
+        parser.add_argument("op_id")
         args = parser.parse_args(argv)
-        ChatOps(self.service).rollover_finish(
-            args.txid, args.source_chat, args.new_chat, args.pane, args.note
-        )
+        ChatOps(self.service).chat_op_finish(args.op_id)
         return 0
 
 
-class HandoverFinishCommand(Command):
-    name = "_handover-finish"
-    summary = "Internal: the handover async tail — spawn + seed the fresh worker (CHD5)."
+class ChatOpWatchCommand(Command):
+    name = "_chat-op-watch"
+    summary = "Internal: detached watchdog — finish a chat-op if its distiller flakes, then tear down."
 
     def run(self, argv: list[str]) -> int:
-        """Called by the handover distiller once its brief is written. Spawns the pre-minted worker,
-        records `ChatRef{role:handover}`, and seeds it minimally. `brief_path` empty / `--self-catch-up`
-        means the worker reads the source bundle itself."""
+        """Fired detached by `handover`/`rollover`. Polls for the distiller's artifact, gives it a
+        grace window to run the finish itself, then runs the idempotent finish and kills the
+        distiller + removes the op-spec."""
         parser = self._parser()
-        parser.add_argument("source_txid")
-        parser.add_argument("source_chat")
-        parser.add_argument("worker_name")
-        parser.add_argument("worker_chat")
-        parser.add_argument("brief_path", nargs="?", default="")
-        parser.add_argument("--self-catch-up", action="store_true")
+        parser.add_argument("op_id")
         args = parser.parse_args(argv)
-        ChatOps(self.service).handover_finish(
-            args.source_txid, args.source_chat, args.worker_name, args.worker_chat,
-            brief_path=args.brief_path or None, self_catch_up=args.self_catch_up,
-        )
+        ChatOps(self.service).chat_op_watch(args.op_id)
         return 0
 
 
@@ -1392,7 +1378,7 @@ PUBLIC_COMMANDS: list[type[Command]] = [
 HIDDEN_COMMANDS: list[type[Command]] = [
     ListCommand, EditTagCommand, FocusEnvelopeCommand, PaneInfoCommand, PaneKindCommand,
     TmuxNameCommand, HookCommand, InitHomeCommand, SelfCheckCommand, FlipRederiveCommand,
-    MigrateTmuxNamesCommand, RolloverFinishCommand, HandoverFinishCommand,
+    MigrateTmuxNamesCommand, ChatOpFinishCommand, ChatOpWatchCommand,
 ]
 
 
