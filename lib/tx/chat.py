@@ -91,17 +91,21 @@ WATCH_TIMEOUT_SECONDS = 600.0
 _IDENTITY_VALUE_FLAGS = frozenset({"--session-id", "--resume"})
 _IDENTITY_BARE_FLAGS = frozenset({"--fork-session", "--continue", "-c"})
 
-# claude flags that consume the FOLLOWING token as their value (from `claude --help`, the `<…>`
-# flags). Used only to read arity when reconstructing a launch command, so a flag's value is kept
-# with it and a true POSITIONAL (the source's baked initial prompt) is told apart and dropped — the
-# new op supplies its own initial prompt (the seed), so inheriting the predecessor's would make the
-# fresh session re-run the predecessor's first prompt. Identity value-flags are stripped before this.
-_VALUE_FLAGS = frozenset({
-    "--add-dir", "--agent", "--agents", "--append-system-prompt", "--betas", "--debug-file",
-    "--effort", "--fallback-model", "--file", "--input-format", "--json-schema", "--max-budget-usd",
-    "--mcp-config", "--model", "-n", "--name", "--output-format", "--permission-mode", "--plugin-dir",
-    "--plugin-url", "--remote-control-session-name-prefix", "--setting-sources", "--settings",
-    "--system-prompt", "--tools",
+# Bare claude flags — the ones that do NOT consume a following token. They are what lets the baked
+# initial-prompt positional be told apart when reconstructing a launch command: a positional that
+# follows a bare flag (or stands alone) is the prompt and is dropped (the op seeds its own). EVERY
+# OTHER `--flag` is assumed to take a value, so an unrecognised value-flag keeps its value instead of
+# having it mistaken for the prompt and dropped — which would corrupt the command by leaving a
+# dangling flag to swallow the appended seed. This deny-list (vs. an allow-list of value-flags) is
+# deliberate: `claude --help` documents some value-flags only in prose (e.g. `--append-system-prompt
+# [-file]`), so an allow-list silently missed them; a missed BARE flag here is benign (the worst case
+# is the predecessor prompt carried forward, never a corrupt command). Identity flags are handled above.
+_BARE_FLAGS = frozenset({
+    "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--verbose",
+    "--print", "-p", "--ide", "--tmux", "--strict-mcp-config", "--no-session-persistence",
+    "--exclude-dynamic-system-prompt-sections", "--replay-user-messages",
+    "--include-partial-messages", "--include-hook-events", "--disable-slash-commands",
+    "--chrome", "--no-chrome",
 })
 
 # Shell-control tokens. Once shlex surfaces one of these, the rest of a compound source `cmd` is
@@ -162,12 +166,18 @@ def _is_shell_control(token: str) -> bool:
 
 def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
     """Split a source `cmd` into (binary, inherited-flags) with the session-identity flags AND any
-    positional initial-prompt removed. Inherits model / effort / --append-system-prompt /
-    --dangerously-skip-permissions so a forked or handed-over session keeps the source's persona, and
-    re-supplies its own identity flags + seed. A POSITIONAL (the source's baked initial prompt) is
-    dropped — the new op appends its own seed, so carrying the predecessor's prompt forward would make
-    the fresh session re-run it. Stops at the first shell-control token: a compound `--cmd`'s shell
-    wrapping is not part of claude's argv and cannot be safely reconstructed, so it is dropped."""
+    positional initial-prompt removed. Inherits the source's persona (model / effort / system-prompt /
+    settings / --dangerously-skip-permissions / …) so a forked or handed-over session keeps it, and
+    re-supplies its own identity flags + seed.
+
+    Each non-identity `--flag` is inherited WITH its following value UNLESS it is a known bare flag
+    (`_BARE_FLAGS`). Assuming an unknown flag takes a value is the safe default: it keeps an
+    unrecognised value-flag's value (e.g. `--append-system-prompt-file <path>`, or any future flag)
+    instead of dropping it — dropping it would leave a dangling flag that swallows the appended seed
+    and corrupts the command. A positional that follows a bare flag (or stands alone) is the baked
+    prompt and is dropped — the op appends its own seed, so carrying the predecessor's forward would
+    make the fresh session re-run it. Stops at the first shell-control token (a compound `--cmd`'s
+    shell wrapping is not claude argv)."""
     tokens = shlex.split(source_cmd)
     binary = tokens[0] if tokens else claude.CLAUDE_BIN
     inherited: list[str] = []
@@ -180,15 +190,22 @@ def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
             index += 2  # drop the identity flag and its value
             continue
         if token in _IDENTITY_BARE_FLAGS:
-            index += 1
+            index += 1  # drop — the op re-supplies its own
             continue
-        if token in _VALUE_FLAGS:
-            inherited.extend(tokens[index:index + 2])  # keep the persona flag and its value together
-            index += 2
+        if token in _BARE_FLAGS:
+            inherited.append(token)  # bare flag; any positional that follows it is the prompt (dropped)
+            index += 1
             continue
         if token.startswith("-"):
-            inherited.append(token)  # a bare flag (--dangerously-skip-permissions / --verbose / …)
-            index += 1
+            # A value-flag — a known persona flag or an unknown one. Inherit it WITH its value when a
+            # value follows; never drop the value (that is the corruption the bare/value split guards).
+            if index + 1 < len(tokens) and not tokens[index + 1].startswith("-") \
+                    and not _is_shell_control(tokens[index + 1]):
+                inherited.extend(tokens[index:index + 2])
+                index += 2
+            else:
+                inherited.append(token)  # dangling flag (end of argv / next token is itself a flag)
+                index += 1
             continue
         index += 1  # a positional — the source's baked initial prompt; drop it (the op seeds its own)
     return binary, inherited
