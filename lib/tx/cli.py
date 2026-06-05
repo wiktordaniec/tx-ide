@@ -695,7 +695,7 @@ class AttachCommand(Command):
         )
         return [
             "fzf", "--exact", "--ansi", "--prompt=  ❯ ", "--height=100%", "--reverse",
-            "--delimiter=\t", "--with-nth=4..", "--listen", "--track",
+            "--delimiter=\t", "--with-nth=5..", "--listen", "--track",
             f"--color={color}", f"--header={header_cols}", f"--query={query}",
             # Refresh loop (reconcile-on-read) + unbind y/n on start so they fall through to query
             # input until Ctrl-D arms a row. ESC is left untouched so it always aborts.
@@ -728,14 +728,19 @@ class AttachCommand(Command):
                                     stdout=subprocess.PIPE, text=True)
             if result.returncode != 0 or not result.stdout.strip():
                 return 0  # ESC / abort / empty list
-            name = result.stdout.rstrip("\n").split("\t")[0]
+            fields = result.stdout.rstrip("\n").split("\t")
+            name = fields[0]
+            # Field 4 carries the row's tmux target (a process's id, not its reusable name): attach to
+            # THAT, so a stale same-name husk in the store can't redirect us onto a dead session (D7).
+            # Fall back to name resolution for any row the feed produced without the field.
+            target = fields[3] if len(fields) > 3 and fields[3] else self._tmux_target(name)
             if jump:
-                if self._jump_to_session(name):
+                if self._jump_to_session(name, target):
                     return 0
                 print(f"tx: could not jump to or switch to session {name}", file=sys.stderr)
                 time.sleep(1.2)
                 continue
-            if self._nest_attach(name):
+            if self._nest_attach(name, target):
                 return 0
             time.sleep(1.2)
 
@@ -745,18 +750,18 @@ class AttachCommand(Command):
     # ----- post-selection action -----------------------------------------------------------
 
     def _tmux_target(self, name: str) -> str:
-        """Map a picker display name to its tmux session target. A PROCESS is tmux-named by its id,
-        so the human name the row carries is not a tmux target — resolve it through the store. Falls
-        back to the name itself for an untracked / coexistence session (no record)."""
+        """Fallback name→tmux-target resolver (the picker now carries the target on the row — §D7 —
+        so this is only hit for a row the feed produced without one). A PROCESS is tmux-named by its
+        id, so the human name is not a tmux target; resolve it through the store, falling back to the
+        name itself for an untracked / coexistence session (no record)."""
         record = self.service.get(name)
         return record.tmux_name if record is not None else name
 
-    def _nest_attach(self, name: str) -> bool:
+    def _nest_attach(self, name: str, target: str) -> bool:
         """Attach the chosen LOCAL session (cmd_pick's loop body): nest-attach into the launching
         Views pane when applicable, else switch-client / foreground attach. `name` is the picker's
-        display name; tmux is keyed by the resolved target (a process is named by its id). False =
-        the session vanished (re-loop)."""
-        target = self._tmux_target(name)
+        display name (for messages); `target` is the resolved tmux target carried on the row (a
+        process is named by its id). False = the session vanished (re-loop)."""
         if not self.service.tmux.has_session(target):
             print(f"tx: session '{name}' does not exist", file=sys.stderr)
             return False
@@ -764,12 +769,11 @@ class AttachCommand(Command):
             return True
         return self._switch_or_attach(target)
 
-    def _jump_to_session(self, name: str) -> bool:
+    def _jump_to_session(self, name: str, target: str) -> bool:
         """`--jump`: focus the existing pane already hosting `name` instead of nest-attaching here
-        (port of `jump_to_session`). Falls back to nest-attach-into-view, then switch-client. tmux
-        is keyed by the resolved target (a process is named by its id)."""
+        (port of `jump_to_session`). Falls back to nest-attach-into-view, then switch-client. `target`
+        is the resolved tmux target carried on the row (a process is named by its id)."""
         tmux = self.service.tmux
-        target = self._tmux_target(name)
         if not tmux.has_session(target):
             print(f"tx: session '{name}' does not exist", file=sys.stderr)
             return False

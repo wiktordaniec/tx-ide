@@ -123,19 +123,23 @@ def _trunc(text: str, width: int) -> str:
 
 
 def _picker_row(
-    name: str, role: str, tags: list[str], created_at: float | None, last_activity: float | None,
-    location: str, namew: int, now: float, origin: str = "L",
+    name: str, target: str, role: str, tags: list[str], created_at: float | None,
+    last_activity: float | None, location: str, namew: int, now: float, origin: str = "L",
 ) -> str:
     """One tab-separated fzf row (the bash `sessions_with_meta` printf):
 
-        name <TAB> plain_chips <TAB> origin <TAB> visual
+        name <TAB> plain_chips <TAB> origin <TAB> tmux_target <TAB> visual
 
-    Field 1 is the selection key (the real session name); field 2 (`plain_chips`, ` [tag]…`) feeds
-    the focus / arm headers; field 3 is the origin (`L` local); field 4 is the visual — a padded
-    name, the S6 LOCATION column, STARTED, the IDLE column in WARN yellow, the ROLE column, and the
-    per-tag colored chips. The picker displays field 4 (`--with-nth=4..`) and searches the visible
-    text — so the ROLE cell keeps role filterable (type `llm` / `nvim`) now that role is its own
-    column rather than a leading tag chip.
+    Field 1 is the human name — the key the `{1}` binds show / kill / retag by; field 2
+    (`plain_chips`, ` [tag]…`) feeds the focus / arm headers; field 3 is the origin (`L` local);
+    field 4 is the tmux target the selection attaches to — a PROCESS is tmux-named by its id, so this
+    is that id, NOT the reusable display name (D7). Carrying it on the row pins the identity the row
+    was rendered from, so attach never re-resolves the name against a store that may now hold a stale
+    same-name husk (which `find_by_name` would return first, pointing at a dead session). Field 5 is
+    the visual — a padded name, the S6 LOCATION column, STARTED, the IDLE column in WARN yellow, the
+    ROLE column, and the per-tag colored chips. The picker displays field 5 (`--with-nth=5..`) and
+    searches the visible text — so the ROLE cell keeps role filterable (type `llm` / `nvim`) now that
+    role is its own column rather than a leading tag chip.
     """
     prefix = "(r) " if origin == "R" else ""
     name_disp = _trunc(name, namew - len(prefix))
@@ -152,7 +156,7 @@ def _picker_row(
         f"{location:<{LOCATION_W}} "
         f"{started:<7} {WARN_ANSI}{idle:<6}{RESET_FG} {role_cell}{colored_chips}"
     )
-    return "\t".join([name, plain_chips, origin, visual])
+    return "\t".join([name, plain_chips, origin, target, visual])
 
 
 def picker_display_rows(sessions: list[Session], namew: int, now: float | None = None) -> str:
@@ -162,7 +166,7 @@ def picker_display_rows(sessions: list[Session], namew: int, now: float | None =
         now = time.time()
     rows = [
         _picker_row(
-            session.name, session.role.value, session.tags, session.created_at,
+            session.name, session.tmux_name, session.role.value, session.tags, session.created_at,
             session.last_activity, location_text(session.attached_to), namew, now,
         )
         for session in _by_recent_activity(sessions)
