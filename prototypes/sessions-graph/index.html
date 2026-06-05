@@ -347,17 +347,83 @@
   /* While Shift is held the canvas is in select mode — swap the pan/grab hand for a crosshair so the
      modifier is visible before any click (toggled on <body> by the keydown/keyup handlers). */
   body.selecting #canvas, body.selecting #canvas.panning, body.selecting .node { cursor: crosshair; }
+
+  /* ---- view tabs (graph ⇄ table) ---------------------------------------------------------- */
+  /* Two peer views share one feed. The active tab is reflected as a body class so the graph-only
+     chrome (the state legend, the layout buttons) and the inactive view collapse with pure CSS —
+     no per-element JS toggling. */
+  .tabs { display: inline-flex; gap: 4px; }
+  .tab {
+    background: transparent; border: 1px solid transparent; color: var(--muted);
+    border-radius: 6px; padding: 4px 12px; font: inherit; cursor: pointer;
+  }
+  .tab:hover { color: var(--fg); border-color: var(--border); }
+  .tab.active { color: var(--fg); background: var(--surface); border-color: var(--border); }
+  body.tab-table #legend, body.tab-table .graph-only, body.tab-table #canvas { display: none; }
+  body.tab-graph #table, body.tab-graph #tagbar, body.tab-graph #statebar { display: none; }
+
+  /* ---- tag filter bar (table tab) --------------------------------------------------------- */
+  /* Click tag chips to show only sessions carrying any selected tag — the no-typing complement to
+     the search box (which still works, AND-combined with the tag picks). Reuses the .legend bar
+     chrome and the per-tag colours; a dimmed chip is off, a filled one is on. */
+  .tagchip {
+    font: inherit; font-size: 11px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 9px; border-radius: 999px;
+    color: var(--chip); border: 1px solid var(--chip);
+    background: transparent; opacity: .45; transition: opacity .12s;
+  }
+  .tagchip:hover { color: var(--chip); border-color: var(--chip); opacity: .8; }   /* beat the generic button:hover accent */
+  .tagchip.on { opacity: 1; background: color-mix(in srgb, var(--chip) 18%, transparent); }
+  .tagchip .n { color: var(--muted); font-size: 10px; }
+  .tagchip.on .n { color: var(--dim); }
+  .tagclear { font-size: 11px; padding: 3px 9px; color: var(--muted); }
+
+  /* ---- table view ------------------------------------------------------------------------- */
+  /* A Notion-style grid over the same records the graph draws — sortable headers, one row per
+     session, filtered by the shared search box. Reuses the card vocabulary: the state dot + colour
+     (var(--state), set by the row's s-<state> class) and the tag .chip pills. */
+  #table { flex: 1 1 auto; overflow: auto; background: var(--bg); }
+  table#sessTable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  #sessTable thead th {
+    position: sticky; top: 0; z-index: 2;                 /* header stays put while the body scrolls */
+    text-align: left; font-weight: 600; color: var(--dim);
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 8px 12px; white-space: nowrap; cursor: pointer; user-select: none;
+  }
+  #sessTable thead th:hover { color: var(--accent); }
+  #sessTable thead th.sorted { color: var(--fg); }
+  #sessTable thead th .arrow { color: var(--accent); margin-left: 5px; font-size: 10px; }
+  #sessTable tbody td {
+    padding: 7px 12px; border-bottom: 1px solid var(--surface-hi);
+    white-space: nowrap; vertical-align: middle; color: var(--dim);
+  }
+  #sessTable tbody tr { cursor: pointer; }               /* double-click jumps to the session's pane */
+  #sessTable tbody tr:hover td { background: var(--surface); }
+  .tname { display: inline-flex; align-items: center; gap: 8px; color: var(--fg); font-weight: 600; }
+  .tname .dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--state); }
+  .trole { font-size: 10px; letter-spacing: .4px; text-transform: uppercase; color: var(--muted); }
+  .tstate { color: var(--state); }
+  .tchips { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+  .ttime { font-variant-numeric: tabular-nums; }         /* steady columns — no jitter as ages tick */
+  .ttime.never { color: var(--muted); }
+  #tableEmpty { padding: 28px 16px; color: var(--muted); text-align: center; }
+  #tableEmpty[hidden] { display: none; }
 </style>
 </head>
-<body>
+<body class="tab-graph">
   <header>
     <span class="brand"><span class="tx">tx</span>-ide · sessions</span>
+    <span class="tabs">
+      <button class="tab active" data-tab="graph">graph</button>
+      <button class="tab" data-tab="table">table</button>
+    </span>
     <span class="meta" id="summary">loading…</span>
     <span class="spacer"></span>
     <label class="control"><input type="search" id="filter" placeholder="filter name / tag…" autocomplete="off" /></label>
     <label class="control toggle"><input type="checkbox" id="auto" checked /> live</label>
-    <button id="fit" title="reset zoom &amp; recenter on the graph">1:1</button>
-    <button id="shuffle" title="release every pinned node &amp; re-run the layout">⤮ shuffle</button>
+    <button id="fit" class="graph-only" title="reset zoom &amp; recenter on the graph">1:1</button>
+    <button id="shuffle" class="graph-only" title="release every pinned node &amp; re-run the layout">⤮ shuffle</button>
     <button id="refresh" title="reload records now">↻ refresh</button>
   </header>
 
@@ -367,6 +433,9 @@
     <span class="hint">drag a node to pin it · click for actions</span>
   </div>
 
+  <div class="legend" id="statebar"><span class="hint">states — click to show / hide:</span></div>
+  <div class="legend" id="tagbar"><!-- tag filter chips, built by buildTagBar() from the visible states --></div>
+
   <div id="canvas">
     <div id="sizer">
       <div id="graph">
@@ -375,6 +444,14 @@
       </div>
     </div>
     <div id="empty"><div class="big">no sessions to show</div><div id="emptyWhy"></div></div>
+  </div>
+
+  <div id="table">
+    <table id="sessTable">
+      <thead><tr id="thRow"></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div id="tableEmpty" hidden></div>
   </div>
 
   <aside id="drawer">
@@ -468,6 +545,9 @@ let isPanning = false;
 let lastFetchAt = 0;
 let firstRender = true;
 let pendingRender = false;        // a stream push that landed mid-interaction, to render once it ends
+let activeTab = "graph";          // which view is showing — "graph" (force layout) or "table" (grid)
+let tableSort = { key: "last_activity", dir: "desc" };   // table: active sort column + direction (newest-first default, matching the feed order)
+let selectedTags = new Set();     // table: tags picked in the tag bar — a row shows if it carries ANY of them (empty ⇒ no tag filter)
 
 // Physics state lives apart from the feed: id → sim node, persisted across refreshes so a reload of
 // the records never yanks a settled graph around. `links` is rebuilt from the visible forest.
@@ -521,9 +601,9 @@ function ingestFeed(next, userInitiated) {
     pendingRender = true;
     return;
   }
-  render();
+  paintActive();
 }
-function flushPending() { if (pendingRender) render(); }   // render() clears the flag
+function flushPending() { if (pendingRender) render(); }   // render() clears the flag (graph-only — interacting() never fires on the table tab)
 
 // ---- forest construction ------------------------------------------------------------------------
 // Each record becomes a node; the edge is record.parent matched by id OR name. Names are reusable
@@ -767,6 +847,154 @@ function render() {
   if (firstRender && kept.length) { firstRender = false; ensureRunning(); centerView(); }
 }
 
+// ---- table view ---------------------------------------------------------------------------------
+// A Notion-style grid over the same feed the graph draws. Self-contained: reads the global `feed`,
+// owns its sort state (tableSort), and shares the header search box + the SSE update path with the
+// graph (paintActive routes each repaint to the active tab). Reuses the card vocabulary: the state
+// dot/colour (var(--state), set by the row's s-<state> class) and the tag .chip pills.
+const COLUMNS = [
+  { key: "name", label: "name", sortVal: (e) => e.record.name.toLowerCase(),
+    cell: (e) => `<span class="tname"><span class="dot"></span>${escapeHtml(e.record.name)}</span>` },
+  { key: "last_activity", label: "last interacted", sortVal: (e) => e.record.last_activity || 0,
+    cell: (e) => timeCell(e.record.last_activity, e.derived.idle_rel) },
+  { key: "state", label: "state", sortVal: (e) => e.record.state,
+    cell: (e) => `<span class="tstate">${escapeHtml(e.record.state)}</span>` },
+  { key: "role", label: "role", sortVal: (e) => e.record.role,
+    cell: (e) => `<span class="trole">${escapeHtml(e.record.role)}</span>` },
+  { key: "tags", label: "tags", sortVal: (e) => e.record.tags.join(",").toLowerCase(),
+    cell: (e) => `<span class="tchips">${tableChips(e)}</span>` },
+  { key: "created_at", label: "created", sortVal: (e) => e.record.created_at || 0,
+    cell: (e) => timeCell(e.record.created_at, e.derived.started_rel) },
+];
+// Time columns default newest-first (desc); text columns A→Z (asc).
+const TIME_KEYS = new Set(["created_at", "last_activity"]);
+function defaultDir(key) { return TIME_KEYS.has(key) ? "desc" : "asc"; }
+
+function tableChips(entry) {
+  return (entry.record.tags || []).map((tag) => {
+    const color = (entry.derived.tag_colors && entry.derived.tag_colors[tag]) || "var(--dim)";
+    return `<span class="chip" style="--chip:${color}">${escapeHtml(tag)}</span>`;
+  }).join("");
+}
+// Relative age in the cell (5s/3m/2h/4d, from derived), absolute timestamp in the hover title.
+function timeCell(epoch, rel) {
+  if (!epoch) return `<span class="ttime never">—</span>`;
+  const abs = new Date(epoch * 1000).toLocaleString();
+  return `<span class="ttime" title="${escapeHtml(abs)}">${escapeHtml(rel)}</span>`;
+}
+
+// The shared text box filters the graph by dimming; here it HIDES non-matching rows. Mirrors the
+// fields lib/tx/session.py Session.matches searches — name / role / state / kind / cwd / tags.
+function matchesQuery(record, query) {
+  if (!query) return true;
+  const haystack = [record.name, record.role, record.state, record.kind, record.cwd, ...record.tags].join(" ").toLowerCase();
+  return haystack.includes(query);
+}
+
+// The tag bar's no-typing complement to the search box: once tags are picked, a row shows only if
+// it carries at least one of them (OR / union). No picks ⇒ no tag constraint. AND-combined with the
+// text query in renderTable, so the two filters narrow together.
+function matchesTags(record) {
+  if (selectedTags.size === 0) return true;
+  return record.tags.some((tag) => selectedTags.has(tag));
+}
+
+// Row visibility by state — reads the same hiddenStates the graph legend drives, so the table's
+// state bar and the graph filter as one (and the table opens on the graph's states).
+function matchesState(record) { return !hiddenStates.has(record.state); }
+
+function renderTable() {
+  if (!feed) return;
+  buildStateBar();
+  buildTagBar();
+  const query = $("filter").value.trim().toLowerCase();
+  const rows = feed.sessions.filter((entry) =>
+    matchesState(entry.record) && matchesTags(entry.record) && matchesQuery(entry.record, query));
+
+  const column = COLUMNS.find((candidate) => candidate.key === tableSort.key);
+  const direction = tableSort.dir === "asc" ? 1 : -1;
+  rows.sort((a, b) => {
+    const va = column.sortVal(a), vb = column.sortVal(b);
+    return va < vb ? -direction : va > vb ? direction : 0;
+  });
+
+  $("thRow").innerHTML = COLUMNS.map((col) => {
+    const sorted = col.key === tableSort.key;
+    const arrow = sorted ? `<span class="arrow">${tableSort.dir === "asc" ? "▲" : "▼"}</span>` : "";
+    return `<th data-key="${col.key}" class="${sorted ? "sorted" : ""}">${col.label}${arrow}</th>`;
+  }).join("");
+
+  $("tbody").innerHTML = rows.map((entry) => {
+    const cells = COLUMNS.map((col) => `<td>${col.cell(entry)}</td>`).join("");
+    return `<tr class="s-${entry.record.state}" data-id="${entry.record.id}" title="double-click to focus this session's pane">${cells}</tr>`;
+  }).join("");
+
+  const empty = $("tableEmpty");
+  empty.hidden = rows.length > 0;
+  empty.textContent = feed.sessions.length === 0 ? "no session records found" : "no sessions match these filters";
+  setSummary(rows.length);
+}
+
+// The table's state filter — the six state chips, sharing the graph's hiddenStates via the common
+// renderStateChips (clicks here re-render the table; the graph picks the change up on its next paint).
+function buildStateBar() { renderStateChips($("statebar"), renderTable); }
+
+// Build the tag filter bar from the tags carried by the VISIBLE states (per-tag counts + colours).
+// Selected chips drive matchesTags(); rebuilt each render so new tags surface and counts stay live.
+// Selection lives in selectedTags (not the DOM), so a rebuild never loses what the user picked.
+function buildTagBar() {
+  const counts = new Map();
+  const colors = {};
+  for (const entry of feed.sessions) {
+    if (hiddenStates.has(entry.record.state)) continue;   // only surface tags carried by the visible states
+    for (const tag of entry.record.tags) {
+      counts.set(tag, (counts.get(tag) || 0) + 1);
+      if (!(tag in colors)) colors[tag] = (entry.derived.tag_colors && entry.derived.tag_colors[tag]) || "var(--dim)";
+    }
+  }
+  // A pick whose sessions are now all hidden drops off the bar — clear it from the selection too, so
+  // what's selected always matches a visible chip (no invisible filter narrowing the table).
+  for (const tag of [...selectedTags]) if (!counts.has(tag)) selectedTags.delete(tag);
+  const chips = [...counts.keys()].sort().map((tag) => {
+    const on = selectedTags.has(tag);
+    return `<button class="tagchip${on ? " on" : ""}" data-tag="${escapeHtml(tag)}" style="--chip:${colors[tag]}" ` +
+           `aria-pressed="${on}">${escapeHtml(tag)}<span class="n">${counts.get(tag)}</span></button>`;
+  }).join("");
+  const clear = selectedTags.size
+    ? `<span class="spacer"></span><button class="tagclear">clear ${selectedTags.size}</button>` : "";
+  $("tagbar").innerHTML = `<span class="hint">tags — click to filter:</span>${chips}${clear}`;
+}
+
+// Header summary line, shared by both views — total records, shown count, abbreviated home dir.
+function setSummary(shown) {
+  const home = feed.home;
+  $("summary").innerHTML = `<b>${feed.sessions.length}</b> records · <b>${shown}</b> shown · ` +
+    `<span title="${home}">${home.replace(/^.*\/(?=[^/]*\/[^/]*$)/, "…/")}</span>`;
+}
+
+// Route a repaint to the active view. ingestFeed() and the filter box call this; the graph's own
+// internal render() calls stay direct (they only run while the graph tab is up).
+function paintActive() {
+  if (activeTab === "table") renderTable();
+  else render();
+}
+
+function setTab(tab) {
+  if (tab === activeTab) return;
+  activeTab = tab;
+  document.body.classList.toggle("tab-table", tab === "table");
+  document.body.classList.toggle("tab-graph", tab === "graph");
+  for (const button of document.querySelectorAll(".tab")) button.classList.toggle("active", button.dataset.tab === tab);
+  paintActive();
+}
+
+// Click a header: same column flips direction, a new column adopts its default direction.
+function sortBy(key) {
+  if (tableSort.key === key) tableSort.dir = tableSort.dir === "asc" ? "desc" : "asc";
+  else tableSort = { key, dir: defaultDir(key) };
+  renderTable();
+}
+
 function applyZoom() {
   graph.style.width = WORLD_W + "px";
   graph.style.height = WORLD_H + "px";
@@ -874,14 +1102,11 @@ function paint() {
 function updateSummary(kept) {
   const total = feed.sessions.length;
   const shown = kept.filter((n) => !n.ghost).length;
-  const showEmpty = kept.length === 0;
-  $("empty").classList.toggle("show", showEmpty);
+  $("empty").classList.toggle("show", kept.length === 0);
   $("emptyWhy").textContent = total === 0
     ? "(no records under the sessions dir)"
     : "(everything is filtered out — re-enable a state above)";
-  const home = feed.home;
-  $("summary").innerHTML = `<b>${total}</b> records · <b>${shown}</b> shown · ` +
-    `<span title="${home}">${home.replace(/^.*\/(?=[^/]*\/[^/]*$)/, "…/")}</span>`;
+  setSummary(shown);
 }
 
 // Scroll so the cluster's centroid sits in the middle of the viewport (accounting for zoom).
@@ -895,28 +1120,29 @@ function centerView() {
 }
 
 // ---- legend / filter ----------------------------------------------------------------------------
-function buildLegend() {
+// Render the six state chips into `container`, reflecting hiddenStates; a click toggles that state's
+// visibility and runs afterToggle. Shared by the graph legend (afterToggle=render) and the table's
+// state bar (afterToggle=renderTable), so both views filter through one hiddenStates set — the table
+// therefore starts on the same states as the graph (exited/archived hidden) and they stay in step.
+function renderStateChips(container, afterToggle) {
   const counts = {};
-  if (feed) for (const entry of feed.sessions) {
-    counts[entry.record.state] = (counts[entry.record.state] || 0) + 1;
-  }
-  const legend = $("legend");
-  [...legend.querySelectorAll(".lchip")].forEach((c) => c.remove());
-  const anchor = legend.querySelector(".spacer");
+  if (feed) for (const entry of feed.sessions) counts[entry.record.state] = (counts[entry.record.state] || 0) + 1;
+  [...container.querySelectorAll(".lchip")].forEach((chip) => chip.remove());
+  const anchor = container.querySelector(".spacer");   // graph legend pins a trailing hint here; the table bar has none (null ⇒ append)
   for (const state of STATE_ORDER) {
     const chip = document.createElement("span");
     chip.className = "lchip s-" + state;
-    const pressed = !hiddenStates.has(state);
-    chip.setAttribute("aria-pressed", String(pressed));
+    chip.setAttribute("aria-pressed", String(!hiddenStates.has(state)));
     chip.title = STATE_INFO[state];
     chip.innerHTML = `<span class="dot"></span>${state}<span class="n">${counts[state] || 0}</span>`;
     chip.addEventListener("click", () => {
       if (hiddenStates.has(state)) hiddenStates.delete(state); else hiddenStates.add(state);
-      render();
+      afterToggle();
     });
-    legend.insertBefore(chip, anchor);
+    container.insertBefore(chip, anchor);
   }
 }
+function buildLegend() { renderStateChips($("legend"), render); }
 
 // ---- drawer (JSON details) ----------------------------------------------------------------------
 function openNode(id) { selectedId = id; render(); }
@@ -1236,9 +1462,31 @@ $("copy").addEventListener("click", async () => {
 
 // ---- toolbar ------------------------------------------------------------------------------------
 $("refresh").addEventListener("click", () => fetchAndRender(true));
-$("filter").addEventListener("input", render);
+$("filter").addEventListener("input", paintActive);
 $("fit").addEventListener("click", () => {
   zoom = 1; applyZoom(); centerView();
+});
+
+// View tabs + table interactions. The header cells and rows are rebuilt on every renderTable(), so
+// sorting and double-click-to-focus are bound once via delegation on the stable containers.
+for (const button of document.querySelectorAll(".tab")) {
+  button.addEventListener("click", () => setTab(button.dataset.tab));
+}
+$("thRow").addEventListener("click", (event) => {
+  const header = event.target.closest("th");
+  if (header) sortBy(header.dataset.key);
+});
+$("tbody").addEventListener("dblclick", (event) => {
+  const row = event.target.closest("tr");
+  if (row && row.dataset.id) focusSession(row.dataset.id);
+});
+$("tagbar").addEventListener("click", (event) => {
+  if (event.target.closest(".tagclear")) { selectedTags.clear(); renderTable(); return; }
+  const chip = event.target.closest(".tagchip");
+  if (!chip) return;
+  const tag = chip.dataset.tag;
+  if (selectedTags.has(tag)) selectedTags.delete(tag); else selectedTags.add(tag);
+  renderTable();
 });
 
 // Over the canvas the wheel zooms toward the pointer (Figma-style) instead of scrolling the
