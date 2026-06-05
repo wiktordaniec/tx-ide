@@ -35,7 +35,10 @@
   .s-ghost    { --state: var(--muted); }
 
   * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; }
+  /* color-scheme: dark makes every native widget — the time-range <select> and its dropdown, the
+     custom-range datetime pickers, the search field's affordances, and the scrollbars — render in the
+     dark variant instead of the OS light default, so they read like the rest of the tokyonight page. */
+  html, body { height: 100%; margin: 0; color-scheme: dark; }
   body {
     background: var(--bg);
     color: var(--fg);
@@ -73,6 +76,30 @@
     font: inherit;
   }
   .control input[type="search"]:focus { outline: none; border-color: var(--accent); }
+
+  /* ---- time-range control (shared across views) ------------------------------------------- */
+  /* A header filter, same tier as the search box: it narrows graph + table sessions AND messages to a
+     time window of interest — relative presets (last 15m … 7d) or a custom absolute from/to. The
+     <select> and the datetime inputs reuse the search box's chrome; color-scheme: dark (on <html>)
+     themes their native dropdown / picker so they read like the rest of the page. */
+  .control .ctl-label { color: var(--muted); }
+  .control select, #customRange input[type="datetime-local"] {
+    background: var(--bg-deep);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    border-radius: 6px;
+    padding: 5px 8px;
+    font: inherit;
+    cursor: pointer;
+  }
+  #customRange input[type="datetime-local"] { padding: 4px 7px; cursor: text; }
+  .control select:focus, #customRange input[type="datetime-local"]:focus { outline: none; border-color: var(--accent); }
+  /* When a window is actually constraining the views, tint the control accent so it's obvious the
+     forest / table / messages are time-narrowed (mirrors the search box's focus accent). */
+  #timeControl.time-on select { border-color: var(--accent); color: var(--accent); }
+  #customRange { gap: 6px; }
+  #customRange[hidden] { display: none; }   /* the id selector beats .control's inline-flex */
+  #customRange .sep { color: var(--muted); }
   button {
     background: var(--surface);
     color: var(--fg);
@@ -119,6 +146,11 @@
   .lchip:hover { border-color: var(--state); }
   /* A thin vertical rule between the bar's filter groups (states │ tags). */
   .legend .fsep { flex: 0 0 auto; width: 1px; height: 16px; background: var(--border); margin: 0 6px; }
+  /* The dynamic half of the filter bar — renderFilterBar() fills this with the state/tag (graph · table)
+     or kind (messages) chips, leaving the time control (its stable sibling) untouched on every repaint.
+     Flexes like the bar itself so the chips keep their spacing and the graph's pin-hint spacer still
+     pushes to the right edge. */
+  #filterchips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1 1 auto; }
 
   /* ---- graph canvas ----------------------------------------------------------------------- */
   #canvas {
@@ -485,9 +517,30 @@
     <button id="refresh" title="reload records now">↻ refresh</button>
   </header>
 
-  <!-- One filter bar, reused across all three views — renderFilterBar() fills it with the state + tag
-       selectors on graph/table and the kind selector on messages. -->
-  <div class="legend" id="filterbar"></div>
+  <!-- One filter bar, reused across all three views. The time control is a stable, always-present
+       sibling (leftmost, identical on every tab — graph, table, messages); renderFilterBar() fills
+       #filterchips with the state + tag selectors on graph/table and the kind selector on messages. -->
+  <div class="legend" id="filterbar">
+    <label class="control" id="timeControl" title="narrow every view to a time window of interest">
+      <span class="ctl-label">time</span>
+      <select id="timeRange" autocomplete="off">
+        <option value="all">all time</option>
+        <option value="rel:900">last 15m</option>
+        <option value="rel:3600">last 1h</option>
+        <option value="rel:21600">last 6h</option>
+        <option value="rel:86400">last 24h</option>
+        <option value="rel:604800">last 7d</option>
+        <option value="custom">custom…</option>
+      </select>
+    </label>
+    <span class="control" id="customRange" hidden>
+      <input type="datetime-local" id="timeFrom" title="from — leave empty for no lower bound" />
+      <span class="sep">–</span>
+      <input type="datetime-local" id="timeTo" title="to — leave empty for no upper bound" />
+    </span>
+    <span class="fsep"></span>
+    <span id="filterchips"></span>
+  </div>
 
   <div id="canvas">
     <div id="sizer">
@@ -594,6 +647,7 @@ const STATE_ORDER = ["working", "waiting", "idle", "alive", "exited", "archived"
 // ---- mutable view state -------------------------------------------------------------------------
 let feed = null;
 let hiddenStates = new Set(["exited", "archived"]);   // initial render shows only the live states (working/waiting/idle/alive); the terminal states start hidden, one legend-click away
+let timeFilter = { kind: "all", seconds: 0, from: null, to: null };   // shared time window (graph + table + messages): "all" (off) · "relative" (sliding last-N-seconds) · "custom" (absolute from/to epoch bounds, either open). Like hiddenStates, one source of truth every view reads
 let selectedId = null;            // node whose JSON drawer is open
 let focusedId = null;             // node for the session in the terminal's active pane (live SSE focus channel)
 let menuFor = null;               // node id the one-click action menu is anchored to
@@ -672,6 +726,40 @@ function ingestFeed(next, userInitiated) {
 }
 function flushPending() { if (pendingRender) paintActive(); }   // deferred repaint goes to the ACTIVE view — the table's row menu / composer can defer too now, not just the graph
 
+// ---- time-window filter (shared across graph / table / messages) --------------------------------
+// One global window (timeFilter) narrows every view to a span of interest. "relative" is a sliding
+// last-N-seconds measured against the live wall clock, so the trailing edge moves as time passes (the
+// 1s ticker repaints the active view while it is set); "custom" is an absolute [from, to] with either
+// bound open. A SESSION matches by activity OVERLAP — its [created, last-activity] span intersecting
+// the window — so a long-running session that straddles an absolute range still shows; for a relative
+// window this reduces to "last active within the window". A MESSAGE is a point in time: its ts in range.
+function nowSeconds() { return Date.now() / 1000; }
+
+function timeBounds() {
+  if (timeFilter.kind === "relative") return { from: nowSeconds() - timeFilter.seconds, to: null };
+  if (timeFilter.kind === "custom") return { from: timeFilter.from, to: timeFilter.to };
+  return { from: null, to: null };                       // "all time" — unconstrained
+}
+function timeFilterActive() { const { from, to } = timeBounds(); return from !== null || to !== null; }
+
+function sessionInWindow(createdAt, lastActivity) {
+  const { from, to } = timeBounds();
+  if (from === null && to === null) return true;
+  const lastActive = lastActivity || createdAt || 0;     // fall back to created if a record has no activity yet
+  const created = createdAt || lastActive;
+  if (from !== null && lastActive < from) return false;  // its whole active span predates the window
+  if (to !== null && created > to) return false;         // it started after the window ends
+  return true;
+}
+function messageInWindow(ts) {
+  const { from, to } = timeBounds();
+  if (from === null && to === null) return true;
+  if (!ts) return false;                                 // an undated message can't be placed — hide under any window
+  if (from !== null && ts < from) return false;
+  if (to !== null && ts > to) return false;
+  return true;
+}
+
 // ---- forest construction ------------------------------------------------------------------------
 // Each record becomes a node; the edge is record.parent matched by id OR name. Names are reusable
 // (D7), so when several records share a parent's name we link to the most relevant one (a live
@@ -687,6 +775,7 @@ function buildNodes(feed) {
     kind: entry.record.kind,
     tags: entry.record.tags,
     lastActivity: entry.record.last_activity || 0,
+    createdAt: entry.record.created_at || 0,         // for the shared time-window filter (visibleForest)
     derived: entry.derived,
     json: entry.json,
     ghost: false,
@@ -735,7 +824,10 @@ function buildNodes(feed) {
 // visible ancestor, prune ghosts left with no visible descendants. Sets `effParent` (the visible
 // parent each node should be sprung toward); the physics turns those into edges.
 function visibleForest(allNodes) {
-  const hidden = (node) => !node.ghost && hiddenStates.has(node.state);
+  // A node is hidden by a filtered-off state OR by falling outside the shared time window; either way
+  // effectiveParent() walks past it so an in-window descendant re-attaches to its nearest visible
+  // ancestor. Ghosts (no state, no timestamps) are never hidden here — the ghost-keep pass prunes them.
+  const hidden = (node) => !node.ghost && (hiddenStates.has(node.state) || !sessionInWindow(node.createdAt, node.lastActivity));
   const effectiveParent = (node) => {
     let cursor = node.parent, guard = 0;
     while (cursor && hidden(cursor) && guard++ < 1000) cursor = cursor.parent;
@@ -971,12 +1063,16 @@ function matchesTags(record) {
 // state bar and the graph filter as one (and the table opens on the graph's states).
 function matchesState(record) { return !hiddenStates.has(record.state); }
 
+// Row visibility by the shared time window — the same predicate the graph and messages use, reading
+// the record's created_at / last_activity (see sessionInWindow). Empty window ⇒ always true.
+function matchesTime(record) { return sessionInWindow(record.created_at, record.last_activity); }
+
 function renderTable() {
   if (!feed) return;
   renderFilterBar();
   const query = $("filter").value.trim().toLowerCase();
   const rows = feed.sessions.filter((entry) =>
-    matchesState(entry.record) && matchesTags(entry.record) && matchesQuery(entry.record, query));
+    matchesState(entry.record) && matchesTags(entry.record) && matchesTime(entry.record) && matchesQuery(entry.record, query));
 
   const column = COLUMNS.find((candidate) => candidate.key === tableSort.key);
   const direction = tableSort.dir === "asc" ? 1 : -1;
@@ -1086,7 +1182,7 @@ function msgTextMatch(m, query) {
 }
 function msgScopeMatch(m) { return !messageScope || m.sender === messageScope || m.recipient === messageScope; }
 function messageMatches(m, query) {
-  return (messageKind === "all" || m.kind === messageKind) && msgScopeMatch(m) && msgTextMatch(m, query);
+  return (messageKind === "all" || m.kind === messageKind) && msgScopeMatch(m) && msgTextMatch(m, query) && messageInWindow(m.ts);
 }
 
 function renderMessages() {
@@ -1282,7 +1378,7 @@ function updateSummary(kept) {
   $("empty").classList.toggle("show", kept.length === 0);
   $("emptyWhy").textContent = total === 0
     ? "(no records under the sessions dir)"
-    : "(everything is filtered out — re-enable a state above)";
+    : "(nothing matches the current filters — widen the time range or re-enable a state)";
   setSummary(shown);
 }
 
@@ -1303,7 +1399,7 @@ function centerView() {
 // delegated listener (below), so there are no per-chip listeners to re-bind. hiddenStates (state) and
 // selectedTags (tags) are shared by graph + table, so toggling either re-renders whichever view is up.
 function renderFilterBar() {
-  const bar = $("filterbar");
+  const bar = $("filterchips");   // the dynamic half — the time control is a stable sibling we never clobber
   if (activeTab === "messages") { bar.innerHTML = kindSectionHtml(); return; }
   const pinHint = activeTab === "graph"
     ? `<span class="spacer"></span><span class="hint">drag a node to pin it · click for actions</span>` : "";
@@ -1330,6 +1426,7 @@ function tagSectionHtml() {
   const colors = {};
   if (feed) for (const entry of feed.sessions) {
     if (hiddenStates.has(entry.record.state)) continue;   // only surface tags carried by the visible states
+    if (!matchesTime(entry.record)) continue;             // …and within the active time window, so chip counts match the rows
     for (const tag of entry.record.tags) {
       counts.set(tag, (counts.get(tag) || 0) + 1);
       if (!(tag in colors)) colors[tag] = (entry.derived.tag_colors && entry.derived.tag_colors[tag]) || "var(--dim)";
@@ -1352,7 +1449,7 @@ function tagSectionHtml() {
 function kindSectionHtml() {
   if (!messagesFeed) return "";
   const query = $("filter").value.trim().toLowerCase();
-  const pool = messagesFeed.messages.filter((m) => msgScopeMatch(m) && msgTextMatch(m, query));
+  const pool = messagesFeed.messages.filter((m) => msgScopeMatch(m) && msgTextMatch(m, query) && messageInWindow(m.ts));
   const counts = {
     all: pool.length,
     agent: pool.filter((m) => m.kind === "agent").length,
@@ -1778,6 +1875,47 @@ $("copy").addEventListener("click", async () => {
 // ---- toolbar ------------------------------------------------------------------------------------
 $("refresh").addEventListener("click", () => { fetchAndRender(true); fetchMessages(); });
 $("filter").addEventListener("input", paintActive);
+
+// ---- time-range control -------------------------------------------------------------------------
+// The header <select> picks "all" / a relative preset (rel:<seconds>) / "custom"; "custom" reveals the
+// two datetime inputs. Either path rebuilds the single shared timeFilter and repaints the active view —
+// every render path already reads timeFilter through the *InWindow predicates, so the window is shared
+// with no per-view plumbing.
+function readBound(id) {
+  const value = $(id).value;                       // datetime-local → "YYYY-MM-DDTHH:MM" in LOCAL time
+  if (!value) return null;                          // empty ⇒ open bound
+  const ms = new Date(value).getTime();
+  return Number.isNaN(ms) ? null : ms / 1000;
+}
+function buildCustomFilter() {
+  let from = readBound("timeFrom"), to = readBound("timeTo");
+  if (from !== null && to !== null && from > to) [from, to] = [to, from];   // forgive a reversed range
+  return { kind: "custom", seconds: 0, from, to };
+}
+function toLocalInput(epoch) {                      // epoch seconds → datetime-local value, in local tz
+  const d = new Date(epoch * 1000), pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function applyTimeRangeUI() {
+  $("customRange").hidden = timeFilter.kind !== "custom";
+  $("timeControl").classList.toggle("time-on", timeFilterActive());
+}
+$("timeRange").addEventListener("change", () => {
+  const value = $("timeRange").value;
+  if (value === "all") timeFilter = { kind: "all", seconds: 0, from: null, to: null };
+  else if (value.startsWith("rel:")) timeFilter = { kind: "relative", seconds: Number(value.slice(4)), from: null, to: null };
+  else {                                           // "custom" — seed an hour-wide range the first time so it does something
+    if (!$("timeFrom").value && !$("timeTo").value) {
+      $("timeFrom").value = toLocalInput(nowSeconds() - 3600);
+      $("timeTo").value = toLocalInput(nowSeconds());
+    }
+    timeFilter = buildCustomFilter();
+  }
+  applyTimeRangeUI();
+  paintActive();
+});
+$("customRange").addEventListener("input", () => { timeFilter = buildCustomFilter(); applyTimeRangeUI(); paintActive(); });
+
 $("fit").addEventListener("click", () => {
   zoom = 1; applyZoom(); centerView();
 });
@@ -2040,14 +2178,20 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("focus", () => { if ($("auto").checked) fetchAndRender(true); });
 
-// keep the "↻ refresh (Ns)" label showing how stale the last update is (live counter)
+// Keep the "↻ refresh (Ns)" label showing how stale the last update is, and slide a relative time
+// window: when one is set, repaint the active view each tick so items age off the trailing edge even
+// while the feed is quiet. Deferred mid-interaction (the interaction's own flush repaints); syncSim
+// only reheats on a membership change, so a stable in-window graph stays perfectly still.
 setInterval(() => {
-  if (!lastFetchAt) return;
-  const age = Math.round((Date.now() - lastFetchAt) / 1000);
-  $("refresh").textContent = `↻ refresh (${age}s)`;
+  if (lastFetchAt) {
+    const age = Math.round((Date.now() - lastFetchAt) / 1000);
+    $("refresh").textContent = `↻ refresh (${age}s)`;
+  }
+  if (timeFilter.kind === "relative" && !interacting()) paintActive();
 }, 1000);
 
 renderFilterBar();          // paint the bar's state chips immediately, before the first feed lands
+$("timeRange").value = "all"; applyTimeRangeUI();   // force a known initial window (a browser may restore a stale <select> on reload)
 fetchAndRender(true);
 if ($("auto").checked) connectStream();
 </script>
