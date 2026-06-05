@@ -398,8 +398,12 @@
     padding: 7px 12px; border-bottom: 1px solid var(--surface-hi);
     white-space: nowrap; vertical-align: middle; color: var(--dim);
   }
-  #sessTable tbody tr { cursor: pointer; }               /* double-click jumps to the session's pane */
+  #sessTable tbody tr { cursor: pointer; }               /* double-click to focus · right-click for actions */
   #sessTable tbody tr:hover td { background: var(--surface); }
+  /* the focused row echoes the graph's accent focus ring — the session in the terminal's active pane. */
+  #sessTable tbody tr.focused td { background: color-mix(in srgb, var(--accent) 13%, transparent); }
+  #sessTable tbody tr.focused td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+  #sessTable tbody tr.menu-active td { background: var(--surface-hi); }   /* row whose action menu is open */
   .tname { display: inline-flex; align-items: center; gap: 8px; color: var(--fg); font-weight: 600; }
   .tname .dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--state); }
   .trole { font-size: 10px; letter-spacing: .4px; text-transform: uppercase; color: var(--muted); }
@@ -603,7 +607,7 @@ function ingestFeed(next, userInitiated) {
   }
   paintActive();
 }
-function flushPending() { if (pendingRender) render(); }   // render() clears the flag (graph-only — interacting() never fires on the table tab)
+function flushPending() { if (pendingRender) paintActive(); }   // deferred repaint goes to the ACTIVE view — the table's row menu / composer can defer too now, not just the graph
 
 // ---- forest construction ------------------------------------------------------------------------
 // Each record becomes a node; the edge is record.parent matched by id OR name. Names are reusable
@@ -926,13 +930,16 @@ function renderTable() {
 
   $("tbody").innerHTML = rows.map((entry) => {
     const cells = COLUMNS.map((col) => `<td>${col.cell(entry)}</td>`).join("");
-    return `<tr class="s-${entry.record.state}" data-id="${entry.record.id}" title="double-click to focus this session's pane">${cells}</tr>`;
+    const focused = entry.record.id === focusedId ? " focused" : "";   // the terminal's active pane (live focus channel)
+    return `<tr class="s-${entry.record.state}${focused}" data-id="${entry.record.id}" title="double-click to focus · right-click for actions">${cells}</tr>`;
   }).join("");
 
   const empty = $("tableEmpty");
   empty.hidden = rows.length > 0;
   empty.textContent = feed.sessions.length === 0 ? "no session records found" : "no sessions match these filters";
   setSummary(rows.length);
+  refreshDrawer();   // keep the details drawer in sync if it's open for a row (mirrors render() on the graph)
+  pendingRender = false;   // this paint reflects the latest feed — clear the deferred flag (mirrors render())
 }
 
 // The table's state filter — the six state chips, sharing the graph's hiddenStates via the common
@@ -1145,7 +1152,7 @@ function renderStateChips(container, afterToggle) {
 function buildLegend() { renderStateChips($("legend"), render); }
 
 // ---- drawer (JSON details) ----------------------------------------------------------------------
-function openNode(id) { selectedId = id; render(); }
+function openNode(id) { selectedId = id; paintActive(); }   // paintActive (not render) so "details" works from the table tab too
 function refreshDrawer() {
   const drawer = $("drawer");
   if (!selectedId) { drawer.classList.remove("open"); return; }
@@ -1175,7 +1182,7 @@ function refreshDrawer() {
     `<span>${record.chats.length} chat(s)</span>`;
   $("json").innerHTML = highlightJson(entry.json);
 }
-function closeDrawer() { selectedId = null; render(); }
+function closeDrawer() { selectedId = null; paintActive(); }
 
 // Minimal JSON syntax highlighter — keys, strings, numbers, booleans, null.
 function highlightJson(text) {
@@ -1279,11 +1286,28 @@ function openMenu(id, nodeEl) {
   nodeEl.classList.add("menu-active");
 }
 
+// The table's equivalent: open the same #menu at the cursor for a row. Reuses runMenuAction, the
+// keyboard f/d/m shortcuts, and the click-away-close — the menu acts on a session id, so none of that
+// is graph-specific. Right-click is the trigger (see the #tbody listener), so the document click-away
+// handler never sees the opening gesture and the menu doesn't immediately re-close.
+function openRowMenu(id, clientX, clientY) {
+  menuFor = id;
+  menu.classList.remove("ghost");                       // a table row is always a real record
+  menu.hidden = false;
+  const width = menu.offsetWidth || 188, height = menu.offsetHeight || 0;
+  menu.style.left = Math.max(8, Math.min(clientX, window.innerWidth - width - 8)) + "px";
+  menu.style.top = Math.max(8, Math.min(clientY, window.innerHeight - height - 8)) + "px";
+  for (const row of document.querySelectorAll("#tbody tr.menu-active")) row.classList.remove("menu-active");
+  const row = document.querySelector(`#tbody tr[data-id="${CSS.escape(id)}"]`);
+  if (row) row.classList.add("menu-active");
+}
+
 function closeMenu() {
   if (menuFor === null) return;
   menuFor = null;
   menu.hidden = true;
   for (const node of graph.querySelectorAll(".node.menu-active")) node.classList.remove("menu-active");
+  for (const row of document.querySelectorAll("#tbody tr.menu-active")) row.classList.remove("menu-active");
   flushPending();                  // a stream push deferred while the menu was open can land now
 }
 
@@ -1480,6 +1504,12 @@ $("tbody").addEventListener("dblclick", (event) => {
   const row = event.target.closest("tr");
   if (row && row.dataset.id) focusSession(row.dataset.id);
 });
+$("tbody").addEventListener("contextmenu", (event) => {
+  const row = event.target.closest("tr");
+  if (!row || !row.dataset.id) return;
+  event.preventDefault();                      // swap the native context menu for our focus/details/message menu
+  openRowMenu(row.dataset.id, event.clientX, event.clientY);
+});
 $("tagbar").addEventListener("click", (event) => {
   if (event.target.closest(".tagclear")) { selectedTags.clear(); renderTable(); return; }
   const chip = event.target.closest(".tagchip");
@@ -1652,6 +1682,11 @@ canvas.addEventListener("click", (event) => {
 function applyFocusClass() {
   for (const node of sim.values()) {
     if (node.el) node.el.classList.toggle("focused", node.id === focusedId);
+  }
+  // Same live, direct-DOM toggle for the table rows (renderTable re-applies it on a rebuild), so the
+  // focused row tracks the active pane even while the tab is backgrounded — no repaint needed.
+  for (const row of document.querySelectorAll("#tbody tr")) {
+    row.classList.toggle("focused", row.dataset.id === focusedId);
   }
 }
 
