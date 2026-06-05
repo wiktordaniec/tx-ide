@@ -58,7 +58,7 @@ ensure_session() {
     state=existed
     return
   fi
-  local claude_cmd="claude --model sonnet --effort low --dangerously-skip-permissions"
+  local claude_cmd="claude --model opus --effort medium --dangerously-skip-permissions"
   # Register through the new python tx: `tx spawn` creates the detached session, mints the uuid,
   # sets @tx_id + TX_SESSION_ID + the truecolor env, writes the v2 record, and logs once (replaces
   # the old manual `tmux new-session` + v1 record registration). Role is inferred from the command
