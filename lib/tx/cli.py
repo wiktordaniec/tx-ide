@@ -666,11 +666,26 @@ class AttachCommand(Command):
         `-t` allocates the tty the remote fzf picker / tmux attach need. `$SHELL -lc` runs a login
         shell on the remote so its PATH includes ~/.local/bin (where tx installs — a bare
         `ssh host tx` often won't find it); it is single-quoted so it expands on the remote, not
-        here. Falls back to `tmux attach` when the remote has no tx, so it still connects."""
+        here. Falls back to `tmux attach` when the remote has no tx, so it still connects.
+
+        While the attach is live, stamp `@remote-session <host>` on the launching pane so its border
+        reads `(r) <host>` (bin/tmux-pane-session-name): the local tmux can't see the remote client
+        over ssh, so the normal pane→session join finds nothing — this override is the only remote
+        hook. The HOST (not a session name) is the right label because one ssh attach can roam every
+        session on that host, so a frozen session name would go stale. Cleared when the attach
+        returns. `$TMUX_PANE` is the exact pane tx runs in; absent when not in tmux (nothing to
+        stamp)."""
         remote_command = (
             '$SHELL -lc "if command -v tx >/dev/null 2>&1; then tx attach; else tmux attach; fi"'
         )
-        return subprocess.run(["ssh", "-t", host, remote_command]).returncode
+        pane = os.environ.get("TMUX_PANE")
+        if pane:
+            self.service.tmux.set_option(pane, "@remote-session", host, pane=True)
+        try:
+            return subprocess.run(["ssh", "-t", host, remote_command]).returncode
+        finally:
+            if pane:
+                self.service.tmux.unset_option(pane, "@remote-session", pane=True)
 
     # ----- fzf invocation ------------------------------------------------------------------
 

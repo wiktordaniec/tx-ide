@@ -101,6 +101,16 @@ class Tmux:
         args += [option, value]
         self._run(args)
 
+    def unset_option(self, target: str, option: str, *, pane: bool = False) -> None:
+        """Unset (`-u`) an option (pane option with `-p`). Tolerant (`_run_quiet`): this is used to
+        clear the `@remote-session` border hint when a remote ssh-attach returns, and the pane may
+        already be gone — best-effort cleanup at the tmux boundary, never an error."""
+        args = ["set-option", "-t", target]
+        if pane:
+            args.append("-p")
+        args += ["-u", option]
+        self._run_quiet(args)
+
     def set_window_option(self, target: str, option: str, value: str) -> None:
         self._run(["set-window-option", "-t", target, option, value])
 
