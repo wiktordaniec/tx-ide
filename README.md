@@ -14,6 +14,16 @@ all runtime state goes into files **tx-ide owns** under `$TX_IDE_HOME` (default 
 installer only ever touches your `~/.claude/settings.json` through a self-describing marked block,
 and backs up anything it edits. `./uninstall` puts it all back.
 
+## Screenshots
+
+![tx-ide control-center](docs/images/tmux-control-center.png)
+
+*The control-center — every tmux session in one multi-pane fleet view, each pane labelled with its role, tags, and live state.*
+
+![sessions-graph viewer](docs/images/sessions-graph-viewer.png)
+
+*The sessions-graph viewer — chats and their fork / handover / rollover provenance as an interactive node graph.*
+
 ## Concepts
 
 ### Sessions and durable records
