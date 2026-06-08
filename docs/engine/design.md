@@ -16,8 +16,9 @@ Three layers, kept distinct:
 
 The codebase already anticipated this: `lib/tx/claude.py` is documented as "the one place Claude
 specifics live … no provider abstraction (§15)"; `setup/agents/claude.sh` is "the future-agent
-seam (§10/§15)"; `D9` keeps no agent field on the record. This work builds the deferred core
-abstraction and **revisits D9** (we now store the engine explicitly).
+seam (§10/§15)" — which this change renames to `setup/engines/` (§4); `D9` keeps no agent field on
+the record. This work builds the deferred core abstraction and **revisits D9** (we now store the
+engine explicitly).
 
 ## §1 The `Engine` type + record schema v3
 
@@ -42,31 +43,33 @@ One protocol, one adapter per engine, called by the core. Everything engine-spec
 it; tmux liveness, the durable record, chat-op orchestration + provenance DAG, `TX_SESSION_ID`→
 record mapping, peer messaging, and the picker/state machine stay shared and engine-blind.
 
-Capability flags (encode the cross-engine variation):
-- `mints_own_id: bool` — Claude `False` (tx pre-mints `--session-id`); Codex/Gemini `True`
-  (tx captures the id post-launch). **Two of three engines capture**, so capture is the norm and
-  Claude's pre-mint is the exception.
+**Session id is captured, never minted, for every engine.** The hook payload carries `session_id`
++ `transcript_path` (Claude's does too, and Claude *forks* already capture), so there is one uniform
+post-launch capture path and no pre-mint special-case. *(Transitional: Phase 1 keeps Claude's
+existing `--session-id` pre-mint as an internal detail so it stays a zero-change refactor; Phase 2
+deletes the pre-mint path when the capture flow lands for Codex — §7.)*
+
+Capability flag (the one real cross-engine variation that remains):
 - state source — hook events (Claude, Codex) vs a status poll (a future engine whose CLI has no
   turn-done hook, e.g. Antigravity → statusline `agent_state`).
 
 Methods (illustrative names):
-- identity: `binary`, `matches_binary`, `command_declares_chat`,
-  `inject_session_id` *(pre-mint engines)* / `capture_session_id(hook_payload | cwd)` *(capture engines)*
+- identity: `binary`, `matches_binary`, `capture_session_id(hook_payload) → (id, transcript_path)`
 - launch/ops: `build_launch_command(model, effort, …)`, `resume_command(id)`, `fork_command(id)`,
   `seed_command(prompt)`, `distiller_command()` — each renders the abstract `(model, effort)` its
   own way (Claude `--effort`, Codex `-c model_reasoning_effort=`, Gemini effort-in-model-id)
 - transcript: `resolve_transcript(id, cwd) → Path`, `iter_messages(transcript)`, `bundle(chat)`
-- hooks/state: `event_to_state` table + yield signals; capture engines also return id/path from
-  the hook payload
-- install: `setup/agents/<name>.sh` (the existing seam), driven by one unified installer
+- hooks/state: `event_to_state` table + yield signals; the hook also returns id/path from the payload
+- install: `setup/engines/<name>.sh` (the renamed seam), driven by one unified installer
 
-A new engine implements ~8 methods + 2 flags + one `setup/agents/<name>.sh`. Everything else is free.
+A new engine implements ~7 methods + 1 capability flag + one `setup/engines/<name>.sh`. Everything
+else is free.
 
 ## §3 Cross-engine axis table (the seam holds because every diff is "how this engine renders X")
 
 | Axis | Claude Code | OpenAI Codex (`codex` 0.137) | Gemini Antigravity (`agy`) |
 |---|---|---|---|
-| session id | **pre-mint** `--session-id` | **capture** (hook payload) | **capture** (disk / statusline) |
+| session id | **capture** (hook payload) | **capture** (hook payload) | **capture** (disk / statusline) |
 | effort → | `--effort high` | `-c model_reasoning_effort=high` | baked into model id |
 | transcript | `~/.claude/projects/<munge(cwd)>/<id>.jsonl` | `~/.codex/sessions/<Y/M/D>/rollout-<ts>-<id>.jsonl` | `~/.gemini/antigravity-cli/brain/<id>/…/transcript.jsonl` |
 | transcript schema | `{type:"user",message:{role,content}}` (Anthropic) | `{type,timestamp,payload}`; messages = `payload.type=="message"`, role∈{developer,user,assistant}, blocks input_text/output_text (OpenAI Responses items) | JSONL |
@@ -77,12 +80,14 @@ A new engine implements ~8 methods + 2 flags + one `setup/agents/<name>.sh`. Eve
 | yolo | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` + `--dangerously-bypass-hook-trust` | skip-approvals mode |
 | statusline | scriptable command (pipes JSON) | **none** — fixed `[tui] status_line` segment enum | scriptable `/statusline` |
 
-Codex hook events (config.toml `[[hooks.EVENT]]` / `hooks.json`, gated by `[features] hooks=true`;
-payload = one JSON object on **stdin** carrying `session_id`, `transcript_path`, `cwd`,
-`hook_event_name`, `model`): `UserPromptSubmit`→WORKING, `PreToolUse`/`PostToolUse`/`PreCompact`/
-`PostCompact`/`SubagentStart`→WORKING, `Stop`→WAITING, `PermissionRequest`→WAITING,
-`SessionStart`→chat capture. **No session-end event** → a finished Codex turn rests in WAITING
-("needs you"); EXITED still comes from tmux-close→reconcile (already engine-agnostic).
+(Claude's `--session-id` pre-mint still exists internally through Phase 1; the end state is capture
+for all — §2.) Codex hook events (config.toml `[[hooks.EVENT]]` / `hooks.json`, gated by
+`[features] hooks=true`; payload = one JSON object on **stdin** carrying `session_id`,
+`transcript_path`, `cwd`, `hook_event_name`, `model`): `UserPromptSubmit`→WORKING,
+`PreToolUse`/`PostToolUse`/`PreCompact`/`PostCompact`/`SubagentStart`→WORKING, `Stop`→WAITING,
+`PermissionRequest`→WAITING, `SessionStart`→chat capture. **No session-end event** → a finished
+Codex turn rests in WAITING ("needs you"); EXITED still comes from tmux-close→reconcile (already
+engine-agnostic).
 
 ## §4 Decisions (agreed)
 
@@ -94,7 +99,9 @@ payload = one JSON object on **stdin** carrying `session_id`, `transcript_path`,
    default; no `-codex` variant this generation). Distiller/worker reasoning effort = **`high`**
    (second-to-highest; top is `xhigh`). Set via `-m gpt-5.5 -c model_reasoning_effort=high`.
 5. yolo = `--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust`.
-6. Unified installer drives both `setup/agents/claude.sh` + new `setup/agents/codex.sh`.
+6. Unified installer drives both `setup/engines/claude.sh` + new `setup/engines/codex.sh`. The
+   install-seam dir `setup/agents/` → **`setup/engines/`**; the repo-root `agents/` *persona* dir
+   (worker roles) is unrelated and stays `agents/`.
 7. Codex install: tx-owned `~/.codex/hooks.json` + a marked `[features] hooks=true` + the default
    `[tui] status_line = ["model","reasoning","project-name","git-branch","context-used"]` +
    `status_line_use_colors = true` (copied from the known-good manual config), in/next to
@@ -110,11 +117,15 @@ payload = one JSON object on **stdin** carrying `session_id`, `transcript_path`,
     `usage-limits` work), fed by Codex's rollout `token_count.rate_limits` (`primary`/`secondary`,
     `used_percent` / `window_minutes` / `resets_at` epoch-secs) + Claude's statusline POST. **Out of
     scope here.** Codex has no scriptable statusline, so usage can't live in Codex's own status line.
+12. **Session id is captured for every engine** (no pre-mint in the end state). The `mints_own_id`
+    flag and `inject_session_id` / `command_declares_chat`-for-originals are deleted in Phase 2;
+    Phase 1 keeps Claude's pre-mint internally to stay a zero-change refactor (§2, §7).
 
 ## §5 Adapter responsibilities
 
-**`ClaudeEngine`** — pure extraction of today's `lib/tx/claude.py` behind the protocol. Zero
-behavior change; all existing tests stay green. This is Phase 1 and proves the seam alone.
+**`ClaudeEngine`** — extraction of today's `lib/tx/claude.py` behind the protocol. Phase 1 is a
+zero-behavior-change refactor that keeps the `--session-id` pre-mint internally; Phase 2 switches it
+to the shared capture path and deletes the pre-mint. Existing tests stay green throughout.
 
 **`CodexEngine`** (new):
 - launch: `codex -m gpt-5.5 -c model_reasoning_effort=high --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust "<seed>"`
@@ -129,22 +140,22 @@ behavior change; all existing tests stay green. This is Phase 1 and proves the s
 ## §6 Core generalizations (one-time; benefit every engine)
 
 1. schema v3 + `engine` field + migrator (§1).
-2. generalize the **capture path** (today only Claude *forks* capture post-hoc) into the normal flow
-   for `mints_own_id` engines — the hook reads `session_id`+`transcript_path` from the payload.
+2. make the **capture path** universal (today only Claude *forks* capture post-hoc) — the hook reads
+   `session_id`+`transcript_path` from the payload for **every** engine; delete the `--session-id` pre-mint.
 3. `transcript_path` (formula) → `resolve_transcript` (formula for Claude, glob for Codex).
 4. per-engine bundle (Codex = rollout JSONL alone).
 5. spawn gains `--engine` (default Claude); `infer_role` / `reconcile._is_agent_command` /
    tmux scroll-binding learn `codex`.
-6. unified hooks installer + `setup/agents/codex.sh`; envelope + worktree neutralizations (§4.8/4.9).
+6. unified hooks installer + `setup/engines/codex.sh`; envelope + worktree neutralizations (§4.8/4.9).
 
 ## §7 Phased plan
 
 0. **Spec + worktree** (this commit).
 1. **`Engine` seam, Claude-only** — extract `claude.py` behind `ClaudeEngine`, route all call-sites,
-   schema v3 + migrator. Pure refactor; tests green; zero behavior change.
-2. **Generalize identity + transcript** — payload-driven id capture; `resolve_transcript`; per-engine
-   bundle; generalize the pending-ChatRef backstop.
-3. **`CodexEngine` + `setup/agents/codex.sh`** + unified installer + role/reconcile/scroll learn codex.
+   schema v3 + migrator. Pure refactor; tests green; zero behavior change (pre-mint kept internal).
+2. **Generalize identity + transcript** — switch Claude from pre-mint to payload-driven capture and
+   **delete the pre-mint path**; `resolve_transcript`; per-engine bundle; generalize the pending-ChatRef backstop.
+3. **`CodexEngine` + `setup/engines/codex.sh`** + unified installer + role/reconcile/scroll learn codex.
    (Gated by the §8 spike.)
 4. **Neutralize cross-cutting Claude-isms** — `<from-agent>` envelope (+parse both), `.tx-ide/worktrees`,
    `TX_REQUIRE_WORKTREE`, personas/recipes, tx-assistant generalization, tests.

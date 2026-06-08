@@ -38,7 +38,7 @@ Each task's acceptance criteria (the validator's checklist):
 | **T0 Engine contract** | `Engine` enum + protocol + registry import cleanly; schema v3 loads; the v2→v3 migrator converts a v2 fixture → v3 (`engine=claude` for llm, `None` else); 31 baseline checks green |
 | **T1 ClaudeEngine extraction** | all 31 checks green + **zero behavior change**; `git grep -nE 'claude\.|\.claude/'` shows no direct engine calls outside `ClaudeEngine`/back-compat; a live Claude spawn still drives working/waiting |
 | **T2 Codex spike** | the 3 questions answered with evidence (positional auto-submit; `SessionStart`/`fork` fires the hook with the new id+path; `--yolo --dangerously-bypass-hook-trust` runs our hooks) |
-| **T3 Codex installer** | `setup/agents/codex.sh install --settings <copy>` writes correct `hooks.json` + marked TOML block + statusline; `uninstall` reverses exactly; idempotent; unified orchestrator drives claude.sh + codex.sh |
+| **T3 Codex installer** | `setup/engines/codex.sh install --settings <copy>` writes correct `hooks.json` + marked TOML block + statusline; `uninstall` reverses exactly; idempotent; unified orchestrator drives `setup/engines/{claude,codex}.sh` |
 | **T4 Generalize identity/transcript** | a simulated hook payload fills a pending `ChatRef`; `resolve_transcript` finds a rollout fixture; Claude path unchanged (checks green); conformance test green |
 | **T5 Neutralizations** | envelope parses old+new (test); `git grep` clean of `from-claude` / `.claude/worktrees` / `CLAUDE_REQUIRE_WORKTREE` outside back-compat; personas read engine-neutral |
 | **T6 CodexEngine** | unit tests for command building + rollout parsing (fixtures) + bundle; passes the shared protocol-conformance test |

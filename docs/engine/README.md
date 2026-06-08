@@ -31,7 +31,7 @@ Every cross-engine difference is just "how does this engine render a shared conc
 
 | Concept | Claude Code | OpenAI Codex | Gemini Antigravity (`agy`) |
 |---|---|---|---|
-| session id | **pre-mint** `--session-id` | **capture** after launch | **capture** after launch |
+| session id | **capture** after launch | **capture** after launch | **capture** after launch |
 | reasoning effort | `--effort` flag | `-c model_reasoning_effort=` | baked into model id |
 | transcript | `~/.claude/projects/…/<id>.jsonl` | `~/.codex/sessions/<date>/rollout-…<id>.jsonl` | `~/.gemini/…/brain/<id>/…jsonl` |
 | "turn done" → state | `Stop` hook | `Stop` hook | statusline `agent_state` |
@@ -39,19 +39,22 @@ Every cross-engine difference is just "how does this engine render a shared conc
 | resume / fork | native flags | native subcommands | native subcommand / `/fork` |
 | statusline | scriptable command | fixed segment list | scriptable command |
 
-The load-bearing insight: **most agents don't let you choose the session id** — Codex and
-Antigravity both mint their own, and tx *captures* it after launch (from the hook payload or disk).
-Claude's pre-mintable `--session-id` is the exception. Designing capture-first is what makes the
-seam fit N agents instead of two.
+The load-bearing insight: **the session id is captured, not chosen.** Codex and Antigravity mint
+their own; Claude's hook payload carries its id too (and Claude *forks* already capture). So tx uses
+**one uniform capture path for every engine** — the `SessionStart`/`UserPromptSubmit` hook reads the
+id + transcript path from its payload and writes them onto the record. (Claude's old `--session-id`
+pre-mint is kept only as an internal Phase-1 transition, then deleted — see [`design.md`](./design.md)
+§7.) Capture-first is what makes the seam fit N agents instead of two.
 
 ## Headline decisions
 
 (Full log in [`design.md`](./design.md) §4.)
 
 - The engine is stored **explicitly** on each record (schema v3 + a one-time migrator).
+- The session id is **captured** post-launch for every engine — no pre-mint, one uniform path.
 - Spawns default to **Claude**; Codex is opt-in via `--engine codex`, and tx builds the command.
 - **Full Codex parity**: hook-driven state, history, fork / handover / rollover, resume.
-- A **unified installer** wires both agents' hooks; tx owns `~/.codex/hooks.json` + a marked block.
+- A **unified installer** wires both engines' hooks (`setup/engines/`); tx owns `~/.codex/hooks.json`.
 - Codex defaults: model `gpt-5.5`, effort `high`, yolo via the bypass flags.
 - Usage / rate-limit display is owned separately (the sessions-graph header strip) — out of scope.
 
@@ -66,9 +69,9 @@ implementing it) so multi-engine is N-agent by construction, not a Claude+Codex 
 
 1. **`Engine` seam, Claude-only** — extract `claude.py` behind a `ClaudeEngine`; schema v3 +
    migrator. Pure refactor, zero behavior change, tests stay green.
-2. **Generalize identity + transcript** — capture-after-launch id flow; transcript resolution by
-   lookup, not formula; per-engine history bundles.
-3. **`CodexEngine` + `setup/agents/codex.sh`** + the unified installer (gated by the spike below).
+2. **Generalize identity + transcript** — switch Claude to capture-after-launch (**deleting the
+   pre-mint path**); transcript resolution by lookup, not formula; per-engine history bundles.
+3. **`CodexEngine` + `setup/engines/codex.sh`** + the unified installer (gated by the spike below).
 4. **Neutralize cross-cutting Claude-isms** — peer envelope, worktree dir, the require-worktree
    env, personas, tx-assistant.
 5. **Verify** — a live Codex worker end-to-end.
@@ -86,10 +89,11 @@ Branch `feat/engine-abstraction`. Spec committed; Phase 1 next.
 |---|---|---|
 | `README.md` (this) | the high-level picture | ✅ |
 | `design.md` | consolidated detailed design (to be split into the docs below) | ✅ |
-| `protocol.md` | the `Engine` adapter interface + capability flags + call-sites | planned |
+| `orchestration.md` | the build crew (orchestrator/developers/validators/watcher) + flow | ✅ |
+| `protocol.md` | the `Engine` adapter interface + capability flag + call-sites | planned |
 | `record-and-state.md` | schema v3, the `engine` field, the migrator, the state model | planned |
-| `chat-identity.md` | id capture vs pre-mint, transcript resolution, the provenance flow | planned |
+| `chat-identity.md` | capture-for-all session ids, transcript resolution, the provenance flow | planned |
 | `codex-adapter.md` | `CodexEngine`: commands, rollout parsing, history bundle | planned |
-| `hooks-and-install.md` | the unified installer, `claude.sh` + `codex.sh`, trust, statusline | planned |
+| `hooks-and-install.md` | the unified installer, `setup/engines/{claude,codex}.sh`, trust, statusline | planned |
 | `neutralizations.md` | `<from-agent>` envelope, `.tx-ide/worktrees`, require-worktree, personas | planned |
 | `verification.md` | the pre-Phase-3 spike + the Phase-5 live verification | planned |
