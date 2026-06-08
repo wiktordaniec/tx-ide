@@ -5,7 +5,8 @@ adapters, and the application core that every later stage depends on and that th
 locks. See `.claude/plans/execution-plan.md` (S0/S1a) and `.claude/plans/tx-service-redesign.md`.
 
 Public API frozen here:
-  - S0 data model: `Session` + `ChatRef` / `Origin` / `Location` + `Kind` / `Role` / `State`
+  - S0 data model: `Session` + `ChatRef` / `Origin` / `Location` + `Kind` / `Role` / `State` /
+    `Engine` (the v3 agent-engine axis — the adapter protocol/registry live in `tx.engines`)
   - S0 persistence: `SessionStore` (filesystem-direct), `Storage` / `LocalStorage` / `S3Storage`
     + the `$TX_IDE_HOME` layout helpers, `EventLog` (D8 log), the `claude` module
   - S1a core: `SessionService` (the mutation chokepoint), `Tmux` (the tmux adapter, attachment
@@ -28,6 +29,7 @@ from .service import (
 from .session import (
     SCHEMA_VERSION,
     ChatRef,
+    Engine,
     Kind,
     Location,
     Origin,
@@ -60,6 +62,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "__version__",
     "ChatRef",
+    "Engine",
     "EventLog",
     "Kind",
     "Location",
