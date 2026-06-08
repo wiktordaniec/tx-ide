@@ -210,4 +210,34 @@ owns = spawn_service().spawn(SpawnSpec.for_process(
 check("records_own_chat spawn: NO auto original ref (the op records its own — no orphan)",
       owns.chats == [])
 
+# ----- 4. Claude lazy-fork: the guard holds the source id; the divergent id fills the ref --------
+# Claude ≥2.1 mints a `--fork-session`'s own id LAZILY (at the first prompt), so the fork's
+# `SessionStart` fires carrying the SOURCE id. The guard must keep the fork ref pending then; the
+# fork's first `UserPromptSubmit` (carrying claude's now-divergent id) fills it via the normal
+# capture path (V-T4 found the live regression; codex-plan ruling B — pure-payload, no snapshot-diff).
+SOURCE_ID = "SRC-aaaa"
+FORK_ID = "FORK-bbbb"
+svc = fresh_service()
+svc.store.save(Session(
+    id="tx-fork", name="f", kind=Kind.PROCESS, role=Role.LLM, state=State.IDLE,
+    cwd="/p", cmd="claude --resume SRC --fork-session", engine=Engine.CLAUDE, created_at=time.time(),
+    chats=[ChatRef(id=None, role="fork", cwd="/p", transcript_path="",
+                   origin=Origin(how="fork", session_id="tx-src", chat_id=SOURCE_ID),
+                   started_at=time.time(), engine=Engine.CLAUDE)]))
+os.environ["TX_SESSION_ID"] = "tx-fork"
+
+# SessionStart carrying the SOURCE id (== origin.chat_id) → the guard keeps the fork ref pending.
+feed({"session_id": SOURCE_ID, "transcript_path": f"/x/{SOURCE_ID}.jsonl"})
+hooks.dispatch(svc, ["session-start"])
+held = svc.store.load("tx-fork").chats[0]
+check("lazy-fork: SessionStart carrying the source id leaves the fork ref pending (guard)",
+      held.id is None and held.role == "fork")
+
+# The fork's first prompt-submit carries claude's divergent new id → it fills the ref.
+feed({"session_id": FORK_ID, "transcript_path": f"/x/{FORK_ID}.jsonl"})
+hooks.dispatch(svc, ["prompt-submit"])
+done = svc.store.load("tx-fork").chats[0]
+check("lazy-fork: a later divergent-id payload fills the fork ref with the fork's own id",
+      done.id == FORK_ID and done.transcript_path.endswith(f"{FORK_ID}.jsonl"))
+
 print(f"OK — {PASSED} checks passed")

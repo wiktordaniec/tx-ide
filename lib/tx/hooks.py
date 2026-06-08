@@ -206,7 +206,15 @@ def _complete_pending(
     `id` is still None. Every spawn writes exactly one pending ref ahead of the first hook, so the
     latest pending ref is this chat. Idempotent: skip when the captured id is already recorded (a
     re-fired hook), or when nothing is pending (the synchronous write has not landed yet — a fork's
-    `session-start` can fire before `chat.py` writes the ref; its first `prompt-submit` completes it)."""
+    `session-start` can fire before `chat.py` writes the ref; its first `prompt-submit` completes it).
+
+    Lazy-fork guard (V-T4 / codex-plan ruling): a Claude `--fork-session` mints its own new id LAZILY
+    at the first prompt, so its `SessionStart` fires carrying the SOURCE id. Do NOT fill a
+    `role=='fork'` pending ref with an id equal to its own `origin.chat_id` — that is the source, not
+    the fork. Leave it pending so the fork's first `UserPromptSubmit`, which carries claude's now
+    divergent id, fills it via this same path. A general rule (a fork firing with its origin's own id
+    is "not ready"); an engine whose fork id is divergent at `SessionStart` (Codex — spike Evidence 2)
+    never trips it (`captured_id != origin.chat_id` ⇒ fills immediately), so capture-for-all holds."""
     if any(reference.id == captured_id for reference in session.chats):
         return
     pending = next(
@@ -214,6 +222,8 @@ def _complete_pending(
         None,
     )
     if pending is None:
+        return
+    if pending.role == "fork" and captured_id == pending.origin.chat_id:
         return
     pending.id = captured_id
     pending.transcript_path = captured_path
