@@ -358,6 +358,7 @@ class ResumeCommand(Command):
         resume_cmd = shlex.join(engines.get(record.engine).resume_command(chat.id))
         spec = SpawnSpec.for_process(
             name=name, tags=list(record.tags), cwd=cwd, cmd=resume_cmd, env=dict(record.env),
+            records_own_chat=True,
         )
         new = self.service.spawn(spec)
         self._attach_resumed_chat(new, chat, cwd)

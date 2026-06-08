@@ -37,6 +37,7 @@ from tx.engines import claude as claude_engine  # noqa: E402
 from tx.history import resolve_transcript  # noqa: E402
 from tx.service import SessionService  # noqa: E402
 from tx.session import ChatRef, Engine, Kind, Origin, Role, Session, State  # noqa: E402
+from tx.spawn import SpawnSpec  # noqa: E402
 from tx.storage import ensure_home  # noqa: E402
 from tx.store import SessionStore  # noqa: E402
 
@@ -61,10 +62,39 @@ class FakeTmux:
         return []
 
 
+class SpawnTmux(FakeTmux):
+    """Enough Tmux for `SessionService._spawn` (no live server): name-free, no parent, a stub pid."""
+
+    def has_session(self, name):
+        return False
+
+    def current_session_name(self):
+        return None
+
+    def new_session(self, name, cwd, command, env):
+        return 4242
+
+    def set_tx_id(self, name, session_id):
+        pass
+
+
+class NoReconcile:
+    """A reconciler that does nothing — `_spawn`'s `_require_name_free` calls `reconcile()`."""
+
+    def reconcile(self):
+        return []
+
+
 def fresh_service() -> SessionService:
     """A service over a real (temp-home) store + log, with tmux faked out. The capture path only ever
     touches the store; `prompt-submit` additionally drives state, which reads `tmux.attached_to`."""
     return SessionService(store=SessionStore(), tmux=FakeTmux())
+
+
+def spawn_service() -> SessionService:
+    """A service whose `spawn` is hermetic (faked tmux + reconciler) — for the `records_own_chat`
+    contract, which lives in `_spawn`."""
+    return SessionService(store=SessionStore(), tmux=SpawnTmux(), reconciler=NoReconcile())
 
 
 def pending_session(txid: str, *, role: str = "original", how: str = "spawn") -> Session:
@@ -163,5 +193,21 @@ check("resolve_transcript: engine-routed fast path finds the deterministic fixtu
       resolved is not None and resolved.name == f"{chat_id}.jsonl")
 check("resolve_transcript: a chat not on disk → None",
       resolve_transcript("NOT-ON-DISK", cwd, Engine.CLAUDE) is None)
+
+# ----- 3. records_own_chat gates the auto original ref (the resume orphan-ref guard) ------------
+# A plain llm spawn gets a pending `original` ref from `_spawn`; a chat-op that records its own ref
+# (fork / handover / resume) passes `records_own_chat=True` so `_spawn` does NOT also write one —
+# otherwise resume (whose `_attach_resumed_chat` appends the known-id ref) is left with an orphan
+# pending ref the same-id SessionStart never clears (V-T4 finding, cli.py:359).
+plain = spawn_service().spawn(SpawnSpec.for_process(
+    name="plain", tags=[], cwd="/p", cmd="claude --dangerously-skip-permissions"))
+check("plain llm spawn: exactly one pending original ref",
+      len(plain.chats) == 1 and plain.chats[0].id is None and plain.chats[0].role == "original")
+
+owns = spawn_service().spawn(SpawnSpec.for_process(
+    name="owns", tags=[], cwd="/p", cmd="claude --resume X --dangerously-skip-permissions",
+    records_own_chat=True))
+check("records_own_chat spawn: NO auto original ref (the op records its own — no orphan)",
+      owns.chats == [])
 
 print(f"OK — {PASSED} checks passed")
