@@ -8,7 +8,7 @@ Public API frozen here:
   - S0 data model: `Session` + `ChatRef` / `Origin` / `Location` + `Kind` / `Role` / `State` /
     `Engine` (the v3 agent-engine axis — the adapter protocol/registry live in `tx.engines`)
   - S0 persistence: `SessionStore` (filesystem-direct), `Storage` / `LocalStorage` / `S3Storage`
-    + the `$TX_IDE_HOME` layout helpers, `EventLog` (D8 log), the `claude` module
+    + the `$TX_IDE_HOME` layout helpers, `EventLog` (D8 log); the engine adapters live in `tx.engines`
   - S1a core: `SessionService` (the mutation chokepoint), `Tmux` (the tmux adapter, attachment
     reads are S6 placeholders), `Reconciler` (no-daemon liveness), `SpawnSpec` (+ `infer_role`)
 
@@ -16,7 +16,6 @@ Later stages add: history.py (S3), chat.py (S4), hooks.py (S2). cli.py / render.
 presentation layer (not part of the frozen import surface).
 """
 
-from . import claude
 from .events import EventLog
 from .reconcile import Reconciler
 from .service import (
@@ -84,7 +83,6 @@ __all__ = [
     "Tmux",
     "TmuxError",
     "UnsupportedRecordError",
-    "claude",
     "config_path",
     "DEFAULT_HOME",
     "ensure_home",

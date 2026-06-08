@@ -45,7 +45,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import claude, history
+from . import history
+from .engines import claude
 from .service import NotInsideTmux, ServiceError, SessionNotFound, SessionService
 from .session import ChatRef, Origin, Session
 from .spawn import SpawnSpec

@@ -60,7 +60,8 @@ import subprocess
 import sys
 import time
 
-from . import chat, claude, history
+from . import chat, history
+from .engines import claude
 from .service import SessionService
 from .session import ChatRef, Origin, Session, State
 

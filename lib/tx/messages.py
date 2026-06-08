@@ -192,7 +192,7 @@ def collect_messages(store: SessionStore | None = None) -> list[Message]:
 
     The base source is the durable `~/.tx-ide/history` bundles — every transcript tx has ever
     ingested — so a message survives a `tx rm` of the session that received it (the record is gone,
-    the bundle is not). For a still-live session the live `~/.claude/projects` transcript is read
+    the bundle is not). For a still-live session the live engine transcript is read
     too, contributing the tail not yet ingested (deduped by line uuid against the bundle). The
     recipient is the session that owns the transcript; its display name + launch cmd come from the
     record when it still exists, else the bundle's own tx-id stands in for the name."""
