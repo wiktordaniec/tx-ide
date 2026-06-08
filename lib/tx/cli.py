@@ -34,7 +34,7 @@ from .events import EventLog
 from .render import LOCATION_W, ROLE_W, picker_display_rows, picker_namew, render_chats, render_history, render_ls
 from .service import ServiceError, SessionService
 from .session import (
-    SCHEMA_VERSION, ChatRef, Kind, Origin, Role, Session, State, UnsupportedRecordError,
+    SCHEMA_VERSION, ChatRef, Engine, Kind, Origin, Role, Session, State, UnsupportedRecordError,
 )
 from .spawn import SHELL_COMMANDS, SpawnSpec, infer_role
 from .storage import LocalStorage, ensure_home, sessions_dir, tx_ide_home
@@ -1280,6 +1280,94 @@ class MigrateTmuxNamesCommand(Command):
         return out
 
 
+# ----- schema migration: v2 → v3 (the `engine` field) --------------------------------------
+# `tx migrate` — the explicit, idempotent one-time migrator (design §1). v3 added the `engine`
+# field; the loader refuses any non-current version (design §9 — NO auto-upgrade-on-load), so
+# pre-v3 records must be upgraded out-of-band before they will load. This stamps `engine=claude`
+# onto llm records (and `None` on the rest), bumps the version, and leaves v3 records untouched.
+# A raw-JSON reader (the loader rejects v2 input by design), it writes back through `SessionStore`
+# so the result is the canonical v3 shape and is validated as loadable on the way out.
+#
+# SAFETY (T0 §4): run this ONCE at deploy against the real $TX_IDE_HOME. The v3 worktree must NEVER
+# migrate the live v2 home (it would brick the running v2 crew). For any sandbox run, point
+# $TX_IDE_HOME at a temp dir: `TX_IDE_HOME=$(mktemp -d) python3 -m tx migrate`.
+
+_MIGRATE_FROM_VERSION = 2  # the pre-`engine` schema this migrator upgrades — and only this one
+_MIGRATE_TO_VERSION = 3    # pinned literal: a record this stamps must satisfy today's loader
+
+
+def migrate_record_v2_to_v3(raw: dict) -> dict | None:
+    """Transform one raw v2 record dict into v3, or return `None` if it is not v2 (already v3, or a
+    v1/unknown record) — leaving those untouched is what makes `tx migrate` idempotent.
+
+    v3 is purely additive: it stamps the `engine` field (`claude` for an llm session, `None`
+    otherwise) onto the record AND each of its `ChatRef`s (chats exist only on llm sessions, so they
+    inherit the record's engine), and bumps `schema_version`. Every other field is copied verbatim.
+    """
+    if raw.get("schema_version") != _MIGRATE_FROM_VERSION:
+        return None
+    engine = Engine.CLAUDE.value if raw["role"] == Role.LLM.value else None
+    migrated = dict(raw)
+    migrated["schema_version"] = _MIGRATE_TO_VERSION
+    migrated["engine"] = engine
+    migrated["chats"] = [{**chat, "engine": engine} for chat in raw["chats"]]
+    return migrated
+
+
+def _skip_reason(raw: dict) -> str:
+    """Why a record was left untouched: already current, or an unsupported (v1/unknown) version."""
+    version = raw.get("schema_version")
+    if version == SCHEMA_VERSION:
+        return "already v3"
+    return f"not a v2 record (schema_version={version!r})"
+
+
+def migrate_sessions(directory: Path) -> tuple[list[str], list[tuple[str, str]]]:
+    """Rewrite every v2 record under `directory` to v3 in place, atomically; return
+    `(migrated, skipped)` — `migrated` is the upgraded filenames, `skipped` pairs each untouched
+    file with the reason. Idempotent: a re-run finds only v3 records and migrates nothing.
+
+    `directory` is explicit (not `sessions_dir()`) so each caller picks the target — the command
+    against `$TX_IDE_HOME/sessions`, the migration test against a synthetic temp fixture (T0 §4: the
+    v3 code must never run against the live v2 home). Reads are a persistence boundary, so a single
+    unreadable/malformed file is skipped with its error rather than aborting the whole run."""
+    store = SessionStore(directory=directory)
+    migrated: list[str] = []
+    skipped: list[tuple[str, str]] = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            with open(path) as handle:
+                raw = json.load(handle)
+            new_record = migrate_record_v2_to_v3(raw)
+            if new_record is None:
+                skipped.append((path.name, _skip_reason(raw)))
+                continue
+            store.save(Session.from_dict(new_record))  # validates v3 + writes the canonical shape
+        except (OSError, json.JSONDecodeError, KeyError, ValueError, UnsupportedRecordError) as error:
+            skipped.append((path.name, f"{type(error).__name__}: {error}"))
+            continue
+        migrated.append(path.name)
+    return migrated, skipped
+
+
+class MigrateCommand(Command):
+    name = "migrate"
+    summary = "Upgrade $TX_IDE_HOME session records to the current schema (idempotent v2 → v3)."
+
+    def run(self, argv: list[str]) -> int:
+        # No flags: the target is $TX_IDE_HOME/sessions, so a sandbox run is `TX_IDE_HOME=<tmp> tx
+        # migrate` (T0 §4 — the v3 code must never migrate the live v2 home). Explicit + idempotent.
+        self._parser().parse_args(argv)  # reject stray args; serve `-h`
+        migrated, skipped = migrate_sessions(sessions_dir())
+        for name in migrated:
+            print(f"  migrated {name} → v{SCHEMA_VERSION}")
+        for name, reason in skipped:
+            print(f"  skipped  {name} ({reason})")
+        print(f"migrated {len(migrated)} record(s) to v{SCHEMA_VERSION}; "
+              f"left {len(skipped)} untouched.")
+        return 0
+
+
 # ----- chat operations (S4) ----------------------------------------------------------------
 # fork / handover / rollover + the hidden async-tail finish verbs. Thin façades over `ChatOps`
 # (lib/tx/chat.py) — argv parsing + rendering only, zero choreography. All transcription-based,
@@ -1373,7 +1461,7 @@ PUBLIC_COMMANDS: list[type[Command]] = [
     StartCommand, AttachCommand, LsCommand, SpawnCommand, SpawnNvimCommand, SpawnViewCommand,
     TagCommand, RenameCommand, WhoamiCommand, SendMessageCommand, KillCommand, ArchiveCommand,
     RmCommand, ShowCommand, HistoryCommand, ChatCommand, ResumeCommand, SyncCommand,
-    ForkCommand, HandoverCommand, RolloverCommand,
+    ForkCommand, HandoverCommand, RolloverCommand, MigrateCommand,
 ]
 HIDDEN_COMMANDS: list[type[Command]] = [
     ListCommand, EditTagCommand, FocusEnvelopeCommand, PaneInfoCommand, PaneKindCommand,
