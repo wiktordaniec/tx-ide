@@ -5,30 +5,26 @@ live — the transcript-path rule, the launch-flag builders (fresh / resume / fo
 and the history-bundle layout — now expressed as an `EngineAdapter` (design §2) the engine-blind core
 calls through the registry. The module registers itself at import: `register(Engine.CLAUDE, …)`.
 
-Phase 1 (task T1) is a **zero-behavior-change** refactor:
-  - The transcript/path internals + history-bundle helpers + the two pre-mint functions stay as
-    module-level names here (the same symbols the former module exported). The core still imports
-    these directly (`from .engines import claude`) where it has not yet been routed through the
-    adapter — **transitional until T4**, not a leak.
-  - Claude keeps its `--session-id` pre-mint as the active id path (`command_declares_chat` /
-    `inject_session_id` — KEEP ACTIVE). `ClaudeEngine.capture_session_id` is implemented but
-    **DORMANT**: the core does not call it at T1 (design §7 switches Claude to payload-capture and
-    deletes the pre-mint in Phase 2).
+Identity is **capture-after-launch** (design §2/§7, task T4): the session id is read off the hook
+payload (`capture_session_id`), never pre-minted. The transcript/path internals + history-bundle
+helpers stay as module-level names here (the same symbols the former module exported) — the core
+imports them directly (`from .engines import claude`) where the transcript-path rules are reused;
+T4 routed transcript *resolution* through `resolve_transcript`, and the pre-mint helpers
+(`inject_session_id` / `command_declares_chat`) are gone.
 
 Ground truth measured on claude v2.0.76 (chat-ops.md §1):
   - Transcript:  <claude-home>/projects/<munge(cwd)>/<chat-uuid>.jsonl  + a sibling <chat-uuid>/ dir
                  (`subagents/`, `tool-results/`).
   - Munge rule:  every `/` and every `.` in the absolute cwd becomes `-`
                  (verified on disk: a `…/tx-ide/.claude/worktrees/x` cwd → `…-tx-ide--claude-worktrees-x`).
-  - `--session-id` is REJECTED together with `--resume` (#5); a fresh `--session-id` alone is
-    accepted (#6); `--fork-session` mints its own id (#7) at startup (#8).
+  - Every hook payload carries `session_id` + `transcript_path`, so capture works from the first
+    event (`SessionStart`), before the transcript file exists (`--fork-session` writes it lazily, #8).
 """
 
 from __future__ import annotations
 
 import json
 import os
-import shlex
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
@@ -111,44 +107,6 @@ def bundle_transcript_path(tx_id: str, chat_id: str) -> Path:
     return bundle_dir(tx_id, chat_id) / BUNDLE_TRANSCRIPT_NAME
 
 
-# ----- mandatory-chat minting (S1a) — every llm session owns a chat id ----------------------
-# KEEP ACTIVE through T1 (Q-T1c): Claude's `--session-id` pre-mint stays the live id path. A claude
-# command either already declares the chat it will run (fork's `--resume … --fork-session`,
-# handover/rollover/resume's `--session-id` / `--resume`, a user's explicit `--continue` / `-c`) or
-# it is a fresh "original" chat that `SessionService._spawn` must mint an id for and inject. These
-# two helpers let the service ask that question and stamp the answer without importing the chat
-# module (which imports this one). The identity flags mirror chat.py's `_strip_identity` split.
-_CHAT_IDENTITY_FLAGS = frozenset(
-    {"--session-id", "--resume", "--fork-session", "--continue", "-c"}
-)
-
-
-def command_declares_chat(command: str) -> bool:
-    """Whether a claude command already names the chat it will run, so tx must NOT mint + inject a
-    fresh `--session-id`. True for fork / handover / rollover / resume (which carry `--session-id` or
-    `--resume` and record their own `ChatRef`) and a user's explicit `--continue` / `-c`. The token
-    match is over a `shlex` split so a flag merely *mentioned* inside a quoted priming prompt is not
-    mistaken for the real one. An unparseable command (unbalanced quotes — user input, the boundary)
-    is reported as declaring its own chat: we will not rewrite a command we cannot tokenize."""
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return True
-    return any(token in _CHAT_IDENTITY_FLAGS for token in tokens)
-
-
-def inject_session_id(command: str, session_id: str) -> str:
-    """Insert `--session-id <session_id>` immediately after the leading claude binary, keeping the
-    rest of the command verbatim. The caller guarantees a fresh claude command (role == llm and
-    `command_declares_chat` is False), so the first token is the binary and the tail — which may
-    carry a priming prompt with shell-significant characters we must not re-quote — is preserved
-    (only the whitespace separating the binary from the rest collapses to one space, exactly as the
-    launching shell would word-split it). A uuid needs no quoting, so the splice is exact."""
-    parts = command.split(None, 1)
-    head = f"{parts[0]} --session-id {session_id}"
-    return f"{head} {parts[1]}" if len(parts) > 1 else head
-
-
 # ----- the adapter --------------------------------------------------------------------------
 # Claude renders every hook event onto the three live states (§2): the whole "working" family
 # reaffirms WORKING (a missed UserPromptSubmit self-heals on the first tool call), Stop / its
@@ -176,8 +134,8 @@ class ClaudeEngine(EngineAdapter):
 
     Stateless: a single instance is registered for `Engine.CLAUDE`. The launch/ops builders return
     argv lists (the binary first) with Claude's yolo flag (`--dangerously-skip-permissions`) baked
-    in, so callers stay engine-blind (design §4.3). `capture_session_id` is implemented for
-    conformance + Phase-2 use but is **dormant** at T1 — the core still pre-mints (§4).
+    in, so callers stay engine-blind (design §4.3). `capture_session_id` is the active id path
+    (T4, §2/§7) — the core captures the id from the hook payload, never pre-minting.
     """
 
     # ----- identity ------------------------------------------------------------------------
@@ -194,8 +152,8 @@ class ClaudeEngine(EngineAdapter):
 
     def capture_session_id(self, hook_payload: dict) -> tuple[str, str]:
         """Read `(session_id, transcript_path)` off Claude's hook payload (both keys are present on
-        every Claude hook event). **DORMANT at T1**: the core keeps the `--session-id` pre-mint as the
-        active id path; Phase 2 (design §7) switches to this one capture path and deletes the pre-mint."""
+        every Claude hook event). The **active** id path (T4, design §2/§7): `hooks.py` calls this on
+        the first capture event (`SessionStart` / `UserPromptSubmit`) to fill the pending `ChatRef`."""
         return hook_payload["session_id"], hook_payload["transcript_path"]
 
     # ----- launch / ops --------------------------------------------------------------------
@@ -259,13 +217,14 @@ class ClaudeEngine(EngineAdapter):
 
     def bundle(self, chat: ChatRef) -> Path:
         """Mirror a chat into its durable history bundle (transcript + the sibling sidecar dir) and
-        return the bundle dir. Delegates to history.py's tested incremental copy. **Transitional**:
-        the core drives ingest through `history` directly at T1; T4 routes per-engine ingest here.
-        Imported lazily because `history` imports this module."""
+        return the bundle dir. Delegates to history.py's tested incremental copy. The core drives
+        ingest through `history` directly (the engine-neutral copy); the per-engine bundle LAYOUT
+        (Codex's sidecar-free rollout) lands with `CodexEngine` (T6). Imported lazily because
+        `history` imports this module."""
         from .. import history
 
         tx_id = Path(chat.bundle_path).parent.name
-        history.ingest_chat(tx_id, chat.id, chat.cwd, wait=True)
+        history.ingest_chat(tx_id, chat.id, chat.cwd, Engine.CLAUDE, wait=True)
         return bundle_dir(tx_id, chat.id)
 
     # ----- hooks / state -------------------------------------------------------------------

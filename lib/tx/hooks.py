@@ -12,6 +12,7 @@ missed edge self-heals — only the three live states WORKING / WAITING / IDLE a
 
 | `tx hook` event | Claude hook(s)                                                        | state   |
 |-----------------|-----------------------------------------------------------------------|---------|
+| `session-start` | SessionStart                                                         | — (capture only) |
 | `prompt-submit` | UserPromptSubmit                                                      | WORKING |
 | `working`       | PreToolUse, PostToolUse, PostToolUseFailure, SubagentStart, PreCompact | WORKING |
 | `stop`          | Stop, StopFailure, PermissionRequest                                  | WAITING |
@@ -41,15 +42,15 @@ env at spawn). A hand-started `claude` has none → no-op; an old-tx / other-hom
 an id the (dev) home never recorded → `record_state` returns False → no-op. Either way the hook
 exits 0 so it never disturbs a session tx doesn't own.
 
-**Origin-aware `ChatRef` capture (CHD6 / F6, S4).** On `prompt-submit` the hook also ensures the
-firing chat has a correct `ChatRef` on the record, reading provenance from the pane env (the shim
-drains the payload, so env is the only channel): `TX_CHAT_ROLE` (default `original`),
-`TX_CHAT_ORIGIN_TXID` (default self), `TX_CHAT_ORIGIN_CHAT`, and the pre-minted `TX_CHAT_ID`. This
-is the idempotent BACKSTOP — `chat.py` writes each op's `ChatRef` synchronously as the primary, and
-`SessionService._spawn` writes (and `--session-id`-injects) the `original` one for every llm spawn;
-the hook only acts when something is missing. Its load-bearing case is completing a fork whose snapshot-diff (chat.py) missed: the record
-holds a null-id placeholder, and the hook fills the id by resolving the newest unclaimed transcript
-(`chat.newest_unclaimed_transcript`). It never guesses a chat id it cannot determine.
+**Chat-id capture (design §2/§7, task T4).** The session id is CAPTURED from the hook payload, never
+pre-minted. Every spawn writes a PENDING `ChatRef` (`id=None`) onto the record synchronously —
+`SessionService._spawn` for an `original`, `chat.py` for fork / handover / rollover — before the agent
+launches. The first hook that carries the payload fills it: `session-start` at startup, else
+`prompt-submit` on the first turn (the two events whose shim keeps stdin). It reads `session_id` +
+`transcript_path` off the payload via `engine.capture_session_id(payload)` and stamps them onto the
+pending ref (`_complete_pending`). Idempotent: once filled — or if the captured id is already
+recorded — it is a no-op, so a re-fired hook never duplicates and a fork's `session-start` miss is
+completed by its first `prompt-submit`.
 """
 
 from __future__ import annotations
@@ -58,12 +59,11 @@ import json
 import os
 import subprocess
 import sys
-import time
 
-from . import chat, history
-from .engines import claude
+from . import history
+from .engines import get
 from .service import SessionService
-from .session import ChatRef, Origin, Session, State
+from .session import Session, State
 
 # The tx session id is baked into every tx-spawned session's environment (`SessionService._spawn`
 # sets `TX_SESSION_ID`), so a synchronous hook inherits it — the unambiguous key for "which record
@@ -83,10 +83,12 @@ STATE_FOR_EVENT: dict[str, State] = {
     "session-end": State.IDLE,
 }
 
-# Turn-boundary events that establish / complete a chat → run the (idempotent) ChatRef capture. The
-# high-frequency `working` reaffirmations and `notification` skip it (the chat is settled by then,
-# and running the load + project-dir glob on every PreToolUse would be pure waste).
-CHAT_REF_EVENTS: frozenset[str] = frozenset({"prompt-submit", "stop", "session-end"})
+# The capture events: those whose shim keeps stdin AND establish the chat — `session-start` (at
+# startup, the earliest the id is known) and `prompt-submit` (the first-turn backstop, e.g. a fork
+# whose `session-start` fired before its pending ref was written). Capture is idempotent, so the two
+# together close the window. `working` / `stop` / `session-end` drain stdin (no payload to read), and
+# `notification` re-fires ~60s — none capture.
+CHAT_REF_EVENTS: frozenset[str] = frozenset({"session-start", "prompt-submit"})
 
 # A real transition INTO one of these mirrors history (§11 / chat-ops §3.3): a turn ended (WAITING)
 # or the session ended (IDLE). Keyed on the resulting state + an actual transition (not the event),
@@ -126,23 +128,22 @@ def dispatch(service: SessionService, argv: list[str]) -> int:
     if not session_id:
         return 0  # D4: hand-started session, no id baked → tx does not track it.
 
-    # The state this event records. `notification` needs the payload to tell a yield (idle / needs
-    # permission / question → WAITING) from a resume signal (auth ok / elicitation done → ignore), so
-    # it reads stdin; every other event maps by name alone. None → unknown / non-yield → no-op.
-    state = _state_for_event(event)
-    if state is None:
-        return 0
-
-    # Origin-aware ChatRef capture (CHD6/F6) — only on the turn-boundary events that establish or
-    # complete a chat, NOT on the high-frequency `working` reaffirmations / `notification`. The
-    # post-first-prompt **Stop** is the load-bearing moment — on claude ≥2.1 a fork's transcript is
-    # written lazily on the first prompt — so capture runs BEFORE ingest, and is guarded because a
-    # hook must never fail a Claude turn (chat.py's synchronous write and the next event backstop it).
+    # Chat-id capture (T4) — on the events that carry the payload + establish a chat (`session-start`
+    # at startup, `prompt-submit` on the first turn). Runs BEFORE the state arm because `session-start`
+    # drives no state (it would short-circuit below). Guarded: a hook must never fail a Claude turn —
+    # the next capture event backstops a malformed/early payload.
     if event in CHAT_REF_EVENTS:
         try:
             _capture_chat_ref(service, session_id)
         except Exception:
             pass
+
+    # The state this event records. `notification` needs the payload to tell a yield (idle / needs
+    # permission / question → WAITING) from a resume signal (auth ok / elicitation done → ignore), so
+    # it reads stdin; every other event maps by name alone. None → capture-only / unknown / non-yield.
+    state = _state_for_event(event)
+    if state is None:
+        return 0
 
     # No-op when the id isn't ours (D4), the record is terminal (C3), or the state is unchanged (a
     # `working` reaffirmation / a re-fired idle_prompt) — `record_state` reports all of these as False.
@@ -186,67 +187,46 @@ def _read_payload() -> dict:
 
 
 def _capture_chat_ref(service: SessionService, session_id: str) -> None:
-    """Ensure the firing chat has a correct `ChatRef` on its record (CHD6 backstop). Reads role +
-    origin from the pane env (defaults `original`/self/none). No-op when the chat is already recorded
-    (the common case: `_spawn` / chat.py wrote it). The two real actions are (a) completing a fork's
-    null-id placeholder by resolving the chat from disk, and (b) creating a `ChatRef` the env names
-    but nothing wrote yet (e.g. a handover worker if its synchronous write did not land)."""
+    """Fill the firing session's pending `ChatRef` from the hook payload (the universal capture path,
+    design §2/§7). Reads `(session_id, transcript_path)` off the payload via the session's engine and
+    stamps them onto the pending ref. No-op when the id isn't ours (D4); the engine's
+    `capture_session_id` raises on a malformed/empty payload, which `dispatch` swallows (a hook must
+    never fail a turn — the next capture event retries)."""
     session = service.store.load(session_id)
     if session is None:
         return  # D4: not a record this home tracks.
-
-    role = os.environ.get(chat.CHAT_ROLE_ENV, "original")
-    origin_txid = os.environ.get(chat.CHAT_ORIGIN_TXID_ENV) or session_id
-    origin_chat = os.environ.get(chat.CHAT_ORIGIN_CHAT_ENV) or None
-    chat_id = os.environ.get(chat.CHAT_ID_ENV) or None
-
-    if chat_id is None:
-        _complete_pending(service, session, role, origin_chat)
-        return
-    if any(reference.id == chat_id for reference in session.chats):
-        return  # already captured (llm spawn / fork / handover / rollover wrote it) — no-op.
-    _create_chat_ref(service, session, chat_id, role, origin_txid, origin_chat)
+    captured_id, captured_path = get(session.engine).capture_session_id(_read_payload())
+    _complete_pending(service, session, captured_id, captured_path)
 
 
 def _complete_pending(
-    service: SessionService, session: Session, role: str, origin_chat: str | None
+    service: SessionService, session: Session, captured_id: str, captured_path: str
 ) -> None:
-    """Fill a still-null `ChatRef` of this role by resolving the chat from disk — the fork backstop
-    (the snapshot-diff in chat.py missed, so the id is None). The fork's transcript is the newest one
-    not already claimed by another `ChatRef` or by the source chat. No pre-minted id and nothing
-    pending → cannot determine the chat, so leave it (a later prompt's hook, or chat.py, catches it)."""
+    """Stamp the captured `(id, transcript_path)` onto the session's pending `ChatRef` — the one whose
+    `id` is still None. Every spawn writes exactly one pending ref ahead of the first hook, so the
+    latest pending ref is this chat. Idempotent: skip when the captured id is already recorded (a
+    re-fired hook), or when nothing is pending (the synchronous write has not landed yet — a fork's
+    `session-start` can fire before `chat.py` writes the ref; its first `prompt-submit` completes it).
+
+    Lazy-fork guard (V-T4 / codex-plan ruling): a Claude `--fork-session` mints its own new id LAZILY
+    at the first prompt, so its `SessionStart` fires carrying the SOURCE id. Do NOT fill a
+    `role=='fork'` pending ref with an id equal to its own `origin.chat_id` — that is the source, not
+    the fork. Leave it pending so the fork's first `UserPromptSubmit`, which carries claude's now
+    divergent id, fills it via this same path. A general rule (a fork firing with its origin's own id
+    is "not ready"); an engine whose fork id is divergent at `SessionStart` (Codex — spike Evidence 2)
+    never trips it (`captured_id != origin.chat_id` ⇒ fills immediately), so capture-for-all holds."""
+    if any(reference.id == captured_id for reference in session.chats):
+        return
     pending = next(
-        (reference for reference in session.chats if reference.id is None and reference.role == role),
+        (reference for reference in reversed(session.chats) if reference.id is None),
         None,
     )
     if pending is None:
         return
-    claimed = {reference.id for reference in session.chats if reference.id is not None}
-    if origin_chat is not None:
-        claimed.add(origin_chat)
-    resolved = chat.newest_unclaimed_transcript(pending.cwd or session.cwd, claimed)
-    if resolved is None:
-        return  # transcript not on disk yet — the next prompt's hook completes it.
-    pending.id = resolved
-    pending.transcript_path = str(claude.transcript_path(resolved, pending.cwd or session.cwd))
-    service.store.save(session)
-
-
-def _create_chat_ref(
-    service: SessionService, session: Session, chat_id: str, role: str,
-    origin_txid: str, origin_chat: str | None,
-) -> None:
-    """Append a `ChatRef` the env describes but nothing wrote (the create backstop). `how` mirrors
-    `role` for the derived ops; an `original` chat came from `spawn` (chat-ops §2 table)."""
-    how = "spawn" if role == "original" else role
-    session.chats.append(ChatRef(
-        id=chat_id,
-        role=role,
-        cwd=session.cwd,
-        transcript_path=str(claude.transcript_path(chat_id, session.cwd)),
-        origin=Origin(how=how, session_id=origin_txid, chat_id=origin_chat),
-        started_at=time.time(),
-    ))
+    if pending.role == "fork" and captured_id == pending.origin.chat_id:
+        return
+    pending.id = captured_id
+    pending.transcript_path = captured_path
     service.store.save(session)
 
 

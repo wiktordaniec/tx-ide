@@ -35,7 +35,8 @@ import shutil
 from collections.abc import Iterator
 from pathlib import Path
 
-from .engines import claude
+from .engines import claude, get
+from .session import Engine
 from .store import SessionStore
 
 # The per-(tx-id, chat) coalescing lock, alongside the bundle it guards. Hidden so a HISTORIAN grep
@@ -51,17 +52,20 @@ _PREFIX_CHECK_BYTES = 65536
 
 # ----- cross-project resolver (chat-ops §3.4 — the only non-copy logic) ---------------------
 
-def resolve_transcript(chat_id: str, cwd_hint: str | None = None) -> Path | None:
+def resolve_transcript(chat_id: str, cwd_hint: str | None, engine: Engine) -> Path | None:
     """Locate a chat's source transcript `.jsonl`, or None if it is not on disk yet.
 
-    Fast path: the deterministic `munge(cwd_hint)` project dir (`claude.find_transcript`). Fallback
-    (the cwd has moved — a deleted/renamed worktree, or a fork/handover launched elsewhere): glob
-    the engine's projects root for `*/<chat>.jsonl` and take the unique hit, preferring the `cwd_hint`
-    munge when several match (chat-ids are unique, so >1 hit is not expected — prefer the hint defensively).
+    Engine-routed (design §2/§3, T4): the fast path asks the chat's engine to resolve the transcript
+    from the cwd (`engine.resolve_transcript` — Claude's deterministic formula, Codex's rollout glob),
+    then existence-checks it (the protocol leaves existence to the caller). Fallback (the cwd has moved
+    — a deleted/renamed worktree, or a fork/handover launched elsewhere): glob the projects root for
+    `*/<chat>.jsonl` and take the unique hit, preferring the `cwd_hint` munge when several match
+    (chat-ids are unique, so >1 hit is not expected — prefer the hint defensively). The cross-project
+    fallback is Claude's projects-root layout; the per-engine cross-project glob lands with Codex (T6).
     """
     if cwd_hint:
-        fast = claude.find_transcript(chat_id, cwd_hint)
-        if fast is not None:
+        fast = get(engine).resolve_transcript(chat_id, cwd_hint)
+        if fast.exists():
             return fast
     matches = sorted(claude.projects_root().glob(f"*/{chat_id}{claude.TRANSCRIPT_SUFFIX}"))
     if not matches:
@@ -95,7 +99,7 @@ def ingest_session(store: SessionStore, session_id: str, *, wait: bool = False) 
     for chat in session.chats:
         if chat.id is None:
             continue
-        bundle = ingest_chat(session.id, chat.id, chat.cwd, wait=wait)
+        bundle = ingest_chat(session.id, chat.id, chat.cwd, chat.engine, wait=wait)
         if bundle is not None:
             ingested[chat.id] = str(bundle)
     if ingested:
@@ -103,11 +107,14 @@ def ingest_session(store: SessionStore, session_id: str, *, wait: bool = False) 
     return list(ingested.values())
 
 
-def ingest_chat(tx_id: str, chat_id: str, cwd_hint: str, *, wait: bool = False) -> Path | None:
+def ingest_chat(
+    tx_id: str, chat_id: str, cwd_hint: str, engine: Engine, *, wait: bool = False
+) -> Path | None:
     """Mirror one chat's bundle into `$TX_IDE_HOME/history/<tx-id>/<chat>/`, or None if the source
-    transcript is not on disk yet. Returns the bundle dir (even when a concurrent mirror is skipped —
-    the bundle exists either way)."""
-    src_transcript = resolve_transcript(chat_id, cwd_hint)
+    transcript is not on disk yet. The chat's `engine` resolves the source transcript (T4); the copy
+    itself is engine-neutral (the per-engine bundle LAYOUT — Codex's sidecar-free rollout — is T6).
+    Returns the bundle dir (even when a concurrent mirror is skipped — the bundle exists either way)."""
+    src_transcript = resolve_transcript(chat_id, cwd_hint, engine)
     if src_transcript is None:
         return None
     bundle = claude.bundle_dir(tx_id, chat_id)

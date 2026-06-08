@@ -91,7 +91,14 @@ if [[ -n "$SETTINGS" ]]; then SANDBOX=1; else SETTINGS="$DEFAULT_SETTINGS"; fi
 # The shims and the events they own. The state hooks span the full Claude set so a missed edge
 # self-heals: a missed UserPromptSubmit recovers on the first tool call (work.sh), a missed Stop on
 # the idle_prompt Notification (notify.sh). C6: Stop / StopFailure / PermissionRequest → post.sh.
-PRE_SHIM="$TX_HOME/hooks/pre.sh"        # UserPromptSubmit                                  → prompt-submit → WORKING
+#
+# T4 (capture-after-launch): the session id is CAPTURED from the hook payload, never pre-minted, so
+# the two shims that establish a chat — SessionStart (at startup) and UserPromptSubmit (first turn) —
+# KEEP stdin (`keep-stdin`) so `tx hook` can read `session_id` + `transcript_path` off the payload.
+# SessionStart closes the id-unknown window before the first turn. The rest still drain stdin (their
+# state maps from the event name alone); notify keeps it to read notification_type.
+START_SHIM="$TX_HOME/hooks/start.sh"    # SessionStart                                      → session-start → chat capture
+PRE_SHIM="$TX_HOME/hooks/pre.sh"        # UserPromptSubmit                                  → prompt-submit → WORKING + capture
 WORK_SHIM="$TX_HOME/hooks/work.sh"      # PreToolUse/PostToolUse/…/SubagentStart/PreCompact → working      → WORKING
 POST_SHIM="$TX_HOME/hooks/post.sh"      # Stop / StopFailure / PermissionRequest            → stop         → WAITING (C6)
 NOTIFY_SHIM="$TX_HOME/hooks/notify.sh"  # Notification (reads notification_type)            → notification → WAITING if yield
@@ -136,7 +143,8 @@ remove_shim() {  # <path>
 
 run_settings_py() {  # <install|uninstall|status>
   TX_OP="$1" TX_SETTINGS="$SETTINGS" TX_DRYRUN="$DRY_RUN" TX_HOME="$TX_HOME" \
-  TX_PRE="$PRE_SHIM" TX_WORK="$WORK_SHIM" TX_POST="$POST_SHIM" TX_NOTIFY="$NOTIFY_SHIM" TX_END="$END_SHIM" \
+  TX_START="$START_SHIM" TX_PRE="$PRE_SHIM" TX_WORK="$WORK_SHIM" TX_POST="$POST_SHIM" \
+  TX_NOTIFY="$NOTIFY_SHIM" TX_END="$END_SHIM" \
   TX_TMUX_SESSION_CLOSED="$TMUX_SESSION_CLOSED" TX_STAMP="$STAMP" \
   "$PY" - <<'PY'
 import json, os, sys, tempfile
@@ -154,7 +162,9 @@ real = os.path.realpath(path)
 
 # Event → the shim command tx owns for it. The state hooks cover the full Claude set (collapsed to
 # WORKING / WAITING / IDLE in hooks.py); Stop / StopFailure / PermissionRequest share post.sh (C6).
+# SessionStart drives no state — it captures the chat id/path from the payload at startup (T4).
 EVENTS = {
+    "SessionStart":       os.environ["TX_START"],
     "UserPromptSubmit":   os.environ["TX_PRE"],
     "PreToolUse":         os.environ["TX_WORK"],
     "PostToolUse":        os.environ["TX_WORK"],
@@ -388,7 +398,8 @@ stop_speaker() {
 cmd_install() {
   printf '%s== claude.sh install ==%s  %s\n' "$B" "$X" "$( ((DRY_RUN)) && echo '(dry-run)'; ((SANDBOX)) && echo "(sandbox: $SETTINGS)")"
   header "Hook shims under $TX_HOME/hooks (C9-baked)"
-  write_shim "$PRE_SHIM"    prompt-submit
+  write_shim "$START_SHIM"  session-start keep-stdin
+  write_shim "$PRE_SHIM"    prompt-submit keep-stdin
   write_shim "$WORK_SHIM"   working
   write_shim "$POST_SHIM"   stop
   write_shim "$NOTIFY_SHIM" notification keep-stdin
@@ -410,6 +421,7 @@ cmd_uninstall() {
   run_settings_py uninstall
 
   header "Remove generated hook shims"
+  remove_shim "$START_SHIM"
   remove_shim "$PRE_SHIM"
   remove_shim "$WORK_SHIM"
   remove_shim "$POST_SHIM"
@@ -426,7 +438,7 @@ cmd_status() {
   header "settings.json marker vs reality  ($SETTINGS)"
   run_settings_py status
   header "Generated shims ($TX_HOME/hooks)"
-  for shim in "$PRE_SHIM" "$WORK_SHIM" "$POST_SHIM" "$NOTIFY_SHIM" "$END_SHIM"; do
+  for shim in "$START_SHIM" "$PRE_SHIM" "$WORK_SHIM" "$POST_SHIM" "$NOTIFY_SHIM" "$END_SHIM"; do
     if [[ -f "$shim" ]]; then ok "$shim" "present"; else warn "$shim" "missing"; fi
   done
 }

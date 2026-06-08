@@ -17,7 +17,6 @@ from __future__ import annotations
 import time
 import uuid
 
-from .engines import claude
 from .events import EventLog
 from .reconcile import Reconciler
 from .session import ChatRef, Engine, Kind, Origin, Role, Session, State
@@ -91,28 +90,28 @@ class SessionService:
 
         now = time.time()
         # The agent engine of an llm session (v3, design §1) — read off the record from here on, never
-        # re-derived from a reconstructed `cmd`. Claude is the only engine at T1; a non-llm session
+        # re-derived from a reconstructed `cmd`. Claude is the only engine today; a non-llm session
         # has none. Wired onto both the record and its `original` ChatRef.
         engine = Engine.CLAUDE if spec.role == Role.LLM else None
         launch_env = {"TX_SESSION_ID": session_id, **spec.env}
-        command = spec.cmd
         chats: list[ChatRef] = []
-        if self._mints_original_chat(spec):
-            chat_id = str(uuid.uuid4())
-            launch_env["TX_CHAT_ID"] = chat_id
-            command = claude.inject_session_id(command, chat_id)
+        # Capture-after-launch (design §2/§7): every plain llm spawn gets a PENDING `original` ChatRef
+        # — id + transcript_path are unknown until the first hook (`SessionStart` / `UserPromptSubmit`)
+        # reads them off the payload (hooks.py). No pre-mint, no `--session-id` injection. A chat-op
+        # that records its own ref (fork / handover / resume — `records_own_chat`) skips this.
+        if spec.role == Role.LLM and not spec.records_own_chat:
             chats.append(ChatRef(
-                id=chat_id,
+                id=None,
                 role="original",
                 cwd=spec.cwd,
-                transcript_path=str(claude.transcript_path(chat_id, spec.cwd)),
+                transcript_path="",
                 origin=Origin(how="spawn", session_id=session_id, chat_id=None),
                 started_at=now,
                 engine=engine,
             ))
 
         parent = self.tmux.current_session_name()
-        pid = self.tmux.new_session(name=tmux_name, cwd=spec.cwd, command=command, env=launch_env)
+        pid = self.tmux.new_session(name=tmux_name, cwd=spec.cwd, command=spec.cmd, env=launch_env)
         self.tmux.set_tx_id(tmux_name, session_id)
         # C2 (revised, measured on tmux 3.6a): NO per-session `session-closed` hook is registered
         # here. A session's OWN `session-closed` hook does not fire at its own close on 3.6a —
@@ -129,7 +128,7 @@ class SessionService:
             role=spec.role,
             state=State.initial_for(spec.role),
             cwd=spec.cwd,
-            cmd=command,
+            cmd=spec.cmd,
             engine=engine,
             tags=list(spec.tags),
             env=dict(spec.env),
@@ -142,15 +141,6 @@ class SessionService:
         self.store.save(session)
         self.log.append("spawn", f"{spec.name} [{spec.role.value}] {spec.cwd}")
         return session
-
-    def _mints_original_chat(self, spec: SpawnSpec) -> bool:
-        """Whether this spawn must mint a fresh `original` chat id. Every llm session owns a chat id
-        (mandatory — there is no opt-in flag): a plain `claude` spawn gets one minted here and its
-        command `--session-id`-injected so claude adopts exactly it, which makes the recorded id
-        equal claude's transcript filename. A command that already declares its own chat — fork's
-        `--resume … --fork-session`, handover/rollover/resume's `--session-id` / `--resume` — is
-        skipped (those ops record their own `ChatRef`). A non-llm session never mints."""
-        return spec.role == Role.LLM and not claude.command_declares_chat(spec.cmd)
 
     def _require_name_free(self, name: str) -> None:
         """Refuse a spawn/rename onto a display name a LIVE record already holds — the human-name

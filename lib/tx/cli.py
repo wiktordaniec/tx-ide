@@ -351,13 +351,14 @@ class ResumeCommand(Command):
             remedy = "pass --cwd <dir>" if args.cwd is None else f"'{cwd}' is not a directory"
             print(f"tx resume: cwd '{cwd}' does not exist — {remedy} (C8)", file=sys.stderr)
             return 1
-        if history.resolve_transcript(chat.id, cwd) is None:
+        if history.resolve_transcript(chat.id, cwd, record.engine) is None:
             print(f"tx resume: warning — transcript for chat {chat.id[:8]} not found under {cwd}; "
                   "claude --resume may start a fresh conversation", file=sys.stderr)
 
         resume_cmd = shlex.join(engines.get(record.engine).resume_command(chat.id))
         spec = SpawnSpec.for_process(
             name=name, tags=list(record.tags), cwd=cwd, cmd=resume_cmd, env=dict(record.env),
+            records_own_chat=True,
         )
         new = self.service.spawn(spec)
         self._attach_resumed_chat(new, chat, cwd)
@@ -374,10 +375,11 @@ class ResumeCommand(Command):
             id=source.id,
             role="original",
             cwd=cwd,
-            transcript_path=str(claude.transcript_path(source.id, cwd)),
+            transcript_path=str(engines.get(new.engine).resolve_transcript(source.id, cwd)),
             origin=Origin(how="resume", session_id=new.id, chat_id=source.id),
             bundle_path=str(claude.bundle_dir(new.id, source.id)),
             started_at=now,
+            engine=new.engine,
         ))
         self.service.store.save(new)
 
@@ -1042,8 +1044,7 @@ class SelfCheckCommand(Command):
             cmd="claude --dangerously-skip-permissions", tags=["s1a", "selfcheck"],
             created_at=now, last_activity=now,
             chats=[ChatRef(
-                id=None, role="original", cwd=cwd,
-                transcript_path=str(claude.transcript_path("00000000-pending", cwd)),
+                id=None, role="original", cwd=cwd, transcript_path="",
                 origin=Origin(how="spawn", session_id=session_id, chat_id=None), started_at=now,
             )],
         )
