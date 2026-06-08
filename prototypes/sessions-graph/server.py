@@ -26,6 +26,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -117,6 +118,144 @@ def build_messages_feed() -> dict:
             {**message.to_dict(), "rel": reltime(message.ts, now) if message.ts else ""}
             for message in collect_messages()
         ],
+    }
+
+
+# ----- provider usage (rate limits) --------------------------------------------------------------
+# Both Anthropic (Claude Code) and Codex expose the SAME two rolling windows — a 5-hour and a 7-day
+# weekly limit, each a used-percentage (0–100) and a `resets_at` (epoch seconds); neither exposes a
+# calendar-daily window. We surface both providers in one shared shape: {five_hour, seven_day} with
+# `used_percentage` + `resets_at`, plus an `as_of` stamp. The two providers reach us very differently:
+#
+#   • Codex persists its snapshot itself — every `token_count` event in the JSONL rollout it writes
+#     under `$CODEX_HOME/sessions` carries the current account `rate_limits`. We read the newest one
+#     live, on each request. No file we own, no auth.
+#   • Anthropic's percentages exist ONLY on Claude Code's ephemeral statusline stdin — never written
+#     to disk anywhere — so the statusline POSTs them to `/api/anthropic-usage` on each render (the
+#     same doorbell pattern as the focus hook) and we hold the latest in memory.
+
+CODEX_HOME = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+
+# The newest Anthropic snapshot a Claude Code statusline pushed (in memory only — see the module
+# note above). Guarded by a lock because a POST thread writes it while a GET thread reads it.
+_anthropic_lock = threading.Lock()
+_anthropic_usage: dict | None = None
+
+
+def _window(used_percentage, resets_at, window_minutes) -> dict | None:
+    """One normalized window, or None when the percentage is absent (a provider/window that has
+    reported nothing). `resets_at` is epoch seconds and `window_minutes` the window length (300 ⇒ 5h,
+    10080 ⇒ weekly) — the page turns the former into a reset countdown and the latter into the window
+    label, so a plan with different-sized windows labels itself correctly instead of a hardcoded
+    name."""
+    if used_percentage is None:
+        return None
+    return {"used_percentage": used_percentage, "resets_at": resets_at, "window_minutes": window_minutes}
+
+
+def set_anthropic_usage(snapshot: dict) -> None:
+    """Stash the Anthropic snapshot a Claude Code statusline just POSTed. This is the only place
+    these window percentages exist — they ride Claude Code's ephemeral statusline stdin and are never
+    written to disk — so each render pushes them here, mirroring how the focus hook pokes
+    `/api/focus-changed`. A request boundary: the body is shaped here, not trusted downstream. A
+    just-restarted server holds None until the next statusline render (seconds away while Claude Code
+    is in use)."""
+    global _anthropic_usage
+    five_hour = snapshot.get("five_hour") or {}
+    seven_day = snapshot.get("seven_day") or {}
+    # Anthropic's two windows ARE 5h / weekly by name, so synthesize their lengths (300 / 10080 min)
+    # to match Codex's window_minutes — the page then labels both providers the same way.
+    usage = {
+        "five_hour": _window(five_hour.get("used_percentage"), five_hour.get("resets_at"), 300),
+        "seven_day": _window(seven_day.get("used_percentage"), seven_day.get("resets_at"), 10080),
+        "as_of": time.time(),
+    }
+    with _anthropic_lock:
+        _anthropic_usage = usage
+
+
+def anthropic_usage() -> dict | None:
+    with _anthropic_lock:
+        return dict(_anthropic_usage) if _anthropic_usage else None
+
+
+def read_codex_usage() -> dict | None:
+    """The current Codex account rate-limit snapshot, read fresh on each call: the newest
+    `token_count` event carrying `rate_limits` across the rollout transcripts Codex writes under
+    `$CODEX_HOME/sessions`. Codex's `primary`/`secondary` windows are a 5-hour and a weekly limit
+    (`window_minutes` 300 / 10080) — the same two windows Anthropic exposes — so we map them onto
+    `five_hour`/`seven_day` for one shared cross-provider shape. None when Codex has reported nothing
+    (not logged in, or no API call yet)."""
+    sessions_root = CODEX_HOME / "sessions"
+    if not sessions_root.is_dir():
+        return None
+    # Rate limits are account-global, so the freshest snapshot is the newest event — which lives in
+    # the most-recently-written rollout. Walk newest-first and stop at the first file that has one;
+    # cap the walk so a deep history never makes this scan unbounded.
+    rollouts = sorted(
+        sessions_root.glob("**/rollout-*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True
+    )
+    for path in rollouts[:5]:
+        snapshot = _latest_codex_rate_limits(path)
+        if snapshot is not None:
+            return snapshot
+    return None
+
+
+def _latest_codex_rate_limits(path: Path) -> dict | None:
+    """The last `token_count` event carrying rate limits in one rollout, normalized — or None. The
+    rollout is an external boundary (Codex's format), so each line is parsed tolerantly: a partial
+    trailing line during a live session is skipped, not fatal, and a window missing its fields drops
+    to None rather than raising."""
+    latest = None
+    with path.open() as handle:
+        for line in handle:
+            if '"token_count"' not in line or '"rate_limits"' not in line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            payload = event.get("payload") or {}
+            rate_limits = payload.get("rate_limits")
+            if payload.get("type") != "token_count" or not rate_limits:
+                continue
+            # primary = the short (5h) window, secondary = the weekly one; carry each window's
+            # window_minutes so the page derives the label from the length, not a fixed name.
+            primary = rate_limits.get("primary") or {}
+            secondary = rate_limits.get("secondary") or {}
+            five_hour = _window(primary.get("used_percent"), primary.get("resets_at"), primary.get("window_minutes"))
+            seven_day = _window(secondary.get("used_percent"), secondary.get("resets_at"), secondary.get("window_minutes"))
+            if five_hour is None and seven_day is None:
+                continue
+            latest = {
+                "five_hour": five_hour,
+                "seven_day": seven_day,
+                "plan_type": rate_limits.get("plan_type"),
+                "as_of": _iso_to_epoch(event.get("timestamp")),
+            }
+    return latest
+
+
+def _iso_to_epoch(timestamp: str | None) -> float | None:
+    """The rollout event's ISO-8601 `timestamp` (e.g. `2026-06-08T09:54:23.682Z`) as epoch seconds,
+    for the page's "as of" / staleness read; None when absent or unparseable."""
+    if not timestamp:
+        return None
+    try:
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def build_usage_feed() -> dict:
+    """Both providers' current rate-limit standing, built fresh per request (the page's on-load fetch
+    and its refresh button) — Anthropic from the in-memory statusline push, Codex read live from its
+    rollouts. Either provider is null when it has reported nothing yet."""
+    return {
+        "generated_at": time.time(),
+        "anthropic": anthropic_usage(),
+        "codex": read_codex_usage(),
     }
 
 
@@ -345,9 +484,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
     changes out to every tab, so the graph stays current even while its tab is unfocused),
     `/api/sessions` (one-shot JSON feed for the initial paint, the manual refresh, and the on-focus
     resync), `/api/messages` (one-shot message feed for the Messages tab; also pushed live on the
-    `messages` SSE channel), `POST /api/focus` (jump the user's tmux to a session's pane),
+    `messages` SSE channel), `/api/usage` (one-shot both-provider rate-limit feed for the header
+    readout), `POST /api/focus` (jump the user's tmux to a session's pane),
     `POST /api/focus-changed` (the tmux hook's poke — recompute & push the focused ring),
-    `POST /api/message` (type a request about one session — `id` — or a multi-select group — `ids` —
+    `POST /api/anthropic-usage` (a Claude Code statusline pushing its ephemeral Anthropic
+    rate-limit snapshot — see set_anthropic_usage), `POST /api/message` (type a request about one session — `id` — or a multi-select group — `ids` —
     into the live tx-assistant), and `/` (the page). Else 404s."""
 
     def _respond(self, status: int, body: bytes, content_type: str) -> None:
@@ -406,6 +547,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._respond(200, json.dumps(build_feed()).encode(), "application/json")
         elif self.path.startswith("/api/messages"):
             self._respond(200, json.dumps(build_messages_feed()).encode(), "application/json")
+        elif self.path.startswith("/api/usage"):
+            self._respond(200, json.dumps(build_usage_feed()).encode(), "application/json")
         elif self.path in ("/", "/index.html"):
             self._respond(200, PAGE.read_bytes(), "text/html; charset=utf-8")
         else:
@@ -414,7 +557,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(length) or b"{}") if self.path.startswith("/api/") else {}
-        if self.path.startswith("/api/focus-changed"):
+        if self.path.startswith("/api/anthropic-usage"):
+            # A Claude Code statusline pushing its ephemeral Anthropic rate-limit snapshot — the only
+            # place these percentages exist (see set_anthropic_usage). Stash in memory; the next
+            # /api/usage serves it. Fire-and-forget on the statusline's side, like the focus poke.
+            set_anthropic_usage(body)
+            status, payload = 200, {"ok": True}
+        elif self.path.startswith("/api/focus-changed"):
             # The tmux hook's fire-and-forget poke (no body). Recompute the focused session and push
             # it — checked BEFORE `/api/focus`, which would otherwise prefix-swallow this path.
             hub.push_focus()
