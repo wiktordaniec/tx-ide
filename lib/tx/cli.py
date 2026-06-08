@@ -28,8 +28,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import chat, claude, history, hooks, palette, sync
+from . import chat, engines, history, hooks, palette, sync
 from .chat import ChatOps
+from .engines import claude
 from .events import EventLog
 from .render import LOCATION_W, ROLE_W, picker_display_rows, picker_namew, render_chats, render_history, render_ls
 from .service import ServiceError, SessionService
@@ -354,7 +355,7 @@ class ResumeCommand(Command):
             print(f"tx resume: warning — transcript for chat {chat.id[:8]} not found under {cwd}; "
                   "claude --resume may start a fresh conversation", file=sys.stderr)
 
-        resume_cmd = shlex.join(claude.build_launch_command(resume=chat.id))
+        resume_cmd = shlex.join(engines.get(record.engine).resume_command(chat.id))
         spec = SpawnSpec.for_process(
             name=name, tags=list(record.tags), cwd=cwd, cmd=resume_cmd, env=dict(record.env),
         )

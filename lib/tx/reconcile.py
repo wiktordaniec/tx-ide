@@ -22,7 +22,7 @@ import re
 import time
 from dataclasses import dataclass
 
-from . import claude
+from .engines import claude
 from .events import EventLog
 from .session import Session, State
 from .storage import config_path

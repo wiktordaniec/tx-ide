@@ -19,8 +19,9 @@ Mechanism (chat-ops.md §3 / brief S3), off the hook's latency path:
     so a skipped intermediate is harmless and the next Stop (or SessionEnd) catches up. `tx archive`
     forces a **blocking** mirror so a retire always completes.
   - **Pure Python, not `rsync`.** The brief specifies "append/offset + copy-if-absent" precisely;
-    the platform `rsync` here is openrsync (missing GNU flags); and `claude.py` already owns `munge`
-    + the transcript/bundle path rules, so this module reuses them rather than re-deriving paths.
+    the platform `rsync` here is openrsync (missing GNU flags); and the Claude engine
+    (`engines.claude`) already owns `munge` + the transcript/bundle path rules, so this module reuses
+    them rather than re-deriving paths.
 
 `bundle_path` is the durable copy (F7); a successful ingest stamps it back onto the `ChatRef`.
 """
@@ -34,7 +35,7 @@ import shutil
 from collections.abc import Iterator
 from pathlib import Path
 
-from . import claude
+from .engines import claude
 from .store import SessionStore
 
 # The per-(tx-id, chat) coalescing lock, alongside the bundle it guards. Hidden so a HISTORIAN grep
@@ -55,8 +56,8 @@ def resolve_transcript(chat_id: str, cwd_hint: str | None = None) -> Path | None
 
     Fast path: the deterministic `munge(cwd_hint)` project dir (`claude.find_transcript`). Fallback
     (the cwd has moved — a deleted/renamed worktree, or a fork/handover launched elsewhere): glob
-    `~/.claude/projects/*/<chat>.jsonl` and take the unique hit, preferring the `cwd_hint` munge
-    when several match (chat-ids are unique, so >1 hit is not expected — prefer the hint defensively).
+    the engine's projects root for `*/<chat>.jsonl` and take the unique hit, preferring the `cwd_hint`
+    munge when several match (chat-ids are unique, so >1 hit is not expected — prefer the hint defensively).
     """
     if cwd_hint:
         fast = claude.find_transcript(chat_id, cwd_hint)

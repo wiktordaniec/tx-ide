@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from . import claude
+from .engines import claude
 from .session import Kind, Role
 
 # Nvim companion command. `tmux new-session -d` strips the terminal's OSC11 background hint, so

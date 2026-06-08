@@ -181,7 +181,7 @@ class ChatRef:
     id: str | None  # claude chat uuid; None while a fork capture is still pending
     role: str  # original | fork | rollover | handover
     cwd: str  # cwd the chat launched in (→ the munged transcript dir)
-    transcript_path: str  # source path under ~/.claude/projects — may go stale
+    transcript_path: str  # source path under the engine's transcript dir — may go stale
     origin: Origin
     bundle_path: str | None = (
         None  # our durable ingested copy: $TX_IDE_HOME/history/<tx>/<chat>/

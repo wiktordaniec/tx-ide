@@ -17,10 +17,10 @@ from __future__ import annotations
 import time
 import uuid
 
-from . import claude
+from .engines import claude
 from .events import EventLog
 from .reconcile import Reconciler
-from .session import ChatRef, Kind, Origin, Role, Session, State
+from .session import ChatRef, Engine, Kind, Origin, Role, Session, State
 from .spawn import SpawnSpec
 from .store import SessionStore
 from .tmux import Tmux, format_envelope
@@ -90,6 +90,10 @@ class SessionService:
             raise SessionExists(f"session '{tmux_name}' already exists")
 
         now = time.time()
+        # The agent engine of an llm session (v3, design §1) — read off the record from here on, never
+        # re-derived from a reconstructed `cmd`. Claude is the only engine at T1; a non-llm session
+        # has none. Wired onto both the record and its `original` ChatRef.
+        engine = Engine.CLAUDE if spec.role == Role.LLM else None
         launch_env = {"TX_SESSION_ID": session_id, **spec.env}
         command = spec.cmd
         chats: list[ChatRef] = []
@@ -104,6 +108,7 @@ class SessionService:
                 transcript_path=str(claude.transcript_path(chat_id, spec.cwd)),
                 origin=Origin(how="spawn", session_id=session_id, chat_id=None),
                 started_at=now,
+                engine=engine,
             ))
 
         parent = self.tmux.current_session_name()
@@ -125,6 +130,7 @@ class SessionService:
             state=State.initial_for(spec.role),
             cwd=spec.cwd,
             cmd=command,
+            engine=engine,
             tags=list(spec.tags),
             env=dict(spec.env),
             parent=parent,
