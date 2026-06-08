@@ -7,9 +7,10 @@ consumed by *every* later stage, so the shapes here are contracts. References:
   - attachment-topology.md §2 (`Location` / `attached_to` — FROZEN, no `remote` field)
   - chat-ops.md §2 (`ChatRef` + `origin` provenance DAG; F7 `bundle_path` + `ended_at`)
 
-Contracts honored here: D3 (per-role state incl. the `ALIVE` non-llm row, F2), D9 (no `agent`
-field on the record), C1 (liveness is tmux `has-session` — `pid` is provenance only, never a
-liveness check), C3 (`transition_to` refuses to leave a terminal state), OPEN-0b (`from_dict`
+Contracts honored here: D3 (per-role state incl. the `ALIVE` non-llm row, F2), D9-revised (the
+explicit `engine` field supersedes the once-rejected `agent` field — schema v3, design §0/§1),
+C1 (liveness is tmux `has-session` — `pid` is provenance only, never a liveness check),
+C3 (`transition_to` refuses to leave a terminal state), OPEN-0b (`from_dict`
 validates the schema version at the persistence boundary instead of raising a raw `TypeError`).
 """
 
@@ -19,16 +20,17 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 # Bumped only when the on-disk record shape changes. There is NO back-migration (§9): the loader
-# refuses any other version at the boundary (OPEN-0b) rather than silently mis-reading a v1 record.
-SCHEMA_VERSION = 2
+# refuses any other version at the boundary (OPEN-0b) rather than silently mis-reading an older
+# record. v3 added the explicit `engine` field (design §1); `tx migrate` upgrades v2 records in place.
+SCHEMA_VERSION = 3
 
 
 class UnsupportedRecordError(Exception):
-    """A persisted record is not a v2 tx-ide record (OPEN-0b boundary guard).
+    """A persisted record is not a current (v3) tx-ide record (OPEN-0b boundary guard).
 
     Raised by `Session.from_dict` on a `schema_version` mismatch. `SessionStore.all()` skips such
-    records (one stale v1 file must not crash `ls`); `SessionStore.load()` lets it propagate (the
-    caller asked for that specific record).
+    records (one stale older-version file must not crash `ls`); `SessionStore.load()` lets it
+    propagate (the caller asked for that specific record).
     """
 
 
@@ -92,6 +94,21 @@ class State(str, Enum):
                 {cls.WORKING, cls.WAITING, cls.IDLE, cls.EXITED, cls.ARCHIVED}
             )
         return frozenset({cls.ALIVE, cls.EXITED})
+
+
+class Engine(str, Enum):
+    """Which coding-agent CLI drives an llm session (design §0/§1) — a separate axis from the
+    `model` the engine runs (`opus` is a model; `claude` is the engine). Stored explicitly on the
+    record + `ChatRef` (schema v3, revisiting D9) and read back, never re-derived from a possibly-
+    reconstructed `cmd`. `None` means the session has no engine (a non-llm nvim/shell/other).
+
+    Lives here in `session.py` (a domain entity alongside `Kind`/`Role`/`State`) rather than in the
+    `engines/` package — `engines/` imports this, so housing it there would be a circular import.
+    """
+
+    CLAUDE = "claude"
+    CODEX = "codex"
+    GEMINI = "gemini"  # reserved — not implemented yet; proves the seam is N-way (design §1, §9)
 
 
 @dataclass(frozen=True)
@@ -172,6 +189,9 @@ class ChatRef:
     started_at: float | None = None
     ended_at: float | None = None
     summary: str = ""  # cheap best-effort title (from sessions-index); optional
+    engine: Engine | None = (
+        None  # the engine that produced this chat (v3); migrator stamps it, spawn wires it in T1
+    )
 
     def to_dict(self) -> dict:
         return {
@@ -184,6 +204,7 @@ class ChatRef:
             "started_at": self.started_at,
             "ended_at": self.ended_at,
             "summary": self.summary,
+            "engine": self.engine.value if self.engine is not None else None,
         }
 
     @classmethod
@@ -198,6 +219,7 @@ class ChatRef:
             started_at=data["started_at"],
             ended_at=data["ended_at"],
             summary=data["summary"],
+            engine=Engine(data["engine"]) if data["engine"] is not None else None,
         )
 
 
@@ -205,8 +227,9 @@ class ChatRef:
 class Session:
     """A tx-managed tmux session — the central entity (§1). The record file is `<id>.json`.
 
-    `pid` is spawn provenance only: liveness is tmux `has-session` (C1), never a pid check. There
-    is no `agent` field (D9 — the per-agent seam is the *install*, not the record). `state` is
+    `pid` is spawn provenance only: liveness is tmux `has-session` (C1), never a pid check. The
+    `engine` field names the agent CLI of an llm session (schema v3, revisiting D9 — `None` for a
+    non-llm session, and `None` on an llm record until T1 wires spawn to populate it). `state` is
     role-dependent (D3); `attached_to` is the frozen `Location` list (S6 fills it, S0 freezes it).
     """
 
@@ -217,6 +240,7 @@ class Session:
     state: State
     cwd: str = ""
     cmd: str = ""
+    engine: Engine | None = None  # the session's agent engine, if it has one (v3); None for non-llm
     tags: list[str] = field(default_factory=list)  # free-form scope chips
     env: dict[str, str] = field(default_factory=dict)
     parent: str | None = None
@@ -282,8 +306,9 @@ class Session:
     # ----- persistence ----------------------------------------------------------------------
 
     def to_dict(self) -> dict:
-        """Serialize to the v2 on-disk shape. Enums → their string values; nested dataclasses →
-        dicts. No `agent` key (D9)."""
+        """Serialize to the v3 on-disk shape. Enums → their string values (an unset `engine` → the
+        JSON `null`, not a string); nested dataclasses → dicts. Carries the `engine` field
+        (D9-revised)."""
         return {
             "schema_version": self.schema_version,
             "id": self.id,
@@ -293,6 +318,7 @@ class Session:
             "state": self.state.value,
             "cwd": self.cwd,
             "cmd": self.cmd,
+            "engine": self.engine.value if self.engine is not None else None,
             "tags": list(self.tags),
             "env": dict(self.env),
             "parent": self.parent,
@@ -307,14 +333,15 @@ class Session:
     @classmethod
     def from_dict(cls, data: dict) -> Session:
         """Deserialize a persisted record. This is a system boundary (persisted data), so it
-        validates the schema version here (OPEN-0b) — a non-v2 record raises a clear
-        `UnsupportedRecordError`, never a raw `TypeError`/`KeyError`. Within a v2 record the shape
+        validates the schema version here (OPEN-0b) — a non-v3 record raises a clear
+        `UnsupportedRecordError`, never a raw `TypeError`/`KeyError`. Within a v3 record the shape
         is ours, so fields are read directly (no defensive defaults — DEVELOPER standard)."""
         version = data.get("schema_version")
         if version != SCHEMA_VERSION:
             raise UnsupportedRecordError(
                 f"record schema_version={version!r} is unsupported (expected {SCHEMA_VERSION}); "
-                "tx-ide does not back-migrate v1 records (§9)"
+                "tx-ide does not back-migrate older records on load (§9) — run `tx migrate` to "
+                "upgrade v2 records to v3"
             )
         return cls(
             id=data["id"],
@@ -324,6 +351,7 @@ class Session:
             state=State(data["state"]),
             cwd=data["cwd"],
             cmd=data["cmd"],
+            engine=Engine(data["engine"]) if data["engine"] is not None else None,
             tags=list(data["tags"]),
             env=dict(data["env"]),
             parent=data["parent"],
