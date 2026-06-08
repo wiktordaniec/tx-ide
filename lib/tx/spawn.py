@@ -55,18 +55,24 @@ class SpawnSpec:
     cmd: str
     tags: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    # A chat-op that records its OWN `ChatRef` (fork / handover / resume) sets this so `_spawn` does
+    # not also write a pending `original` ref (T4 capture-after-launch). A plain spawn leaves it False
+    # and `_spawn` writes the pending original ref the first hook will fill. Not derivable from `cmd`:
+    # post-pre-mint a handover worker's command is an ordinary `claude …`, indistinguishable from an
+    # original, so the caller signals ownership explicitly.
+    records_own_chat: bool = False
 
     @classmethod
     def for_process(
         cls, *, name: str, tags: list[str], cwd: str, cmd: str,
-        env: dict[str, str] | None = None,
+        env: dict[str, str] | None = None, records_own_chat: bool = False,
     ) -> SpawnSpec:
-        """A normal worker/agent/shell session (`tx spawn`). An llm command always gets a chat id
-        minted + `--session-id`-injected by `SessionService._spawn` (mandatory, derived from the
-        role) — there is no chat flag to pass."""
+        """A normal worker/agent/shell session (`tx spawn`). A plain llm spawn gets a pending
+        `original` `ChatRef` from `SessionService._spawn`; its chat id is captured from the first hook
+        payload, not minted (T4). A chat-op that records its own ref passes `records_own_chat=True`."""
         return cls(
             name=name, kind=Kind.PROCESS, role=infer_role(cmd), cwd=cwd, cmd=cmd,
-            tags=list(tags), env=dict(env or {}),
+            tags=list(tags), env=dict(env or {}), records_own_chat=records_own_chat,
         )
 
     @classmethod

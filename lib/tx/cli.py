@@ -1042,8 +1042,7 @@ class SelfCheckCommand(Command):
             cmd="claude --dangerously-skip-permissions", tags=["s1a", "selfcheck"],
             created_at=now, last_activity=now,
             chats=[ChatRef(
-                id=None, role="original", cwd=cwd,
-                transcript_path=str(claude.transcript_path("00000000-pending", cwd)),
+                id=None, role="original", cwd=cwd, transcript_path="",
                 origin=Origin(how="spawn", session_id=session_id, chat_id=None), started_at=now,
             )],
         )
