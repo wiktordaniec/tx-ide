@@ -249,14 +249,33 @@ def _iso_to_epoch(timestamp: str | None) -> float | None:
 
 
 def build_usage_feed() -> dict:
-    """Both providers' current rate-limit standing, built fresh per request (the page's on-load fetch
-    and its refresh button) — Anthropic from the in-memory statusline push, Codex read live from its
-    rollouts. Either provider is null when it has reported nothing yet."""
+    """Both providers' current rate-limit standing — Anthropic from the in-memory statusline push,
+    Codex read live from its rollouts. Built fresh per request (the page's on-connect SSE snapshot,
+    the on-load fetch, the refresh button) and on each poll tick that `usage_signature` says changed.
+    Either provider is null when it has reported nothing yet."""
     return {
         "generated_at": time.time(),
         "anthropic": anthropic_usage(),
         "codex": read_codex_usage(),
     }
+
+
+def usage_signature() -> str:
+    """A cheap stat-only fingerprint of both providers' sources: the Anthropic snapshot's `as_of` and
+    the newest Codex rollout's mtime+size. It changes exactly when the statusline POSTs or Codex
+    appends a turn, so the poll loop rebuilds + pushes the usage feed only on a real change — the same
+    idle-pushes-nothing discipline the messages channel uses (`source_signature`), and far cheaper
+    than reading a rollout every tick. The client ticks the reset countdowns itself from the absolute
+    `resets_at`, so no per-second push is needed just for the clock."""
+    snapshot = anthropic_usage()
+    parts = [str(snapshot["as_of"]) if snapshot else "-"]
+    sessions_root = CODEX_HOME / "sessions"
+    if sessions_root.is_dir():
+        newest = max(sessions_root.glob("**/rollout-*.jsonl"), key=lambda path: path.stat().st_mtime, default=None)
+        if newest is not None:
+            stat = newest.stat()
+            parts.append(f"{newest.name}:{stat.st_mtime_ns}:{stat.st_size}")
+    return "|".join(parts)
 
 
 class FeedHub:
@@ -280,7 +299,13 @@ class FeedHub:
     Messages ride a THIRD, named channel (`event: messages`) on the same poll loop. Rebuilding the
     message feed scans transcripts (~170 ms), too heavy for every tick, so the loop first hashes a
     cheap stat-only `source_signature` and only rebuilds + pushes when a transcript actually grew —
-    the same idle-pushes-nothing discipline as the record feed."""
+    the same idle-pushes-nothing discipline as the record feed.
+
+    Provider usage rides a FOURTH, named channel (`event: usage`) on the same poll loop, gated the
+    same way on the stat-only `usage_signature` (the statusline's last POST + the newest Codex
+    rollout). So the usage strip is current via the SAME stream as everything else — no bespoke
+    timer; the client's per-second tick only advances the reset countdown from the absolute
+    `resets_at`."""
 
     def __init__(self, interval: float = POLL_INTERVAL_SECONDS) -> None:
         self._interval = interval
@@ -289,6 +314,7 @@ class FeedHub:
         self._last_hash: str | None = None
         self._last_focused_id: str | None = None
         self._last_messages_sig: str | None = None
+        self._last_usage_sig: str | None = None
 
     def start(self) -> None:
         threading.Thread(target=self._poll_loop, name="feed-poll", daemon=True).start()
@@ -318,6 +344,7 @@ class FeedHub:
                 for client in clients:
                     client.put(("feed", payload))
             self._push_messages_if_changed()
+            self._push_usage_if_changed()
             time.sleep(self._interval)
 
     def _push_messages_if_changed(self) -> None:
@@ -332,6 +359,21 @@ class FeedHub:
             clients = list(self._clients)
         for client in clients:
             client.put(("messages", payload))
+
+    def _push_usage_if_changed(self) -> None:
+        """Rebuild + fan out the usage feed on the `usage` channel only when a provider's source
+        actually changed — gated on the cheap stat-only `usage_signature`, the same idle-pushes-
+        nothing discipline as messages. This is how the usage strip stays current with no bespoke
+        timer: it rides the same poll loop + SSE stream as the records feed."""
+        signature = usage_signature()
+        if signature == self._last_usage_sig:
+            return
+        self._last_usage_sig = signature
+        payload = json.dumps(build_usage_feed())
+        with self._condition:
+            clients = list(self._clients)
+        for client in clients:
+            client.put(("usage", payload))
 
     def push_focus(self) -> None:
         """Recompute the terminal's focused session and fan it out as a named `focus` frame — but
@@ -495,17 +537,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        # A local dev dashboard whose page + feeds are edited live — never let the browser serve a
+        # stale HTML/JSON copy (a plain reload would otherwise show yesterday's markup from cache).
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
     def _serve_stream(self) -> None:
-        """Hold the connection open and stream Server-Sent Events on three channels: the default
+        """Hold the connection open and stream Server-Sent Events on four channels: the default
         (unnamed) `feed` channel — one snapshot right away so a just-opened (or just-refocused, after
         EventSource reconnects) tab is current at once, then one each time the poll loop sees a change
-        — a named `focus` channel pushed by the tmux hook, and a named `messages` channel pushed by
-        the poll loop when a transcript changes. The focus and messages snapshots are sent on connect
-        too, so a reconnecting tab re-syncs without waiting for the next change. A comment line every
-        15s keeps the connection warm; a closed tab surfaces as a write error that ends this thread
+        — a named `focus` channel pushed by the tmux hook, a named `messages` channel pushed by the
+        poll loop when a transcript changes, and a named `usage` channel pushed by the poll loop when
+        a provider's rate-limit standing changes. All three named snapshots are sent on connect too,
+        so a reconnecting tab re-syncs without waiting for the next change. A comment line every 15s
+        keeps the connection warm; a closed tab surfaces as a write error that ends this thread
         cleanly."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -518,6 +564,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._sse_send("feed", json.dumps(build_feed()))
             self._sse_send("focus", json.dumps({"focused_id": compute_focused_id()}))
             self._sse_send("messages", json.dumps(build_messages_feed()))
+            self._sse_send("usage", json.dumps(build_usage_feed()))
             while True:
                 try:
                     event, payload = client.get(timeout=15)
