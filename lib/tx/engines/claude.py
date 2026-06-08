@@ -217,13 +217,14 @@ class ClaudeEngine(EngineAdapter):
 
     def bundle(self, chat: ChatRef) -> Path:
         """Mirror a chat into its durable history bundle (transcript + the sibling sidecar dir) and
-        return the bundle dir. Delegates to history.py's tested incremental copy. **Transitional**:
-        the core drives ingest through `history` directly at T1; T4 routes per-engine ingest here.
-        Imported lazily because `history` imports this module."""
+        return the bundle dir. Delegates to history.py's tested incremental copy. The core drives
+        ingest through `history` directly (the engine-neutral copy); the per-engine bundle LAYOUT
+        (Codex's sidecar-free rollout) lands with `CodexEngine` (T6). Imported lazily because
+        `history` imports this module."""
         from .. import history
 
         tx_id = Path(chat.bundle_path).parent.name
-        history.ingest_chat(tx_id, chat.id, chat.cwd, wait=True)
+        history.ingest_chat(tx_id, chat.id, chat.cwd, Engine.CLAUDE, wait=True)
         return bundle_dir(tx_id, chat.id)
 
     # ----- hooks / state -------------------------------------------------------------------

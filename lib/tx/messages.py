@@ -253,7 +253,7 @@ def _iter_sources(
         for chat in session.chats:
             if chat.id is None:
                 continue
-            live = history.resolve_transcript(chat.id, chat.cwd)
+            live = history.resolve_transcript(chat.id, chat.cwd, chat.engine)
             if live is not None:
                 yield (live, session.id, session.name, session.cmd, chat.id)
 
