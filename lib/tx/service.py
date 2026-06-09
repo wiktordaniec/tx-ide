@@ -89,10 +89,12 @@ class SessionService:
             raise SessionExists(f"session '{tmux_name}' already exists")
 
         now = time.time()
-        # The agent engine of an llm session (v3, design §1) — read off the record from here on, never
-        # re-derived from a reconstructed `cmd`. Claude is the only engine today; a non-llm session
-        # has none. Wired onto both the record and its `original` ChatRef.
-        engine = Engine.CLAUDE if spec.role == Role.LLM else None
+        # The agent engine of an llm session (v3, design §1) — set from the spawn spec's `engine`
+        # (which carries `tx spawn --engine`, T8) and read off the record from here on, never
+        # re-derived from a reconstructed `cmd`. `spec.engine` unset ⇒ the engine default, Claude;
+        # a non-llm session (nvim/shell/other) has none. Wired onto both the record and its
+        # `original` ChatRef.
+        engine = (spec.engine or Engine.CLAUDE) if spec.role == Role.LLM else None
         launch_env = {"TX_SESSION_ID": session_id, **spec.env}
         chats: list[ChatRef] = []
         # Capture-after-launch (design §2/§7): every plain llm spawn gets a PENDING `original` ChatRef

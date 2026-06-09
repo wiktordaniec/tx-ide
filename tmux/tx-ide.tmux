@@ -118,15 +118,17 @@ set-hook -g client-detached 'run-shell -b "$FOCUS_POKE"'
 EOF
 fi
 
-# --- Claude scroll intercept ---
-# Inside a Claude Code pane, C-u/C-d scroll the TUI buffer (PageUp/PageDown).
-# Outside Claude, they pass through (default copy-mode-vi behavior). Match
-# either the literal "claude" command or a version-string-shaped command
-# (Claude Code shows its version while loading: "2.1.138").
+# --- Agent scroll intercept ---
+# Inside an agent (Claude Code / Codex) pane, C-u/C-d scroll the TUI buffer (PageUp/PageDown).
+# Outside one, they pass through (default copy-mode-vi behavior). Match the literal "claude" or
+# "codex" command, or a version-string-shaped command (an agent TUI shows its version while
+# loading: "2.1.138"). Kept in LOCKSTEP with the Python agent-pane predicates (spawn.infer_role /
+# reconcile._is_agent_command) — same set of engine binaries, enforced by review across the boundary.
+# NOTE: the @tx-ide-claude-scroll option NAME is left as-is (an engine-neutral rename is T5's surface).
 if [ "$claude_scroll" = on ]; then
   cat >>"$CONF" <<'EOF'
-bind -n C-u if -F '#{||:#{==:#{pane_current_command},claude},#{m:[0-9]*.[0-9]*.[0-9]*,#{pane_current_command}}}' 'send-keys PageUp' 'send-keys C-u'
-bind -n C-d if -F '#{||:#{==:#{pane_current_command},claude},#{m:[0-9]*.[0-9]*.[0-9]*,#{pane_current_command}}}' 'send-keys PageDown' 'send-keys C-d'
+bind -n C-u if -F '#{||:#{==:#{pane_current_command},claude},#{||:#{==:#{pane_current_command},codex},#{m:[0-9]*.[0-9]*.[0-9]*,#{pane_current_command}}}}' 'send-keys PageUp' 'send-keys C-u'
+bind -n C-d if -F '#{||:#{==:#{pane_current_command},claude},#{||:#{==:#{pane_current_command},codex},#{m:[0-9]*.[0-9]*.[0-9]*,#{pane_current_command}}}}' 'send-keys PageDown' 'send-keys C-d'
 EOF
 fi
 
