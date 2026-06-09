@@ -18,6 +18,7 @@ import time
 import uuid
 
 from .events import EventLog
+from .messages import build_envelope
 from .reconcile import Reconciler
 from .session import ChatRef, Engine, Kind, Origin, Role, Session, State
 from .spawn import SpawnSpec
@@ -242,9 +243,9 @@ class SessionService:
     # ----- messaging -----------------------------------------------------------------------
 
     def send_message(self, target: str, body: str) -> None:
-        """Peer-message another session: wrap the body in the `<from-claude session="…">` envelope,
-        type it into the target's active pane, pause, then send Enter (Claude Code's input box
-        drops an Enter that arrives too fast — COMMON.md). Both ends resolve through the store: the
+        """Peer-message another session: wrap the body in the neutral `<from-agent session="…">`
+        envelope, type it into the target's active pane, pause, then send Enter (the agent's input
+        box drops an Enter that arrives too fast — COMMON.md). Both ends resolve through the store: the
         user addresses a PROCESS by its human name but tmux targets it by id, and the envelope must
         carry the sender's human name, not the raw `#S` (which is the sender's id for a worker)."""
         record = self._resolve(target)
@@ -255,7 +256,7 @@ class SessionService:
             raise NotInsideTmux("send-message must run inside tmux (needs the sender session name)")
         sender = self._resolve(current)
         sender_name = sender.name if sender is not None else current
-        envelope = f'<from-claude session="{sender_name}">{body}</from-claude>'
+        envelope = build_envelope(sender_name, body)
         self.tmux.send_keys(record.tmux_name, envelope)
         time.sleep(0.3)
         self.tmux.send_keys(record.tmux_name, "Enter")
