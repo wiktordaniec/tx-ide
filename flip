@@ -17,7 +17,7 @@
 # settings.json is a symlink into the claude-server git repo; every edit targets its REALPATH and
 # is atomic (temp + os.replace), so the dotfiles repo sees one clean, auditable diff. The hook
 # repoint + real-home shim bake + global tmux hook + mx-speaker stop are REUSED from
-# setup/agents/claude.sh (the same surgery dogfooded against the dev home since S2). The only thing
+# setup/engines/claude.sh (the same surgery dogfooded against the dev home since S2). The only thing
 # claude.sh leaves out is the C10 statusLine move, which this script does (atomically, here).
 #
 # ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ STAGING="$TX_HOME/sessions.staging"
 # pre-set custom one). bin/tx + claude.sh both read $TX_IDE_HOME.
 export TX_IDE_HOME="$TX_HOME"
 TX="$REPO/bin/tx"
-CLAUDE_SH="$REPO/setup/agents/claude.sh"
+CLAUDE_SH="$REPO/setup/engines/claude.sh"
 
 DRY_RUN=0
 case "${1:-}" in
@@ -182,7 +182,7 @@ step "STEP 0 — Pre-flight (read-only)"
 command -v tmux >/dev/null 2>&1 || die "tmux not found on PATH"
 tmux list-sessions >/dev/null 2>&1 || die "\`tmux list-sessions\` failed — no live server to re-derive from"
 [[ -x "$TX" ]] || die "new tx shim not executable at $TX"
-[[ -x "$CLAUDE_SH" ]] || die "setup/agents/claude.sh not executable at $CLAUDE_SH"
+[[ -x "$CLAUDE_SH" ]] || die "setup/engines/claude.sh not executable at $CLAUDE_SH"
 
 REAL_SETTINGS="$REAL_SETTINGS" DEV_HOME="$DEV_HOME" python3.14 - <<'PY' || die "pre-flight marker check failed (see above) — is the dev home coexistence active?"
 import json, os, sys

@@ -8,7 +8,7 @@
 #   - symlink the CLIs onto PATH at ~/.local/bin (tx, tx-assistant, tmux-pane-session-name)
 #   - create the $TX_IDE_HOME skeleton via `tx _init-home`, + the agents symlink
 #   - the ~/.tx-ide/tmux.conf shim + the ~/.tmux.conf source-file block
-#   - register Claude hooks via setup/agents/claude.sh (baked shims under $TX_IDE_HOME/hooks)
+#   - register engine hooks via setup/engines/install.sh (Claude by default; baked shims under $TX_IDE_HOME/hooks)
 #   - C10: move the statusline under $TX_IDE_HOME and point settings.json at it (marker mode=installed)
 set -u
 
@@ -103,9 +103,10 @@ I will:
   - install the tx-ide default ~/.tmux.conf if you have none; if you
       already have one, add a source-file block (or, with a [y/N]
       confirm, replace it with the default) — backup either way
-  - register Claude hooks in ~/.claude/settings.json via setup/agents/claude.sh
-      (4 hook events → baked shims under $TX_IDE_DIR/hooks, the global
-       tmux session-closed hook, all tracked by a _tx_ide_managed marker)
+  - register engine hooks via setup/engines/install.sh (Claude by default —
+      Codex is opt-in: setup/engines/install.sh install --engine codex)
+      (Claude's hook events → baked shims under $TX_IDE_DIR/hooks/claude, the
+       global tmux session-closed hook, all tracked by a _tx_ide_managed marker)
   - move the statusline under $TX_IDE_DIR and point settings.json at it
   - configure iTerm: keyboard map + import tokyonight-night color preset,
       with a [Y/n] confirm to also apply it to your Default profile
@@ -290,13 +291,15 @@ else
   info "backup: $USER_TMUX_CONF.bak.$STAMP"
 fi
 
-# === 5: Claude hooks (settings.json) ===
-# The per-agent integration owns the settings.json hook registration behind the _tx_ide_managed
-# marker (install-flip §4): it generates the C9-baked shims under $TX_IDE_HOME/hooks, surgically
-# sets the 4 tx hook events (match-by-marker, so peon-ping / require-worktree / discord are
+# === 5: Engine hooks (settings.json) ===
+# The unified installer drives the per-engine integration setup/engines/<engine>.sh (engine-
+# abstraction design §4.6). By default it drives Claude only (Codex is opt-in via --engine codex, so
+# a bare install never touches ~/.codex): claude.sh owns the settings.json hook registration behind
+# the _tx_ide_managed marker — it generates the C9-baked shims under $TX_IDE_HOME/hooks/claude,
+# surgically sets the tx hook events (match-by-marker, so peon-ping / require-worktree / discord are
 # preserved), installs the global tmux session-closed → reconcile hook, and stops any mx-speaker.
-header "Claude hooks (setup/agents/claude.sh)"
-"$REPO/setup/agents/claude.sh" install
+header "Engine hooks (setup/engines/install.sh)"
+"$REPO/setup/engines/install.sh" install
 
 # === 6: Statusline (C10) ===
 # Move the statusline under $TX_IDE_HOME and point settings.json at the moved copy, then stamp the

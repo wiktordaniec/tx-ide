@@ -214,7 +214,8 @@ The model mirrors how Claude Code itself installs: the **cloned repo is the sour
 - symlinks the `tx` CLI onto your `PATH` (`~/.local/bin`),
 - creates the `$TX_IDE_HOME` skeleton,
 - generates the C9-baked Claude hook shims (+ statusline) under `$TX_IDE_HOME`, and
-- registers those hooks in `~/.claude/settings.json` via `setup/agents/claude.sh`, behind a
+- registers those hooks in `~/.claude/settings.json` via the unified engine installer
+  `setup/engines/install.sh` (Claude by default; Codex is opt-in via `--engine codex`), behind a
   self-describing marker so re-runs and uninstall are exact and your other hooks are left untouched.
 
 Re-run any time to update or reconcile drift. After it finishes:
@@ -230,7 +231,7 @@ tx start    # create Views + warm the tx-assistant
 ./uninstall
 ```
 
-Reverses what `./install` did (the per-agent half is `setup/agents/claude.sh uninstall`: it
+Reverses what `./install` did (the per-engine half is `setup/engines/install.sh uninstall`: it
 surgically strips only the marker-recorded hook commands from `settings.json`, restores the
 statusline reference, and removes the generated shims — leaving your records, history, log, and role
 overrides in place).
