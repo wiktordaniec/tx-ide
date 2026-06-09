@@ -22,7 +22,11 @@ import re
 import time
 from dataclasses import dataclass
 
-from .engines import claude
+# Import the bundled adapters for their registry SIDE-EFFECT only (each registers itself at import),
+# so the C5 agent-pane check below sees EVERY engine via `registered()`, not just Claude. The module
+# names are otherwise unused here — the lookup goes through `get`/`registered` — hence the noqa.
+from .engines import claude, codex  # noqa: F401
+from .engines import get, registered
 from .events import EventLog
 from .session import Session, State
 from .storage import config_path
@@ -105,7 +109,15 @@ class Reconciler:
         return True
 
     def _is_agent_command(self, command: str) -> bool:
-        return command == claude.CLAUDE_BIN or bool(_VERSION_COMMAND.match(command))
+        """Whether the live `pane_current_command` is an agent still up (C5). True for ANY registered
+        engine's binary (`claude` / `codex` / …) — the input is the BARE pane command, and
+        `matches_binary` basenames the first token, so a bare `claude` / `codex` still matches — OR a
+        dotted version string an engine's TUI shows while loading. The `_VERSION_COMMAND` branch is
+        PRESERVED (it covers the load window before the binary name settles) and stays engine-neutral."""
+        return (
+            any(get(engine).matches_binary(command) for engine in registered())
+            or bool(_VERSION_COMMAND.match(command))
+        )
 
     def _stuck_threshold(self) -> float:
         """Read the C5 threshold from config.json (a user boundary → tolerate absence + default),
