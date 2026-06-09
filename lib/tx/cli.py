@@ -1468,9 +1468,11 @@ class RolloverCommand(Command):
         parser.add_argument("--self-catch-up", action="store_true",
                             help="skip the distiller — the successor reads the bundle itself (CHD1)")
         args = parser.parse_args(argv)
-        new_chat = ChatOps(self.service).rollover(args.session, self_catch_up=args.self_catch_up)
+        # rollover() returns None by design: the successor mints its own chat id, captured ASYNC from
+        # its first hook payload (T4), so it is unknown at rollover time — don't print a half-truth id.
+        ChatOps(self.service).rollover(args.session, self_catch_up=args.self_catch_up)
         how = "self-catch-up" if args.self_catch_up else "summarizing first"
-        print(f"Rollover scheduled ({how}); same session rotates onto chat {new_chat[:8]} when ready")
+        print(f"Rollover scheduled ({how}); the same session rotates onto a fresh chat when ready")
         return 0
 
 
