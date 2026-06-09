@@ -11,6 +11,7 @@ tokens=$(echo "$input" | jq -r '
 rl_5h=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
 rl_7d=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
 rl_7d_resets_at=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
+rl_5h_resets_at=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
 model_full=$(echo "$input" | jq -r '.model.display_name // empty')
 # Shorten "Claude 3.5 Sonnet" → "3.5 Sonnet", "Claude Sonnet 4.6" → "Sonnet 4.6", etc.
 # Also strip any trailing parenthetical like " (1M context)".
@@ -47,6 +48,30 @@ format_rate_limit() {
     suffix=" ${DIM}${days_left}d${hours_left}h↺${RESET}"
   fi
   printf "%b" "${DIM}${label}:\033[1m${pct}%${RESET}${suffix}"
+}
+
+# Push the Anthropic rate-limit snapshot to a running sessions-graph viewer (fire-and-forget). These
+# percentages live ONLY here, on Claude Code's ephemeral statusline stdin — never written to disk —
+# so the provider-agnostic viewer cannot read them itself; each render pokes it with the snapshot,
+# exactly as bin/tx-graph-focus-poke pokes /api/focus-changed. The dashboard advertises its port in
+# $TX_IDE_HOME/sessions-graph.port only while running, so an absent file means "nothing to poke" and
+# we no-op without touching the network. Empty (no rate_limits this render) ⇒ nothing to send. The
+# caller backgrounds this with its stdout closed, so it never delays the prompt or holds the
+# statusline's output pipe open past the tight curl timeout.
+push_anthropic_usage() {
+  local port_file="${TX_IDE_HOME:-$HOME/.tx-ide}/sessions-graph.port"
+  [ -r "$port_file" ] || return 0
+  local port; port=$(<"$port_file")
+  [ -n "$port" ] || return 0
+  [ -n "$rl_5h$rl_7d" ] || return 0
+  local body
+  body=$(jq -nc \
+    --argjson p5 "${rl_5h:-null}" --argjson r5 "${rl_5h_resets_at:-null}" \
+    --argjson p7 "${rl_7d:-null}" --argjson r7 "${rl_7d_resets_at:-null}" \
+    '{five_hour: {used_percentage: $p5, resets_at: $r5},
+      seven_day: {used_percentage: $p7, resets_at: $r7}}')
+  curl -s -m 0.3 -X POST "http://127.0.0.1:${port}/api/anthropic-usage" \
+    -H 'content-type: application/json' -d "$body" >/dev/null 2>&1 || true
 }
 
 # Colors matching p10k theme. Model + tokens + rate limits use DIM so line 2 stays
@@ -125,3 +150,7 @@ elif [ -n "$line1" ]; then
 elif [ -n "$line2" ]; then
   printf "%b" "$line2"
 fi
+
+# Poke the viewer after the line is printed (backgrounded, stdout closed) so the snapshot reaches the
+# sessions-graph usage readout without ever delaying the prompt.
+push_anthropic_usage >/dev/null 2>&1 &

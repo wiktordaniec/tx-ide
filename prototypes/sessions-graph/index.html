@@ -152,6 +152,23 @@
      pushes to the right edge. */
   #filterchips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1 1 auto; }
 
+  /* ---- provider usage readout (rate limits) ----------------------------------------------- */
+  /* A right-aligned readout in the filter bar, present on every tab: each provider's 5h + weekly
+     used-% and the weekly reset. #filterchips flex-grows, so this sits at the bar's right edge — a
+     stable sibling like the time control, untouched by renderFilterBar(). Styled to mirror the Claude
+     Code statusline ("5h:14% 7d:93% 3d4h↺"): one muted base, only the percentages bold + brighter, no
+     proximity colors. */
+  #usage { display: flex; align-items: center; gap: 0; flex: 0 0 auto; font-size: 12px;
+           color: var(--dim); font-variant-numeric: tabular-nums; }
+  #usage:empty { display: none; }
+  #usage .prov { white-space: nowrap; }
+  #usage .prov b { color: var(--fg); font-weight: 700; }   /* the percentages pop, like the statusline */
+  #usage .prov .rs { color: var(--muted); }                /* the weekly reset, dim */
+  #usage .prov .rg { font-size: 1.3em; vertical-align: -0.06em; margin-left: 1px; }  /* the ↺ glyph — a touch larger so it reads */
+  #usage .prov .sep { color: var(--dim); margin: 0 6px 0 0; }   /* the "Anthropic:" colon — hugs the name */
+  #usage .psep { color: var(--muted); margin: 0 12px; }         /* the | between the Anthropic and Codex groups */
+  #usage .none { color: var(--muted); }
+
   /* ---- graph canvas ----------------------------------------------------------------------- */
   #canvas {
     position: relative;
@@ -540,6 +557,7 @@
     </span>
     <span class="fsep"></span>
     <span id="filterchips"></span>
+    <span id="usage" title="provider rate-limit usage — pulled on load and on ↻ refresh"></span>
   </div>
 
   <div id="canvas">
@@ -1112,6 +1130,76 @@ function setSummary(shown) {
   const home = feed.home;
   $("summary").innerHTML = `<b>${feed.sessions.length}</b> records · <b>${shown}</b> shown · ` +
     `<span title="${home}">${home.replace(/^.*\/(?=[^/]*\/[^/]*$)/, "…/")}</span>`;
+}
+
+// ---- provider usage (rate limits) ---------------------------------------------------------------
+// A plain readout in the filter bar of how much of each provider's rate limit is used — Anthropic
+// (POSTed to the server from the Claude Code statusline, the only place those numbers exist) and
+// Codex (read live from its rollouts). Updated live over the SAME SSE stream as the records feed (the
+// `usage` channel — see connectStream — pushed when a provider's standing changes); also pulled on
+// load and the ↻ refresh button for the live-off / manual path. The per-second timer below only
+// advances the reset countdown off the cached snapshot's absolute resets_at — no separate data poll.
+let usageFeed = null;
+
+async function fetchUsage() {
+  try {
+    const response = await fetch("/api/usage", { cache: "no-store" });
+    usageFeed = await response.json();
+  } catch { usageFeed = null; }
+  renderUsage();
+}
+
+// A window's length in minutes → a compact label (300 ⇒ "5h", 10080 ⇒ "7d", else a derived h/d/m
+// form). Derived from window_minutes, not hardcoded, so a plan with different-sized windows — or
+// Codex's generic primary/secondary — still labels correctly.
+function winLabel(minutes) {
+  if (!minutes) return "";
+  if (minutes % 1440 === 0) return `${minutes / 1440}d`;   // 10080 ⇒ "7d", 1440 ⇒ "1d" (matches the statusline's "7d")
+  if (minutes % 60 === 0) return `${minutes / 60}h`;       // 300 ⇒ "5h"
+  return `${minutes}m`;
+}
+
+// "Nd Mh" / "Mh" / "Nm" / "due" — countdown to a window reset from its epoch-seconds resets_at,
+// matching the statusline's compact form; "" when no reset time is known.
+function resetIn(resetsAt) {
+  if (!resetsAt) return "";
+  let left = resetsAt - Date.now() / 1000;
+  if (left <= 0) return "due";
+  const days = Math.floor(left / 86400); left -= days * 86400;
+  const hours = Math.floor(left / 3600); left -= hours * 3600;
+  const mins = Math.floor(left / 60);
+  if (days > 0) return `${days}d${hours}h`;
+  if (hours > 0) return `${hours}h`;
+  return `${mins}m`;
+}
+
+// One window as "5h:<b>14%</b>" — label muted, percentage bold (the statusline's "5h:14%" form);
+// "5h:—" when present-but-empty, "" when the window is absent.
+function usageWindow(w) {
+  if (!w) return "";
+  const label = winLabel(w.window_minutes);
+  if (w.used_percentage == null) return `${label}:—`;
+  return `${label}:<b>${Math.round(w.used_percentage)}%</b>`;
+}
+
+// One provider's readout: "<name> 5h:14% 7d:92% 4d23h↺" — percentages bold, the weekly reset (the
+// one that matters) appended once with a trailing ↺, exactly like the statusline. "<name> —" until
+// it has reported anything (Anthropic before the first statusline push, Codex when logged out).
+function usageProvider(name, data) {
+  const head = `<span class="pn">${name}</span><span class="sep">:</span>`;
+  if (!data) return `<span class="prov">${head} <span class="none">—</span></span>`;
+  const windows = [usageWindow(data.five_hour), usageWindow(data.seven_day)].filter(Boolean).join(" ");
+  const reset = resetIn(data.seven_day && data.seven_day.resets_at);
+  const resetHtml = reset ? ` <span class="rs">${reset}<span class="rg">↺</span></span>` : "";
+  return `<span class="prov">${head}${windows}${resetHtml}</span>`;
+}
+
+function renderUsage() {
+  const box = $("usage");
+  if (!usageFeed) { box.innerHTML = ""; return; }
+  box.innerHTML = usageProvider("Anthropic", usageFeed.anthropic) +
+    `<span class="psep">|</span>` +
+    usageProvider("Codex", usageFeed.codex);
 }
 
 // Route a repaint to the active view. ingestFeed() and the filter box call this; the graph's own
@@ -1873,7 +1961,7 @@ $("copy").addEventListener("click", async () => {
 });
 
 // ---- toolbar ------------------------------------------------------------------------------------
-$("refresh").addEventListener("click", () => { fetchAndRender(true); fetchMessages(); });
+$("refresh").addEventListener("click", () => { fetchAndRender(true); fetchMessages(); fetchUsage(); });
 $("filter").addEventListener("input", paintActive);
 
 // ---- time-range control -------------------------------------------------------------------------
@@ -2163,6 +2251,16 @@ function connectStream() {
     messagesFeed = data;
     if (activeTab === "messages") renderMessages();
   });
+  // Named `usage` events ride the same connection: a snapshot on connect, then a push whenever a
+  // provider's rate-limit standing changes (server-side, gated on usage_signature). The usage strip
+  // is now current via the SAME stream as the records feed — no bespoke timer; the per-second tick
+  // below only advances the reset countdown.
+  stream.addEventListener("usage", (event) => {
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    usageFeed = data;
+    renderUsage();
+  });
 }
 function disconnectStream() {
   if (!stream) return;
@@ -2187,12 +2285,14 @@ setInterval(() => {
     const age = Math.round((Date.now() - lastFetchAt) / 1000);
     $("refresh").textContent = `↻ refresh (${age}s)`;
   }
+  if (usageFeed) renderUsage();   // tick the reset countdowns off the cached snapshot
   if (timeFilter.kind === "relative" && !interacting()) paintActive();
 }, 1000);
 
 renderFilterBar();          // paint the bar's state chips immediately, before the first feed lands
 $("timeRange").value = "all"; applyTimeRangeUI();   // force a known initial window (a browser may restore a stale <select> on reload)
 fetchAndRender(true);
+fetchUsage();               // pull both providers' rate-limit usage for the header readout
 if ($("auto").checked) connectStream();
 </script>
 </body>
