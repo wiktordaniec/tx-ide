@@ -120,19 +120,58 @@ class SpawnCommand(Command):
         parser.add_argument("name")
         parser.add_argument("--tag", required=True)
         parser.add_argument("--cwd")
-        parser.add_argument("--cmd")
+        parser.add_argument("--cmd",
+                            help="a full, hand-written launch command (shell / nvim / other, or an "
+                                 "explicit agent command); cannot combine with --prompt/--model/--effort")
+        parser.add_argument("--engine", choices=[Engine.CLAUDE.value, Engine.CODEX.value],
+                            help="build the launch command for this agent engine via its adapter "
+                                 "(default: claude). With --cmd, declares the engine to stamp on the "
+                                 "record (the command stays yours; the engine is never inferred from it)")
+        parser.add_argument("--prompt",
+                            help="initial/priming prompt for an --engine agent spawn (auto-submits in the TUI)")
+        parser.add_argument("--model", help="model override for an --engine agent spawn")
+        parser.add_argument("--effort", help="reasoning-effort override for an --engine agent spawn")
         parser.add_argument("--env", action="append", type=_env_pair)
         args = parser.parse_args(argv)
         tags = _split_tags(args.tag)
         if not tags:
             parser.error("--tag requires at least one value")
+        if args.cmd is not None and (args.prompt or args.model or args.effort):
+            parser.error("--prompt/--model/--effort build a launch command and cannot be combined "
+                         "with --cmd (the full hand-written command)")
+        command, engine = self._resolve_command(args)
         spec = SpawnSpec.for_process(
             name=args.name, tags=tags, cwd=args.cwd or self._default_cwd(),
-            cmd=args.cmd or _default_shell(), env=_parse_env(args.env),
+            cmd=command, env=_parse_env(args.env), engine=engine,
         )
         session = self.service.spawn(spec)
         print(f"Spawned '{session.name}' (cwd={session.cwd}, tag={args.tag})")
         return 0
+
+    def _resolve_command(self, args: argparse.Namespace) -> tuple[str, Engine | None]:
+        """Resolve the launch command + the engine to stamp (T8). Three disjoint paths:
+
+        - **--cmd given** → that exact command (a worker, shell, nvim, or any hand-written agent
+          command). The stamped engine is whatever `--engine` declares — `None` if omitted, which
+          `_spawn` resolves to Claude for an llm session. The command is NEVER parsed to guess its
+          engine (design §1: declared, never post-spawn-inferred), so `--cmd 'codex …'` without
+          `--engine codex` stamps the default (Claude); pass `--engine codex` to match.
+        - **an agent spawn** (`--engine` and/or `--prompt`/`--model`/`--effort`, no `--cmd`) → tx
+          builds the launch command via the engine adapter (default Claude), baking in that engine's
+          model/effort rendering + yolo flags, so callers need not hand-write `claude …` / `codex …`.
+        - **bare** (none of the above) → a login shell, exactly as before (zero behavior change).
+
+        The Codex adapter is registered via the `.engines` side-effect imports in `spawn`/`reconcile`
+        (run at module load), so `engines.get(Engine.CODEX)` resolves here."""
+        requested = Engine(args.engine) if args.engine is not None else None
+        if args.cmd is not None:
+            return args.cmd, requested
+        if requested is not None or args.prompt is not None or args.model is not None or args.effort is not None:
+            engine = requested or Engine.CLAUDE
+            command = shlex.join(engines.get(engine).build_launch_command(
+                model=args.model, effort=args.effort, initial_prompt=args.prompt))
+            return command, engine
+        return _default_shell(), None
 
 
 class SpawnNvimCommand(Command):
@@ -1096,9 +1135,10 @@ def _split_role_tags(old_tags: list[str], pane_command: str | None) -> tuple[Rol
 
 
 def _pane_command_role(pane_command: str | None) -> Role:
-    """§6 inference fallback from the live `pane_current_command`: a Claude version string (shown
-    while it loads) → LLM, else `infer_role` (claude → LLM, nvim → NVIM, a shell → SHELL, else
-    OTHER). `infer_role` is the shared mapping spawn uses, so a re-derived role matches a re-spawn."""
+    """§6 inference fallback from the live `pane_current_command`: an agent version string (shown
+    while it loads) → LLM, else `infer_role` (any registered engine — claude / codex — → LLM, nvim →
+    NVIM, a shell → SHELL, else OTHER). `infer_role` is the shared mapping spawn uses, so a re-derived
+    role matches a re-spawn — and it recognizes codex panes for free now that it asks every engine."""
     command = pane_command or ""
     if _looks_like_version(command):
         return Role.LLM
@@ -1106,8 +1146,9 @@ def _pane_command_role(pane_command: str | None) -> Role:
 
 
 def _looks_like_version(command: str) -> bool:
-    """A dotted-numeric command like `2.1.138` — Claude Code reports its version in
-    `pane_current_command` while loading (mirrors tmux/tx-ide.tmux's claude-scroll matcher)."""
+    """A dotted-numeric command like `2.1.138` — an agent TUI (Claude Code is the measured case)
+    reports its version in `pane_current_command` while loading. Engine-neutral (any version-shaped
+    command), mirroring tmux/tx-ide.tmux's agent-scroll matcher."""
     parts = command.split(".")
     return len(parts) >= 2 and all(part.isdigit() for part in parts)
 
