@@ -329,7 +329,7 @@ class SessionService:
 
     def _resolve(self, token: str) -> Session | None:
         """Resolve a record by id (file lookup), then a live `@tx_id` for a session named `token`,
-        then a store name lookup (D7 — names are reusable)."""
+        then a name lookup that prefers the LIVE same-name record (D7 — names are reusable)."""
         by_id = self.store.load(token)
         if by_id is not None:
             return by_id
@@ -338,7 +338,18 @@ class SessionService:
             by_live = self.store.load(live_id)
             if by_live is not None:
                 return by_live
-        return self.store.find_by_name(token)
+        return self._resolve_name(token)
+
+    def _resolve_name(self, name: str) -> Session | None:
+        """Name fallback: among records sharing `name` (reusable — D7), prefer the LIVE one, then the
+        most recent. A PROCESS is tmux-named by its id, so the live-`@tx_id` path above can't match it
+        by human name; without this a lingering exited husk (`find_by_name`'s first hit) shadows the
+        live session — which is what broke `_tmux-name tx-assistant` and the prefix+/ comms path."""
+        matches = [s for s in self.store.all() if s.name == name]
+        if not matches:
+            return None
+        live = [s for s in matches if self.tmux.has_session(s.tmux_name)]
+        return max(live or matches, key=lambda s: s.created_at or 0.0)
 
     def _require(self, token: str) -> Session:
         session = self._resolve(token)
