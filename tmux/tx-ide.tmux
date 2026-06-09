@@ -5,7 +5,7 @@
 # Reads @tx-ide-* options to decide which view features to enable:
 #   @tx-ide-popups          on|off   prefix+t (tx), prefix+/ (tx-assistant)
 #   @tx-ide-pane-borders    on|off   pane-border-format integration + colors
-#   @tx-ide-claude-scroll   on|off   C-u/C-d → PageUp/PageDown in Claude panes
+#   @tx-ide-agent-scroll    on|off   C-u/C-d → PageUp/PageDown in agent panes
 #   @tx-ide-pane-keys       on|off   M-1..9 → select-pane
 #   @tx-ide-window-keys     on|off   User0..8 → select-window (terminal must send)
 #   @tx-ide-session-labels  on|off   prefix+s shows each session's name + tags (choose-tree)
@@ -32,7 +32,7 @@ option() {
 
 popups=$(option @tx-ide-popups on)
 pane_borders=$(option @tx-ide-pane-borders on)
-claude_scroll=$(option @tx-ide-claude-scroll on)
+agent_scroll=$(option @tx-ide-agent-scroll on)
 pane_keys=$(option @tx-ide-pane-keys on)
 window_keys=$(option @tx-ide-window-keys on)
 session_labels=$(option @tx-ide-session-labels on)
@@ -124,8 +124,7 @@ fi
 # "codex" command, or a version-string-shaped command (an agent TUI shows its version while
 # loading: "2.1.138"). Kept in LOCKSTEP with the Python agent-pane predicates (spawn.infer_role /
 # reconcile._is_agent_command) — same set of engine binaries, enforced by review across the boundary.
-# NOTE: the @tx-ide-claude-scroll option NAME is left as-is (an engine-neutral rename is T5's surface).
-if [ "$claude_scroll" = on ]; then
+if [ "$agent_scroll" = on ]; then
   cat >>"$CONF" <<'EOF'
 bind -n C-u if -F '#{||:#{==:#{pane_current_command},claude},#{||:#{==:#{pane_current_command},codex},#{m:[0-9]*.[0-9]*.[0-9]*,#{pane_current_command}}}}' 'send-keys PageUp' 'send-keys C-u'
 bind -n C-d if -F '#{||:#{==:#{pane_current_command},claude},#{||:#{==:#{pane_current_command},codex},#{m:[0-9]*.[0-9]*.[0-9]*,#{pane_current_command}}}}' 'send-keys PageDown' 'send-keys C-d'

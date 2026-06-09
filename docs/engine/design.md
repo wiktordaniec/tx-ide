@@ -111,7 +111,13 @@ engine-agnostic).
 8. Peer envelope `<from-claude …>` → neutral `<from-agent …>`; **parse both** (live Claude sessions
    exist during rollover).
 9. Worktree convention `.claude/worktrees` → `.tx-ide/worktrees`; `CLAUDE_REQUIRE_WORKTREE` →
-   `TX_REQUIRE_WORKTREE` + a Codex `PreToolUse` guard-hook equivalent.
+   `TX_REQUIRE_WORKTREE`. This is a **doc/convention** rename: the env is read by **no** code in
+   `lib/tx` — only the user's own `~/.claude/settings.json` `PreToolUse` guard reads it, and tx cannot
+   edit a user-owned hook, so the spawn convention transitionally sets **both** names for back-compat
+   (mirroring the envelope parse-both). There is **no** Codex `PreToolUse` guard-hook equivalent, and
+   one would be **moot** under yolo (`bypassPermissions` skips per-tool hook denial — same as Claude's
+   `--dangerously-skip-permissions`). The real future mechanism is an engine-agnostic tx **spawn-time**
+   worktree check (**NOT-T5**; full record in [`neutralizations.md`](./neutralizations.md)).
 10. tx-assistant stays Claude by default; agent selectable later (out of v1 critical path).
 11. Usage/rate-limit display is owned cross-engine by the sessions-graph header strip (separate
     `usage-limits` work), fed by Codex's rollout `token_count.rate_limits` (`primary`/`secondary`,

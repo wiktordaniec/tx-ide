@@ -16,7 +16,7 @@ Ground truth measured on claude v2.0.76 (chat-ops.md §1):
   - Transcript:  <claude-home>/projects/<munge(cwd)>/<chat-uuid>.jsonl  + a sibling <chat-uuid>/ dir
                  (`subagents/`, `tool-results/`).
   - Munge rule:  every `/` and every `.` in the absolute cwd becomes `-`
-                 (verified on disk: a `…/tx-ide/.claude/worktrees/x` cwd → `…-tx-ide--claude-worktrees-x`).
+                 (verified on disk: a `…/tx-ide/.tx-ide/worktrees/x` cwd → `…-tx-ide--tx-ide-worktrees-x`).
   - Every hook payload carries `session_id` + `transcript_path`, so capture works from the first
     event (`SessionStart`), before the transcript file exists (`--fork-session` writes it lazily, #8).
 """
