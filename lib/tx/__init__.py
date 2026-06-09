@@ -5,9 +5,10 @@ adapters, and the application core that every later stage depends on and that th
 locks. See `.claude/plans/execution-plan.md` (S0/S1a) and `.claude/plans/tx-service-redesign.md`.
 
 Public API frozen here:
-  - S0 data model: `Session` + `ChatRef` / `Origin` / `Location` + `Kind` / `Role` / `State`
+  - S0 data model: `Session` + `ChatRef` / `Origin` / `Location` + `Kind` / `Role` / `State` /
+    `Engine` (the v3 agent-engine axis — the adapter protocol/registry live in `tx.engines`)
   - S0 persistence: `SessionStore` (filesystem-direct), `Storage` / `LocalStorage` / `S3Storage`
-    + the `$TX_IDE_HOME` layout helpers, `EventLog` (D8 log), the `claude` module
+    + the `$TX_IDE_HOME` layout helpers, `EventLog` (D8 log); the engine adapters live in `tx.engines`
   - S1a core: `SessionService` (the mutation chokepoint), `Tmux` (the tmux adapter, attachment
     reads are S6 placeholders), `Reconciler` (no-daemon liveness), `SpawnSpec` (+ `infer_role`)
 
@@ -15,7 +16,6 @@ Later stages add: history.py (S3), chat.py (S4), hooks.py (S2). cli.py / render.
 presentation layer (not part of the frozen import surface).
 """
 
-from . import claude
 from .events import EventLog
 from .reconcile import Reconciler
 from .service import (
@@ -28,6 +28,7 @@ from .service import (
 from .session import (
     SCHEMA_VERSION,
     ChatRef,
+    Engine,
     Kind,
     Location,
     Origin,
@@ -60,6 +61,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "__version__",
     "ChatRef",
+    "Engine",
     "EventLog",
     "Kind",
     "Location",
@@ -81,7 +83,6 @@ __all__ = [
     "Tmux",
     "TmuxError",
     "UnsupportedRecordError",
-    "claude",
     "config_path",
     "DEFAULT_HOME",
     "ensure_home",

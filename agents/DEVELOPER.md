@@ -30,8 +30,8 @@ You must have already read `agents/COMMON.md` — those conventions apply to you
 
    The tag is your worker's session name as the companion's scope, so both surface together when the user filters by it in `tx attach`. The companion's `nvim` role is derived from its launch command — it is never a tag.
 
-Worktree convention: `.claude/worktrees/<session-name>` inside the repo.
+Worktree convention: `.tx-ide/worktrees/<session-name>` inside the repo.
 
 ## Spawning sub-workers
 
-You are not limited to the nvim companion above — you may spawn your own Claude Code workers to parallelize independent parts of a plan (a coding worker per subsystem) or to answer an unknown before you build (a research worker). Follow **COMMON § Spawning workers** for the recipe: the `tx spawn … --cmd 'claude …'` pattern, `--env CLAUDE_REQUIRE_WORKTREE=1` for coding sub-workers, and the role-file priming string that makes a sub-worker load these same conventions. Always prime — a bare `claude` spawn gets you a worker that ignores all of this.
+You are not limited to the nvim companion above — you may spawn your own agent workers to parallelize independent parts of a plan (a coding worker per subsystem) or to answer an unknown before you build (a research worker). Follow **COMMON § Spawning workers** for the recipe: the `tx spawn … --cmd 'claude …'` pattern (Claude by default), the `--env TX_REQUIRE_WORKTREE=1` for coding sub-workers, and the role-file priming string that makes a sub-worker load these same conventions. Always prime — a bare agent spawn gets you a worker that ignores all of this.

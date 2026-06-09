@@ -15,8 +15,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from . import claude
-from .session import Kind, Role
+# Side-effect import: each adapter self-registers at import, so registered() sees every engine.
+from .engines import claude, codex  # noqa: F401
+from .engines import registry
+from .session import Engine, Kind, Role
 
 # Nvim companion command. `tmux new-session -d` strips the terminal's OSC11 background hint, so
 # nvim's auto-mode would land on the light variant — force dark + tokyonight-moon (COMMON.md).
@@ -25,15 +27,12 @@ SHELL_COMMANDS = frozenset({"zsh", "bash", "sh", "fish", "dash"})
 
 
 def infer_role(command: str) -> Role:
-    """Derive the session role from its launch command's binary.
-
-    Mirrors install-flip §6's inference: the agent binary → LLM, `nvim` → NVIM, a login shell →
-    SHELL, everything else → OTHER. Pass an already-resolved command (the CLI defaults an omitted
-    `--cmd` to the real `$SHELL`, so a shell spawn classifies as SHELL rather than OTHER).
-    """
+    """Role (not engine) from a launch command's binary: any registered engine → LLM, nvim → NVIM,
+    a login shell → SHELL, else OTHER. Pass an already-resolved command (an omitted `--cmd` is the
+    real `$SHELL`, so it classifies as SHELL not OTHER)."""
     parts = command.split()
     binary = os.path.basename(parts[0]) if parts else ""
-    if binary == claude.CLAUDE_BIN:
+    if any(registry.get(engine).matches_binary(command) for engine in registry.registered()):
         return Role.LLM
     if binary == "nvim":
         return Role.NVIM
@@ -55,24 +54,56 @@ class SpawnSpec:
     cmd: str
     tags: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    # The agent engine this session runs (v3, design §1) — set from `tx spawn --engine` and stamped
+    # onto `Session.engine` by `service._spawn`. `None` means "unspecified": `_spawn` defaults an llm
+    # session to Claude (the engine default) and leaves a non-llm session engine-less. NEVER inferred
+    # from `cmd` post-spawn — the engine is declared at spawn and read off the record thereafter (T8).
+    engine: Engine | None = None
+    # A chat-op that records its OWN `ChatRef` (fork / handover / resume) sets this so `_spawn` does
+    # not also write a pending `original` ref (T4 capture-after-launch). A plain spawn leaves it False
+    # and `_spawn` writes the pending original ref the first hook will fill. Not derivable from `cmd`:
+    # post-pre-mint a handover worker's command is an ordinary `claude …`, indistinguishable from an
+    # original, so the caller signals ownership explicitly.
+    records_own_chat: bool = False
 
     @classmethod
     def for_process(
-        cls, *, name: str, tags: list[str], cwd: str, cmd: str,
+        cls,
+        *,
+        name: str,
+        tags: list[str],
+        cwd: str,
+        cmd: str,
         env: dict[str, str] | None = None,
+        records_own_chat: bool = False,
+        engine: Engine | None = None,
     ) -> SpawnSpec:
-        """A normal worker/agent/shell session (`tx spawn`). An llm command always gets a chat id
-        minted + `--session-id`-injected by `SessionService._spawn` (mandatory, derived from the
-        role) — there is no chat flag to pass."""
+        """A normal worker/agent/shell session (`tx spawn`). A plain llm spawn gets a pending
+        `original` `ChatRef` from `SessionService._spawn`; its chat id is captured from the first hook
+        payload, not minted (T4). A chat-op that records its own ref passes `records_own_chat=True`.
+        `engine` carries the `--engine` choice (default Claude resolved in `_spawn`); leave it `None`
+        for a shell/nvim/other spawn or to take the engine default."""
         return cls(
-            name=name, kind=Kind.PROCESS, role=infer_role(cmd), cwd=cwd, cmd=cmd,
-            tags=list(tags), env=dict(env or {}),
+            name=name,
+            kind=Kind.PROCESS,
+            role=infer_role(cmd),
+            cwd=cwd,
+            cmd=cmd,
+            tags=list(tags),
+            env=dict(env or {}),
+            records_own_chat=records_own_chat,
+            engine=engine,
         )
 
     @classmethod
     def for_nvim(
-        cls, *, name: str, tags: list[str], cwd: str,
-        env: dict[str, str] | None = None, diff_base: str | None = None,
+        cls,
+        *,
+        name: str,
+        tags: list[str],
+        cwd: str,
+        env: dict[str, str] | None = None,
+        diff_base: str | None = None,
     ) -> SpawnSpec:
         """An nvim companion (`tx spawn-nvim`). When `diff_base` is given, open straight into a
         diffview against it (`--diff` defaults the base to `main` at the CLI boundary)."""
@@ -80,18 +111,33 @@ class SpawnSpec:
         if diff_base is not None:
             command += f" +'DiffviewOpen {diff_base}'"
         return cls(
-            name=name, kind=Kind.PROCESS, role=Role.NVIM, cwd=cwd, cmd=command,
-            tags=list(tags), env=dict(env or {}),
+            name=name,
+            kind=Kind.PROCESS,
+            role=Role.NVIM,
+            cwd=cwd,
+            cmd=command,
+            tags=list(tags),
+            env=dict(env or {}),
         )
 
     @classmethod
     def for_view(
-        cls, *, name: str, tags: list[str], cwd: str, cmd: str,
+        cls,
+        *,
+        name: str,
+        tags: list[str],
+        cwd: str,
+        cmd: str,
         env: dict[str, str] | None = None,
     ) -> SpawnSpec:
         """A `kind=view` home base (`tx spawn-view`) — surfaces under VIEWS and is filtered out of
         the picker. Role is still inferred from `cmd` (a view runs a shell → SHELL)."""
         return cls(
-            name=name, kind=Kind.VIEW, role=infer_role(cmd), cwd=cwd, cmd=cmd,
-            tags=list(tags), env=dict(env or {}),
+            name=name,
+            kind=Kind.VIEW,
+            role=infer_role(cmd),
+            cwd=cwd,
+            cmd=cmd,
+            tags=list(tags),
+            env=dict(env or {}),
         )

@@ -28,17 +28,35 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import chat, claude, history, hooks, palette, sync
+from . import chat, engines, history, hooks, palette, sync
 from .chat import ChatOps
+from .engines import claude
 from .events import EventLog
-from .render import LOCATION_W, ROLE_W, picker_display_rows, picker_namew, render_chats, render_history, render_ls
+from .render import (
+    LOCATION_W,
+    ROLE_W,
+    picker_display_rows,
+    picker_namew,
+    render_chats,
+    render_history,
+    render_ls,
+)
 from .service import ServiceError, SessionService
 from .session import (
-    SCHEMA_VERSION, ChatRef, Kind, Origin, Role, Session, State, UnsupportedRecordError,
+    SCHEMA_VERSION,
+    ChatRef,
+    Engine,
+    Kind,
+    Origin,
+    Role,
+    Session,
+    State,
+    UnsupportedRecordError,
 )
 from .spawn import SHELL_COMMANDS, SpawnSpec, infer_role
 from .storage import LocalStorage, ensure_home, sessions_dir, tx_ide_home
 from .store import SessionStore
+from .migrations import migrate_sessions
 from .tmux import TmuxError
 
 
@@ -119,19 +137,73 @@ class SpawnCommand(Command):
         parser.add_argument("name")
         parser.add_argument("--tag", required=True)
         parser.add_argument("--cwd")
-        parser.add_argument("--cmd")
+        parser.add_argument(
+            "--cmd",
+            help="a full, hand-written launch command (shell / nvim / other, or an "
+            "explicit agent command); cannot combine with --prompt/--model/--effort",
+        )
+        parser.add_argument(
+            "--engine",
+            choices=[Engine.CLAUDE.value, Engine.CODEX.value],
+            help="build the launch command for this agent engine via its adapter "
+            "(default: claude). With --cmd, declares the engine to stamp on the "
+            "record (the command stays yours; the engine is never inferred from it)",
+        )
+        parser.add_argument(
+            "--prompt",
+            help="initial/priming prompt for an --engine agent spawn (auto-submits in the TUI)",
+        )
+        parser.add_argument(
+            "--model", help="model override for an --engine agent spawn"
+        )
+        parser.add_argument(
+            "--effort", help="reasoning-effort override for an --engine agent spawn"
+        )
         parser.add_argument("--env", action="append", type=_env_pair)
         args = parser.parse_args(argv)
         tags = _split_tags(args.tag)
         if not tags:
             parser.error("--tag requires at least one value")
+        if args.cmd is not None and (args.prompt or args.model or args.effort):
+            parser.error(
+                "--prompt/--model/--effort build a launch command and cannot be combined "
+                "with --cmd (the full hand-written command)"
+            )
+        command, engine = self._resolve_command(args)
         spec = SpawnSpec.for_process(
-            name=args.name, tags=tags, cwd=args.cwd or self._default_cwd(),
-            cmd=args.cmd or _default_shell(), env=_parse_env(args.env),
+            name=args.name,
+            tags=tags,
+            cwd=args.cwd or self._default_cwd(),
+            cmd=command,
+            env=_parse_env(args.env),
+            engine=engine,
         )
         session = self.service.spawn(spec)
         print(f"Spawned '{session.name}' (cwd={session.cwd}, tag={args.tag})")
         return 0
+
+    def _resolve_command(self, args: argparse.Namespace) -> tuple[str, Engine | None]:
+        """Resolve the launch command + the engine to stamp. Three paths: --cmd → that exact command
+        (engine = whatever --engine declares, never guessed from the command); an agent spawn
+        (--engine/--prompt/--model/--effort) → tx builds the command via the engine adapter; bare →
+        a login shell."""
+        requested = Engine(args.engine) if args.engine is not None else None
+        if args.cmd is not None:
+            return args.cmd, requested
+        if (
+            requested is not None
+            or args.prompt is not None
+            or args.model is not None
+            or args.effort is not None
+        ):
+            engine = requested or Engine.CLAUDE
+            command = shlex.join(
+                engines.registry.get(engine).build_launch_command(
+                    model=args.model, effort=args.effort, initial_prompt=args.prompt
+                )
+            )
+            return command, engine
+        return _default_shell(), None
 
 
 class SpawnNvimCommand(Command):
@@ -150,12 +222,17 @@ class SpawnNvimCommand(Command):
         if not tags:
             parser.error("--tag requires at least one value")
         spec = SpawnSpec.for_nvim(
-            name=args.name, tags=tags, cwd=args.cwd or self._default_cwd(),
-            env=_parse_env(args.env), diff_base=args.diff,
+            name=args.name,
+            tags=tags,
+            cwd=args.cwd or self._default_cwd(),
+            env=_parse_env(args.env),
+            diff_base=args.diff,
         )
         session = self.service.spawn_nvim(spec)
         suffix = f", diff={args.diff}" if args.diff is not None else ""
-        print(f"Spawned nvim '{session.name}' (cwd={session.cwd}, tag={args.tag}{suffix})")
+        print(
+            f"Spawned nvim '{session.name}' (cwd={session.cwd}, tag={args.tag}{suffix})"
+        )
         return 0
 
 
@@ -172,8 +249,11 @@ class SpawnViewCommand(Command):
         parser.add_argument("--env", action="append", type=_env_pair)
         args = parser.parse_args(argv)
         spec = SpawnSpec.for_view(
-            name=args.name, tags=_split_tags(args.tag), cwd=args.cwd or self._default_cwd(),
-            cmd=args.cmd or _default_shell(), env=_parse_env(args.env),
+            name=args.name,
+            tags=_split_tags(args.tag),
+            cwd=args.cwd or self._default_cwd(),
+            cmd=args.cmd or _default_shell(),
+            env=_parse_env(args.env),
         )
         session = self.service.spawn_view(spec)
         print(f"Spawned view '{session.name}' (cwd={session.cwd}, tag={args.tag})")
@@ -232,8 +312,13 @@ class ShowCommand(Command):
 # The everyday picker stays live-only — these are the separate "look at / bring back the past" verbs.
 
 
-def _parse_history_date(raw: str | None, parser: argparse.ArgumentParser, flag: str,
-                        *, end_of_day: bool = False) -> float | None:
+def _parse_history_date(
+    raw: str | None,
+    parser: argparse.ArgumentParser,
+    flag: str,
+    *,
+    end_of_day: bool = False,
+) -> float | None:
     """Parse a `--since` / `--until` YYYY-MM-DD filter to an epoch second (local midnight, or
     23:59:59 for an inclusive `--until`). A bad date is user input at the CLI boundary → `error`."""
     if raw is None:
@@ -264,9 +349,15 @@ class HistoryCommand(Command):
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
         parser.add_argument("--tag", help="only sessions carrying this tag")
-        parser.add_argument("--cwd", help="only sessions whose cwd contains this substring")
-        parser.add_argument("--since", metavar="YYYY-MM-DD", help="ended on or after this date")
-        parser.add_argument("--until", metavar="YYYY-MM-DD", help="ended on or before this date")
+        parser.add_argument(
+            "--cwd", help="only sessions whose cwd contains this substring"
+        )
+        parser.add_argument(
+            "--since", metavar="YYYY-MM-DD", help="ended on or after this date"
+        )
+        parser.add_argument(
+            "--until", metavar="YYYY-MM-DD", help="ended on or before this date"
+        )
         args = parser.parse_args(argv)
         since = _parse_history_date(args.since, parser, "--since")
         until = _parse_history_date(args.until, parser, "--until", end_of_day=True)
@@ -280,8 +371,14 @@ class HistoryCommand(Command):
         print(render_history(shown))
         return 0
 
-    def _matches(self, session: Session, tag: str | None, cwd: str | None,
-                 since: float | None, until: float | None) -> bool:
+    def _matches(
+        self,
+        session: Session,
+        tag: str | None,
+        cwd: str | None,
+        since: float | None,
+        until: float | None,
+    ) -> bool:
         if tag is not None and tag not in session.tags:
             return False
         if cwd is not None and cwd not in session.cwd:
@@ -300,7 +397,9 @@ class ChatCommand(Command):
 
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
-        parser.add_argument("subcommand", choices=["ls"], help="ls — list the session's chats")
+        parser.add_argument(
+            "subcommand", choices=["ls"], help="ls — list the session's chats"
+        )
         parser.add_argument("session")
         args = parser.parse_args(argv)
         session = self.service.get(args.session)
@@ -318,10 +417,17 @@ class ResumeCommand(Command):
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
         parser.add_argument("target", help="the past session to resume (id or name)")
-        parser.add_argument("--as", dest="new_name", metavar="NAME",
-                            help="spawn under a new name (required on a live-name clash)")
-        parser.add_argument("--cwd", metavar="DIR",
-                            help="override the cwd (required if the stored cwd is gone — C8)")
+        parser.add_argument(
+            "--as",
+            dest="new_name",
+            metavar="NAME",
+            help="spawn under a new name (required on a live-name clash)",
+        )
+        parser.add_argument(
+            "--cwd",
+            metavar="DIR",
+            help="override the cwd (required if the stored cwd is gone — C8)",
+        )
         args = parser.parse_args(argv)
 
         record = self.service.get(args.target)
@@ -330,16 +436,21 @@ class ResumeCommand(Command):
             return 1
         chat = _latest_chat(record)
         if chat is None:
-            print(f"tx resume: '{record.name}' has no chat to resume — use `tx spawn` for a fresh "
-                  "session", file=sys.stderr)
+            print(
+                f"tx resume: '{record.name}' has no chat to resume — use `tx spawn` for a fresh "
+                "session",
+                file=sys.stderr,
+            )
             return 1
 
         # Name: --as wins; else reuse the stored name. tmux names must be unique among LIVE sessions
         # (D7), so a live clash is the one case that forces --as (§7).
         name = args.new_name or record.name
         if self.service.tmux.has_session(name):
-            print(f"tx resume: a live session named '{name}' already exists — pass --as <new-name>",
-                  file=sys.stderr)
+            print(
+                f"tx resume: a live session named '{name}' already exists — pass --as <new-name>",
+                file=sys.stderr,
+            )
             return 1
 
         # cwd: transcripts are munged-cwd-keyed (C8), so restore the stored cwd by default and error
@@ -347,20 +458,40 @@ class ResumeCommand(Command):
         # reattach the exact transcript — claude resolves --resume within the current project dir.)
         cwd = args.cwd or record.cwd
         if not Path(cwd).is_dir():
-            remedy = "pass --cwd <dir>" if args.cwd is None else f"'{cwd}' is not a directory"
-            print(f"tx resume: cwd '{cwd}' does not exist — {remedy} (C8)", file=sys.stderr)
+            remedy = (
+                "pass --cwd <dir>"
+                if args.cwd is None
+                else f"'{cwd}' is not a directory"
+            )
+            print(
+                f"tx resume: cwd '{cwd}' does not exist — {remedy} (C8)",
+                file=sys.stderr,
+            )
             return 1
-        if history.resolve_transcript(chat.id, cwd) is None:
-            print(f"tx resume: warning — transcript for chat {chat.id[:8]} not found under {cwd}; "
-                  "claude --resume may start a fresh conversation", file=sys.stderr)
+        if history.resolve_transcript(chat.id, cwd, record.engine) is None:
+            print(
+                f"tx resume: warning — transcript for chat {chat.id[:8]} not found under {cwd}; "
+                "claude --resume may start a fresh conversation",
+                file=sys.stderr,
+            )
 
-        resume_cmd = shlex.join(claude.build_launch_command(resume=chat.id))
+        resume_cmd = shlex.join(engines.registry.get(record.engine).resume_command(chat.id))
+        # Stamp the source engine on the resumed record so a resumed codex session stays codex
+        # (resolving its rollout) instead of defaulting to Claude — set-at-spawn, read-thereafter.
         spec = SpawnSpec.for_process(
-            name=name, tags=list(record.tags), cwd=cwd, cmd=resume_cmd, env=dict(record.env),
+            name=name,
+            tags=list(record.tags),
+            cwd=cwd,
+            cmd=resume_cmd,
+            env=dict(record.env),
+            records_own_chat=True,
+            engine=record.engine,
         )
         new = self.service.spawn(spec)
         self._attach_resumed_chat(new, chat, cwd)
-        print(f"Resumed '{record.name}' as '{new.name}' (chat {chat.id[:8]}, cwd={cwd})")
+        print(
+            f"Resumed '{record.name}' as '{new.name}' (chat {chat.id[:8]}, cwd={cwd})"
+        )
         return 0
 
     def _attach_resumed_chat(self, new: Session, source: ChatRef, cwd: str) -> None:
@@ -369,15 +500,20 @@ class ResumeCommand(Command):
         fork/rollover/handover; origin.how="resume" is S3's provenance edge back to the source chat.
         bundle_path points at where THIS session's ingest will write (history/<new-tx>/<chat>/)."""
         now = time.time()
-        new.chats.append(ChatRef(
-            id=source.id,
-            role="original",
-            cwd=cwd,
-            transcript_path=str(claude.transcript_path(source.id, cwd)),
-            origin=Origin(how="resume", session_id=new.id, chat_id=source.id),
-            bundle_path=str(claude.bundle_dir(new.id, source.id)),
-            started_at=now,
-        ))
+        new.chats.append(
+            ChatRef(
+                id=source.id,
+                role="original",
+                cwd=cwd,
+                transcript_path=str(
+                    engines.registry.get(new.engine).resolve_transcript(source.id, cwd)
+                ),
+                origin=Origin(how="resume", session_id=new.id, chat_id=source.id),
+                bundle_path=str(claude.bundle_dir(new.id, source.id)),
+                started_at=now,
+                engine=new.engine,
+            )
+        )
         self.service.store.save(new)
 
 
@@ -421,7 +557,9 @@ class RenameCommand(Command):
 
 class WhoamiCommand(Command):
     name = "whoami"
-    summary = "Print the current session's display name (resolves #S — the id for a process)."
+    summary = (
+        "Print the current session's display name (resolves #S — the id for a process)."
+    )
 
     def run(self, argv: list[str]) -> int:
         # `#S` is the tmux session name, which for a PROCESS is its id — resolve it back to the
@@ -506,10 +644,16 @@ class SyncCommand(Command):
         deferred stub), or the `sync` section of `config.json`."""
         parser = self._parser()
         parser.add_argument("action", choices=["push", "pull", "status"])
-        parser.add_argument("--remote", metavar="PATH",
-                            help="a local filesystem remote (archive dir / S3 dogfood proxy)")
-        parser.add_argument("--s3", metavar="BUCKET[/PREFIX]",
-                            help="select the S3 backend (deferred — reports 'not implemented')")
+        parser.add_argument(
+            "--remote",
+            metavar="PATH",
+            help="a local filesystem remote (archive dir / S3 dogfood proxy)",
+        )
+        parser.add_argument(
+            "--s3",
+            metavar="BUCKET[/PREFIX]",
+            help="select the S3 backend (deferred — reports 'not implemented')",
+        )
         args = parser.parse_args(argv)
 
         local = sync.local_storage()
@@ -517,13 +661,18 @@ class SyncCommand(Command):
         if args.action == "status":
             return self._status(local, remote)
         if remote is None:
-            print("tx sync: no remote configured — pass --remote PATH / --s3 BUCKET, or set the "
-                  "'sync' section in config.json", file=sys.stderr)
+            print(
+                "tx sync: no remote configured — pass --remote PATH / --s3 BUCKET, or set the "
+                "'sync' section in config.json",
+                file=sys.stderr,
+            )
             return 1
         operation = sync.sync_push if args.action == "push" else sync.sync_pull
         try:
             result = operation(local, remote)
-        except NotImplementedError as error:  # S3 stub — surface cleanly, no traceback (§14)
+        except (
+            NotImplementedError
+        ) as error:  # S3 stub — surface cleanly, no traceback (§14)
             print(f"tx sync {args.action}: {error}", file=sys.stderr)
             return 1
         self._print_result(args.action, sync.remote_label(remote), result)
@@ -532,7 +681,9 @@ class SyncCommand(Command):
     def _resolve_remote(self, args: argparse.Namespace):
         if args.s3:
             bucket, _, prefix = args.s3.partition("/")
-            return sync.remote_from_spec({"backend": "s3", "bucket": bucket, "prefix": prefix})
+            return sync.remote_from_spec(
+                {"backend": "s3", "bucket": bucket, "prefix": prefix}
+            )
         if args.remote:
             return sync.remote_from_spec({"backend": "local", "path": args.remote})
         return sync.remote_from_config()
@@ -546,7 +697,9 @@ class SyncCommand(Command):
         print(f"  config.json:    {'present' if status.has_config else 'missing'}")
         print(f"  total keys:     {status.total}")
         if remote is None:
-            print("Remote: none configured (local-only; pass --remote/--s3 or set config.json).")
+            print(
+                "Remote: none configured (local-only; pass --remote/--s3 or set config.json)."
+            )
             return 0
         label = sync.remote_label(remote)
         try:
@@ -560,10 +713,12 @@ class SyncCommand(Command):
 
     def _print_result(self, action: str, label: str, result: sync.SyncResult) -> None:
         direction = "→" if action == "push" else "←"
-        print(f"sync {action} (local {direction} {label}): "
-              f"{len(result.added)} added, {len(result.updated)} updated, "
-              f"{len(result.unchanged)} unchanged"
-              + (f", {len(result.kept)} kept (destination newer)" if result.kept else ""))
+        print(
+            f"sync {action} (local {direction} {label}): "
+            f"{len(result.added)} added, {len(result.updated)} updated, "
+            f"{len(result.unchanged)} unchanged"
+            + (f", {len(result.kept)} kept (destination newer)" if result.kept else "")
+        )
 
 
 class StartCommand(Command):
@@ -572,8 +727,12 @@ class StartCommand(Command):
 
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
-        parser.add_argument("-r", "--restart", action="store_true",
-                            help="kill an existing tx-assistant first so warmup recreates it")
+        parser.add_argument(
+            "-r",
+            "--restart",
+            action="store_true",
+            help="kill an existing tx-assistant first so warmup recreates it",
+        )
         args = parser.parse_args(argv)
         tmux = self.service.tmux
         repo = _repo_root()
@@ -587,9 +746,14 @@ class StartCommand(Command):
             print("tx-assistant session created.")
 
         if not tmux.has_session("Views"):
-            self.service.spawn_view(SpawnSpec.for_view(
-                name="Views", tags=["views"], cwd=str(repo), cmd=_default_shell(),
-            ))
+            self.service.spawn_view(
+                SpawnSpec.for_view(
+                    name="Views",
+                    tags=["views"],
+                    cwd=str(repo),
+                    cmd=_default_shell(),
+                )
+            )
             print("Views session created.")
 
         if os.environ.get("TMUX"):
@@ -618,31 +782,56 @@ class AttachCommand(Command):
 
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
-        parser.add_argument("-f", "--filter", dest="query", default="", metavar="QUERY",
-                            help="pre-fill the search with QUERY")
-        parser.add_argument("-j", "--jump", action="store_true",
-                            help="Enter focuses the existing pane hosting the session instead of "
-                                 "nest-attaching here (popup-friendly)")
-        parser.add_argument("--host", nargs="?", const="personal", metavar="ALIAS",
-                            help="attach a session on remote ssh ALIAS (default 'personal') by "
-                                 "running that host's own tx picker over ssh")
-        parser.add_argument("--all", dest="mix", action="store_true",
-                            help="(unsupported) merged local+remote picker — use --host ALIAS")
+        parser.add_argument(
+            "-f",
+            "--filter",
+            dest="query",
+            default="",
+            metavar="QUERY",
+            help="pre-fill the search with QUERY",
+        )
+        parser.add_argument(
+            "-j",
+            "--jump",
+            action="store_true",
+            help="Enter focuses the existing pane hosting the session instead of "
+            "nest-attaching here (popup-friendly)",
+        )
+        parser.add_argument(
+            "--host",
+            nargs="?",
+            const="personal",
+            metavar="ALIAS",
+            help="attach a session on remote ssh ALIAS (default 'personal') by "
+            "running that host's own tx picker over ssh",
+        )
+        parser.add_argument(
+            "--all",
+            dest="mix",
+            action="store_true",
+            help="(unsupported) merged local+remote picker — use --host ALIAS",
+        )
         args = parser.parse_args(argv)
 
         if args.host:
             return self._attach_remote(args.host)
         if args.mix:
-            print("tx attach --all (a merged local+remote picker) is not supported; use "
-                  "`tx attach --host ALIAS` to attach a remote host's sessions over ssh.",
-                  file=sys.stderr)
+            print(
+                "tx attach --all (a merged local+remote picker) is not supported; use "
+                "`tx attach --host ALIAS` to attach a remote host's sessions over ssh.",
+                file=sys.stderr,
+            )
             return 2
 
         # Size the NAME column once (terminal width + longest live name) and export it so each
         # reload-sync subshell (`tx _list`) renders at the same width as the initial paint.
         self.service.reconcile()
-        live = [s for s in self.service.store.all() if s.is_alive() and s.kind != Kind.VIEW]
-        namew = picker_namew(detect_term_cols(), max((len(s.name) for s in live), default=0))
+        live = [
+            s for s in self.service.store.all() if s.is_alive() and s.kind != Kind.VIEW
+        ]
+        namew = picker_namew(
+            detect_term_cols(), max((len(s.name) for s in live), default=0)
+        )
         os.environ["NAMEW"] = str(namew)
 
         # Arm file for the two-press Ctrl-D kill: holds the row armed by the last Ctrl-D (empty =
@@ -675,9 +864,7 @@ class AttachCommand(Command):
         session on that host, so a frozen session name would go stale. Cleared when the attach
         returns. `$TMUX_PANE` is the exact pane tx runs in; absent when not in tmux (nothing to
         stamp)."""
-        remote_command = (
-            '$SHELL -lc "if command -v tx >/dev/null 2>&1; then tx attach; else tmux attach; fi"'
-        )
+        remote_command = '$SHELL -lc "if command -v tx >/dev/null 2>&1; then tx attach; else tmux attach; fi"'
         pane = os.environ.get("TMUX_PANE")
         if pane:
             self.service.tmux.set_option(pane, "@remote-session", host, pane=True)
@@ -730,18 +917,28 @@ class AttachCommand(Command):
             f"query:{palette.FG_HEX}"
         )
         return [
-            "fzf", "--exact", "--ansi", "--prompt=  ❯ ", "--height=100%", "--reverse",
-            "--delimiter=\t", "--with-nth=5..", "--listen", "--track",
-            f"--color={color}", f"--header={header_cols}", f"--query={query}",
+            "fzf",
+            "--exact",
+            "--ansi",
+            "--prompt=  ❯ ",
+            "--height=100%",
+            "--reverse",
+            "--delimiter=\t",
+            "--with-nth=5..",
+            "--listen",
+            "--track",
+            f"--color={color}",
+            f"--header={header_cols}",
+            f"--query={query}",
             # Refresh loop (reconcile-on-read) + unbind y/n on start so they fall through to query
             # input until Ctrl-D arms a row. ESC is left untouched so it always aborts.
-            f'--bind=start:execute-silent(( while sleep 1; do '
+            f"--bind=start:execute-silent(( while sleep 1; do "
             f'curl -fsS -XPOST "localhost:$FZF_PORT" -d "{reload}" >/dev/null 2>&1 || exit 0; '
-            f'done ) &)+unbind(y,n)',
-            f'--bind=ctrl-r:{reload}',
+            f"done ) &)+unbind(y,n)",
+            f"--bind=ctrl-r:{reload}",
             # Cursor move re-renders the focus header, clears the arm file, unbinds the confirm keys.
             f'--bind=focus:transform-header({focus_cmd})+execute-silent(: >"$TX_ARM_FILE")'
-            f'+unbind(y,n)',
+            f"+unbind(y,n)",
             # Ctrl-T: edit tags in a popup (readline pre-fill), then reload to show the new chips.
             # The popup command carries a baked $TX_IDE_HOME (see `edit_tag`) — `display-popup` does
             # not inherit fzf's environment, so without it the retag hits the default home.
@@ -749,10 +946,10 @@ class AttachCommand(Command):
             # Two-press Ctrl-D kill: arm the row, swap in the prompt header, rebind y/n. `y` drives
             # `tx kill` (record → EXITED + logged, not a raw kill-session) then reloads; `n` /
             # cursor-move cancel and restore the focus header. y/n unbind themselves after firing.
-            f'--bind=ctrl-d:execute-silent(printf \'%s\' {{1}} >"$TX_ARM_FILE")'
-            f'+transform-header({arm_cmd})+rebind(y,n)',
+            f"--bind=ctrl-d:execute-silent(printf '%s' {{1}} >\"$TX_ARM_FILE\")"
+            f"+transform-header({arm_cmd})+rebind(y,n)",
             f'--bind=y:execute-silent({bin_tx} kill {{1}} >/dev/null 2>&1; : >"$TX_ARM_FILE")'
-            f'+{reload}+unbind(y,n)',
+            f"+{reload}+unbind(y,n)",
             f'--bind=n:transform-header({focus_cmd})+execute-silent(: >"$TX_ARM_FILE")+unbind(y,n)',
         ]
 
@@ -760,8 +957,9 @@ class AttachCommand(Command):
         """Re-render the feed, run fzf, act on the selection — looping only on a recoverable miss
         (a vanished session / a failed jump), exactly like the bash `while :` loop."""
         while True:
-            result = subprocess.run(opts, input=self._render_feed(namew),
-                                    stdout=subprocess.PIPE, text=True)
+            result = subprocess.run(
+                opts, input=self._render_feed(namew), stdout=subprocess.PIPE, text=True
+            )
             if result.returncode != 0 or not result.stdout.strip():
                 return 0  # ESC / abort / empty list
             fields = result.stdout.rstrip("\n").split("\t")
@@ -769,11 +967,16 @@ class AttachCommand(Command):
             # Field 4 carries the row's tmux target (a process's id, not its reusable name): attach to
             # THAT, so a stale same-name husk in the store can't redirect us onto a dead session (D7).
             # Fall back to name resolution for any row the feed produced without the field.
-            target = fields[3] if len(fields) > 3 and fields[3] else self._tmux_target(name)
+            target = (
+                fields[3] if len(fields) > 3 and fields[3] else self._tmux_target(name)
+            )
             if jump:
                 if self._jump_to_session(name, target):
                     return 0
-                print(f"tx: could not jump to or switch to session {name}", file=sys.stderr)
+                print(
+                    f"tx: could not jump to or switch to session {name}",
+                    file=sys.stderr,
+                )
                 time.sleep(1.2)
                 continue
             if self._nest_attach(name, target):
@@ -843,7 +1046,9 @@ class AttachCommand(Command):
         if origin_cmd not in SHELL_COMMANDS:
             return False
         quoted = shlex.quote(target)
-        tmux.respawn_pane(origin_pane, f"TMUX= tmux attach -t {quoted}; exec ${{SHELL:-zsh}}")
+        tmux.respawn_pane(
+            origin_pane, f"TMUX= tmux attach -t {quoted}; exec ${{SHELL:-zsh}}"
+        )
         return True
 
     def _switch_or_attach(self, target: str) -> bool:
@@ -900,9 +1105,14 @@ class EditTagCommand(Command):
         args = parser.parse_args(argv)
         session = self.service.get(args.session)
         if session is None:
-            print(f"tx: session '{args.session}' not found (not tx-managed)", file=sys.stderr)
+            print(
+                f"tx: session '{args.session}' not found (not tx-managed)",
+                file=sys.stderr,
+            )
             return 1
-        edited = _prompt_with_default(f"Tags for {args.session}: ", ",".join(session.tags))
+        edited = _prompt_with_default(
+            f"Tags for {args.session}: ", ",".join(session.tags)
+        )
         if edited is None:
             return 1  # cancelled — leave the tags untouched
         self.service.tag(session.name, _split_tags(edited))
@@ -914,7 +1124,9 @@ class EditTagCommand(Command):
 
 class FocusEnvelopeCommand(Command):
     name = "focus-envelope"
-    summary = "Internal: build the tx-assistant context envelope for a pane (M-focus, S6)."
+    summary = (
+        "Internal: build the tx-assistant context envelope for a pane (M-focus, S6)."
+    )
 
     def run(self, argv: list[str]) -> int:
         """The unified `focus_envelope` (attachment-topology §6): the firing pane's location + the
@@ -968,7 +1180,9 @@ class PaneInfoCommand(Command):
 
 class PaneKindCommand(Command):
     name = "_pane-kind"
-    summary = "Internal: kind value (view/process) for a record id (after-new-window reader)."
+    summary = (
+        "Internal: kind value (view/process) for a record id (after-new-window reader)."
+    )
 
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
@@ -1036,15 +1250,26 @@ class SelfCheckCommand(Command):
         now = time.time()
         cwd = str(tx_ide_home())
         demo = Session(
-            id=session_id, name="s1a-selfcheck", kind=Kind.PROCESS, role=Role.LLM,
-            state=State.initial_for(Role.LLM), cwd=cwd,
-            cmd="claude --dangerously-skip-permissions", tags=["s1a", "selfcheck"],
-            created_at=now, last_activity=now,
-            chats=[ChatRef(
-                id=None, role="original", cwd=cwd,
-                transcript_path=str(claude.transcript_path("00000000-pending", cwd)),
-                origin=Origin(how="spawn", session_id=session_id, chat_id=None), started_at=now,
-            )],
+            id=session_id,
+            name="s1a-selfcheck",
+            kind=Kind.PROCESS,
+            role=Role.LLM,
+            state=State.initial_for(Role.LLM),
+            cwd=cwd,
+            cmd="claude --dangerously-skip-permissions",
+            tags=["s1a", "selfcheck"],
+            created_at=now,
+            last_activity=now,
+            chats=[
+                ChatRef(
+                    id=None,
+                    role="original",
+                    cwd=cwd,
+                    transcript_path="",
+                    origin=Origin(how="spawn", session_id=session_id, chat_id=None),
+                    started_at=now,
+                )
+            ],
         )
 
         check(demo.state == State.IDLE, "llm spawn state is IDLE (initial_for)")
@@ -1056,11 +1281,20 @@ class SelfCheckCommand(Command):
         check(loaded == demo, "save → load round-trips identically")
         check(loaded.transition_to(State.WORKING) is True, "IDLE → WORKING applies")
         check(loaded.transition_to(State.EXITED) is True, "WORKING → EXITED applies")
-        check(loaded.transition_to(State.WORKING) is False, "C3: EXITED is absorbing (refused)")
-        check(loaded.transition_to(State.EXITED) is False, "no-op transition reports no change")
+        check(
+            loaded.transition_to(State.WORKING) is False,
+            "C3: EXITED is absorbing (refused)",
+        )
+        check(
+            loaded.transition_to(State.EXITED) is False,
+            "no-op transition reports no change",
+        )
 
         found = store.find_by_name("s1a-selfcheck")
-        check(found is not None and found.id == session_id, "find_by_name locates the record")
+        check(
+            found is not None and found.id == session_id,
+            "find_by_name locates the record",
+        )
         check(session_id in {s.id for s in store.all()}, "all() lists the record")
         check(store.delete(session_id) is True, "delete removes the record")
         check(store.load(session_id) is None, "record is gone after delete")
@@ -1071,7 +1305,9 @@ class SelfCheckCommand(Command):
                 print(f"  - {label}")
             return 1
         print("S1a self-check PASSED ✓")
-        print(f"  home={tx_ide_home()}  schema v{SCHEMA_VERSION}  records now={len(store.all())}")
+        print(
+            f"  home={tx_ide_home()}  schema v{SCHEMA_VERSION}  records now={len(store.all())}"
+        )
         return 0
 
 
@@ -1083,7 +1319,9 @@ class SelfCheckCommand(Command):
 # invokes this; it is also runnable into a throwaway dir for a dry inspection.
 
 
-def _split_role_tags(old_tags: list[str], pane_command: str | None) -> tuple[Role, list[str]]:
+def _split_role_tags(
+    old_tags: list[str], pane_command: str | None
+) -> tuple[Role, list[str]]:
     """§6: the v1 leading tag encoded the role. When it maps to a `Role` value (llm/nvim/shell/
     other) that is the role and the rest are the free-form tags; otherwise the leading tag was never
     a role (e.g. a view's `views`), so infer the role from the live pane command and keep all tags."""
@@ -1094,9 +1332,10 @@ def _split_role_tags(old_tags: list[str], pane_command: str | None) -> tuple[Rol
 
 
 def _pane_command_role(pane_command: str | None) -> Role:
-    """§6 inference fallback from the live `pane_current_command`: a Claude version string (shown
-    while it loads) → LLM, else `infer_role` (claude → LLM, nvim → NVIM, a shell → SHELL, else
-    OTHER). `infer_role` is the shared mapping spawn uses, so a re-derived role matches a re-spawn."""
+    """§6 inference fallback from the live `pane_current_command`: an agent version string (shown
+    while it loads) → LLM, else `infer_role` (any registered engine — claude / codex — → LLM, nvim →
+    NVIM, a shell → SHELL, else OTHER). `infer_role` is the shared mapping spawn uses, so a re-derived
+    role matches a re-spawn — and it recognizes codex panes for free now that it asks every engine."""
     command = pane_command or ""
     if _looks_like_version(command):
         return Role.LLM
@@ -1104,8 +1343,9 @@ def _pane_command_role(pane_command: str | None) -> Role:
 
 
 def _looks_like_version(command: str) -> bool:
-    """A dotted-numeric command like `2.1.138` — Claude Code reports its version in
-    `pane_current_command` while loading (mirrors tmux/tx-ide.tmux's claude-scroll matcher)."""
+    """A dotted-numeric command like `2.1.138` — an agent TUI (Claude Code is the measured case)
+    reports its version in `pane_current_command` while loading. Engine-neutral (any version-shaped
+    command), mirroring tmux/tx-ide.tmux's agent-scroll matcher."""
     parts = command.split(".")
     return len(parts) >= 2 and all(part.isdigit() for part in parts)
 
@@ -1129,12 +1369,18 @@ def _iso_to_epoch(created_at: object, fallback: float) -> float:
 
 class FlipRederiveCommand(Command):
     name = "_flip-rederive"
-    summary = "Internal: stage v2 records for every live @tx_id tmux session (Flip D2 / §6)."
+    summary = (
+        "Internal: stage v2 records for every live @tx_id tmux session (Flip D2 / §6)."
+    )
 
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
-        parser.add_argument("--staging", required=True, metavar="DIR",
-                            help="output dir for the staged v2 records (created if absent)")
+        parser.add_argument(
+            "--staging",
+            required=True,
+            metavar="DIR",
+            help="output dir for the staged v2 records (created if absent)",
+        )
         args = parser.parse_args(argv)
         staging = Path(args.staging).expanduser()
         staging.mkdir(parents=True, exist_ok=True)
@@ -1150,7 +1396,11 @@ class FlipRederiveCommand(Command):
                 continue
             try:
                 session, origin = self._rederive(name, tx_id, source, now)
-            except (OSError, ValueError, KeyError) as error:  # a malformed/unreadable v1 record
+            except (
+                OSError,
+                ValueError,
+                KeyError,
+            ) as error:  # a malformed/unreadable v1 record
                 skipped.append((name, f"{type(error).__name__}: {error}"))
                 continue
             if session is None:
@@ -1184,7 +1434,9 @@ class FlipRederiveCommand(Command):
         pid = int(pid_text) if pid_text.isdigit() else None
         return pid, cwd or None, pane_command or None
 
-    def _rederive(self, name: str, tx_id: str, source: Path, now: float) -> tuple[Session | None, str]:
+    def _rederive(
+        self, name: str, tx_id: str, source: Path, now: float
+    ) -> tuple[Session | None, str]:
         """Build one v2 record. With a v1 record present (the §6 path) it is authoritative for
         provenance, refreshed with the live name/pid/cwd. Without one — a coexistence session whose
         record lives in the dev home (discarded at Flip), not the old store — re-derive from tmux
@@ -1193,7 +1445,9 @@ class FlipRederiveCommand(Command):
         v1_path = source / f"{tx_id}.json"
         if v1_path.exists():
             with open(v1_path) as handle:
-                old = json.load(handle)  # raw v1 — NOT via SessionStore, which skips v1 records
+                old = json.load(
+                    handle
+                )  # raw v1 — NOT via SessionStore, which skips v1 records
         pid, cwd, pane_command = self._live_fields(name)
 
         if old is None:
@@ -1201,9 +1455,20 @@ class FlipRederiveCommand(Command):
                 return None, ""
             role = _pane_command_role(pane_command)
             return Session(
-                id=tx_id, name=name, kind=Kind.PROCESS, role=role,
-                state=State.initial_for(role), cwd=cwd or "", cmd="", tags=[], env={},
-                parent=None, pid=pid, created_at=now, last_activity=now, chats=[],
+                id=tx_id,
+                name=name,
+                kind=Kind.PROCESS,
+                role=role,
+                state=State.initial_for(role),
+                cwd=cwd or "",
+                cmd="",
+                tags=[],
+                env={},
+                parent=None,
+                pid=pid,
+                created_at=now,
+                last_activity=now,
+                chats=[],
             ), "tmux-only"
 
         role, tags = _split_role_tags(list(old.get("tags") or []), pane_command)
@@ -1213,32 +1478,39 @@ class FlipRederiveCommand(Command):
         # human display label is never overwritten with the uuid.
         display_name = old.get("name", name) if name == tx_id else name
         session = Session(
-            id=tx_id,                                       # same uuid → @tx_id pointer stays valid
-            name=display_name,                              # refreshed live #S (v1 name if id-named)
+            id=tx_id,  # same uuid → @tx_id pointer stays valid
+            name=display_name,  # refreshed live #S (v1 name if id-named)
             kind=kind,
             role=role,
-            state=State.initial_for(role),                  # IDLE if llm else ALIVE (D3)
-            cwd=cwd or old.get("cwd", ""),                  # refreshed pane_current_path
-            cmd=old.get("cmd", ""),                         # preserved
+            state=State.initial_for(role),  # IDLE if llm else ALIVE (D3)
+            cwd=cwd or old.get("cwd", ""),  # refreshed pane_current_path
+            cmd=old.get("cmd", ""),  # preserved
             tags=tags,
-            env=dict(old.get("env") or {}),                 # preserved
+            env=dict(old.get("env") or {}),  # preserved
             parent=(old.get("parent") or None),
             pid=pid if pid is not None else old.get("pid"),
-            created_at=_iso_to_epoch(old.get("created_at"), now),  # ISO string → float epoch
+            created_at=_iso_to_epoch(
+                old.get("created_at"), now
+            ),  # ISO string → float epoch
             ended_at=None,
             last_activity=now,
-            chats=[],                                       # v1 chats not migrated (re-ingest on Stop)
+            chats=[],  # v1 chats not migrated (re-ingest on Stop)
         )
         return session, "v1"
 
     def _report(
-        self, staging: Path, rederived: list[tuple[Session, str]], skipped: list[tuple[str, str]]
+        self,
+        staging: Path,
+        rederived: list[tuple[Session, str]],
+        skipped: list[tuple[str, str]],
     ) -> None:
         print(f"re-derived {len(rederived)} session(s) into {staging}:")
         for session, origin in rederived:
             tags = ",".join(session.tags) or "-"
-            print(f"  {session.name:<24} role={session.role.value:<6} kind={session.kind.value:<8} "
-                  f"state={session.state.value:<6} tags={tags:<22} [{origin}]")
+            print(
+                f"  {session.name:<24} role={session.role.value:<6} kind={session.kind.value:<8} "
+                f"state={session.state.value:<6} tags={tags:<22} [{origin}]"
+            )
         if skipped:
             print(f"skipped {len(skipped)}:")
             for name, reason in skipped:
@@ -1280,6 +1552,30 @@ class MigrateTmuxNamesCommand(Command):
         return out
 
 
+# ----- schema migration ----------------------------------------------------------------------
+# `tx migrate` (the v2 → v3 migrator) lives in tx.migrations; this command is a thin wrapper.
+
+
+class MigrateCommand(Command):
+    name = "migrate"
+    summary = "Upgrade $TX_IDE_HOME session records to the current schema (idempotent v2 → v3)."
+
+    def run(self, argv: list[str]) -> int:
+        # No flags: the target is $TX_IDE_HOME/sessions, so a sandbox run is `TX_IDE_HOME=<tmp> tx
+        # migrate` (T0 §4 — the v3 code must never migrate the live v2 home). Explicit + idempotent.
+        self._parser().parse_args(argv)  # reject stray args; serve `-h`
+        migrated, skipped = migrate_sessions(sessions_dir())
+        for name in migrated:
+            print(f"  migrated {name} → v{SCHEMA_VERSION}")
+        for name, reason in skipped:
+            print(f"  skipped  {name} ({reason})")
+        print(
+            f"migrated {len(migrated)} record(s) to v{SCHEMA_VERSION}; "
+            f"left {len(skipped)} untouched."
+        )
+        return 0
+
+
 # ----- chat operations (S4) ----------------------------------------------------------------
 # fork / handover / rollover + the hidden async-tail finish verbs. Thin façades over `ChatOps`
 # (lib/tx/chat.py) — argv parsing + rendering only, zero choreography. All transcription-based,
@@ -1293,55 +1589,84 @@ class ForkCommand(Command):
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
         parser.add_argument("source", help="the session to fork (id or name)")
-        parser.add_argument("new_name", nargs="?", help="name for the fork (default <source>-fork)")
+        parser.add_argument(
+            "new_name", nargs="?", help="name for the fork (default <source>-fork)"
+        )
         args = parser.parse_args(argv)
         new = ChatOps(self.service).fork(args.source, args.new_name)
         forked = chat.active_chat(new)
         chat_label = forked.id[:8] if forked and forked.id else "pending"
-        print(f"Forked '{args.source}' → '{new.name}' (chat {chat_label}, cwd={new.cwd})")
+        print(
+            f"Forked '{args.source}' → '{new.name}' (chat {chat_label}, cwd={new.cwd})"
+        )
         return 0
 
 
 class HandoverCommand(Command):
     name = "handover"
-    summary = "Distill a session's chat into a focused brief for a NEW worker session (§5)."
+    summary = (
+        "Distill a session's chat into a focused brief for a NEW worker session (§5)."
+    )
 
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
         parser.add_argument("source", help="the session to hand over from (id or name)")
         parser.add_argument("task", help="the task to distill a brief for")
-        parser.add_argument("new_name", nargs="?", help="name for the worker (default <source>-handover)")
-        parser.add_argument("--self-catch-up", action="store_true",
-                            help="skip the distiller — the worker reads the source bundle itself (CHD1)")
+        parser.add_argument(
+            "new_name",
+            nargs="?",
+            help="name for the worker (default <source>-handover)",
+        )
+        parser.add_argument(
+            "--self-catch-up",
+            action="store_true",
+            help="skip the distiller — the worker reads the source bundle itself (CHD1)",
+        )
         args = parser.parse_args(argv)
         worker = ChatOps(self.service).handover(
             args.source, args.task, args.new_name, self_catch_up=args.self_catch_up
         )
         how = "self-catch-up" if args.self_catch_up else "distilling brief"
-        print(f"Handover '{args.source}' → worker '{worker}' ({how}; launches when ready)")
+        print(
+            f"Handover '{args.source}' → worker '{worker}' ({how}; launches when ready)"
+        )
         return 0
 
 
 class RolloverCommand(Command):
     name = "rollover"
-    summary = "Rotate a session onto a fresh chat in the SAME pane (context exhausted) (§6)."
+    summary = (
+        "Rotate a session onto a fresh chat in the SAME pane (context exhausted) (§6)."
+    )
 
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
-        parser.add_argument("session", nargs="?",
-                            help="the session to roll over (default: the one you are in)")
-        parser.add_argument("--self-catch-up", action="store_true",
-                            help="skip the distiller — the successor reads the bundle itself (CHD1)")
+        parser.add_argument(
+            "session",
+            nargs="?",
+            help="the session to roll over (default: the one you are in)",
+        )
+        parser.add_argument(
+            "--self-catch-up",
+            action="store_true",
+            help="skip the distiller — the successor reads the bundle itself (CHD1)",
+        )
         args = parser.parse_args(argv)
-        new_chat = ChatOps(self.service).rollover(args.session, self_catch_up=args.self_catch_up)
+        # rollover() returns None by design: the successor mints its own chat id, captured ASYNC from
+        # its first hook payload (T4), so it is unknown at rollover time — don't print a half-truth id.
+        ChatOps(self.service).rollover(args.session, self_catch_up=args.self_catch_up)
         how = "self-catch-up" if args.self_catch_up else "summarizing first"
-        print(f"Rollover scheduled ({how}); same session rotates onto chat {new_chat[:8]} when ready")
+        print(
+            f"Rollover scheduled ({how}); the same session rotates onto a fresh chat when ready"
+        )
         return 0
 
 
 class ChatOpFinishCommand(Command):
     name = "_chat-op-finish"
-    summary = "Internal: complete a handover/rollover from its op-spec (idempotent, CHD5)."
+    summary = (
+        "Internal: complete a handover/rollover from its op-spec (idempotent, CHD5)."
+    )
 
     def run(self, argv: list[str]) -> int:
         """The distiller's one short trigger (`tx _chat-op-finish <op-id>`) and the watchdog's
@@ -1370,15 +1695,43 @@ class ChatOpWatchCommand(Command):
 
 
 PUBLIC_COMMANDS: list[type[Command]] = [
-    StartCommand, AttachCommand, LsCommand, SpawnCommand, SpawnNvimCommand, SpawnViewCommand,
-    TagCommand, RenameCommand, WhoamiCommand, SendMessageCommand, KillCommand, ArchiveCommand,
-    RmCommand, ShowCommand, HistoryCommand, ChatCommand, ResumeCommand, SyncCommand,
-    ForkCommand, HandoverCommand, RolloverCommand,
+    StartCommand,
+    AttachCommand,
+    LsCommand,
+    SpawnCommand,
+    SpawnNvimCommand,
+    SpawnViewCommand,
+    TagCommand,
+    RenameCommand,
+    WhoamiCommand,
+    SendMessageCommand,
+    KillCommand,
+    ArchiveCommand,
+    RmCommand,
+    ShowCommand,
+    HistoryCommand,
+    ChatCommand,
+    ResumeCommand,
+    SyncCommand,
+    ForkCommand,
+    HandoverCommand,
+    RolloverCommand,
+    MigrateCommand,
 ]
 HIDDEN_COMMANDS: list[type[Command]] = [
-    ListCommand, EditTagCommand, FocusEnvelopeCommand, PaneInfoCommand, PaneKindCommand,
-    TmuxNameCommand, HookCommand, InitHomeCommand, SelfCheckCommand, FlipRederiveCommand,
-    MigrateTmuxNamesCommand, ChatOpFinishCommand, ChatOpWatchCommand,
+    ListCommand,
+    EditTagCommand,
+    FocusEnvelopeCommand,
+    PaneInfoCommand,
+    PaneKindCommand,
+    TmuxNameCommand,
+    HookCommand,
+    InitHomeCommand,
+    SelfCheckCommand,
+    FlipRederiveCommand,
+    MigrateTmuxNamesCommand,
+    ChatOpFinishCommand,
+    ChatOpWatchCommand,
 ]
 
 

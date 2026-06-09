@@ -6,10 +6,10 @@ starts from a DISTILLED brief/note — never the origin's full history — so it
 Each op appends a `ChatRef` with the right `origin` so the §11 history shows the full lineage.
 
   - **fork** (§4) — new tx session, FULL history. `claude --resume <src> --fork-session`, launched
-    interactively (fork *cannot* pre-mint its id — `--session-id` is rejected with `--resume`, #5).
-    The new chat uuid is captured by the origin-aware hook at the first Stop (CHD6); a brief
-    snapshot-diff poll is a best-effort fast path. `role=fork`, `origin→src`. Fork is the one op that
-    deliberately keeps the full history — handover/rollover distill it away.
+    interactively. The fork mints its own new chat id at startup; tx records a PENDING `ChatRef`
+    (`id=None`) and the capture hook fills it from the first payload (T4, hooks.py). `role=fork`,
+    `origin→src`. Fork is the one op that deliberately keeps the full history — handover/rollover
+    distill it away.
   - **handover** (§5) — new tx session, DISTILLED brief. A temporary **opus** distiller reads the
     source bundle (source untouched), writes a focused brief, then triggers `_chat-op-finish`, which
     spawns a FRESH worker seeded to read only that brief. `role=handover`. `--self-catch-up` skips the
@@ -28,8 +28,9 @@ readiness race and no dropped Enter. The distiller triggers completion with one 
 `tx _chat-op-finish <op-id>` over a spec written under `$TX_IDE_HOME/chat-ops/`; the finish is
 **idempotent** (an atomic `claim/` mkdir), and a detached `_chat-op-watch` backstops it — it runs the
 finish if the distiller flaked, then tears the distiller down. This module orchestrates over the
-FROZEN `SessionService` / `Tmux` / `claude` surfaces and writes every `ChatRef` synchronously; the
-origin-aware hook (`hooks.py`, CHD6) is the idempotent backstop.
+FROZEN `SessionService` / `Tmux` / `claude` surfaces and writes every op's PENDING `ChatRef`
+synchronously (`id=None`); the capture hook (`hooks.py`, T4) fills its id + transcript_path from the
+first payload.
 """
 
 from __future__ import annotations
@@ -45,36 +46,17 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import claude, history
+from . import history
+from .engines import claude, registry
 from .service import NotInsideTmux, ServiceError, SessionNotFound, SessionService
-from .session import ChatRef, Origin, Session
+from .session import ChatRef, Engine, Origin, Session
 from .spawn import SpawnSpec
 from .storage import chat_ops_dir, history_dir, tx_ide_home
 
-# ----- the chat-ops env contract (CHD6) ----------------------------------------------------
-# The pane env carries provenance from the launching op to the firing hook (the shim drains the
-# payload, so env is the only channel). `hooks.py` reads these to stamp the right role/origin.
-CHAT_ID_ENV = "TX_CHAT_ID"                    # the chat uuid (pre-minted; absent for a fork)
-CHAT_ROLE_ENV = "TX_CHAT_ROLE"                # original | fork | rollover | handover
-CHAT_ORIGIN_TXID_ENV = "TX_CHAT_ORIGIN_TXID"  # the tx session the chat derived from
-CHAT_ORIGIN_CHAT_ENV = "TX_CHAT_ORIGIN_CHAT"  # the source chat uuid it derived from
-# The control vars are stripped from an inherited env so a fork-of-a-fork does not carry stale
-# provenance forward (each op sets its own).
-CHAT_CONTROL_ENV = frozenset(
-    {CHAT_ID_ENV, CHAT_ROLE_ENV, CHAT_ORIGIN_TXID_ENV, CHAT_ORIGIN_CHAT_ENV}
-)
-
-# Fork id capture. chat-ops §1 #8: on claude ≥2.1 `--fork-session` writes the new `.jsonl` LAZILY on
-# the first prompt, so a fork that has not been prompted yet has no file to snapshot. This poll is a
-# cheap best-effort fast path (it catches the old-claude / already-written cases); the AUTHORITATIVE
-# capture is the origin-aware hook completing the null-id placeholder at the first Stop (hooks.py).
-FORK_POLL_ATTEMPTS = 6
-FORK_POLL_INTERVAL = 0.5
-
-# A lightweight throwaway distiller that reads the source transcript and writes a brief/note, then
-# triggers the finish. **opus + medium effort** (was sonnet): the distillation is the quality hinge of
-# a handover/rollover, so it is worth opus's judgement even though the mechanics are a read→write.
-DISTILLER_COMMAND = "claude --model opus --effort medium --dangerously-skip-permissions"
+# The throwaway distiller's command is a FIXED per-engine command from the source's engine adapter
+# (`registry.get(record.engine).distiller_command(seed)` — claude→opus/medium, codex→gpt-5.5/high),
+# not a claude-hardcoded constant. The distillation is the quality hinge of a handover/rollover, so
+# each engine picks a model worth its judgement even though the mechanics are a read→write (T8b).
 DISTILLER_TAG = "temporary"  # plus the op kind (handover|rollover) so the in-flight helper is visible
 
 # Watchdog cadence. A detached `_chat-op-watch` polls for the distiller's artifact (brief/note); once
@@ -84,63 +66,6 @@ DISTILLER_TAG = "temporary"  # plus the op kind (handover|rollover) so the in-fl
 WATCH_POLL_INTERVAL = 2.0
 WATCH_GRACE_SECONDS = 20.0
 WATCH_TIMEOUT_SECONDS = 600.0
-
-# Identity flags stripped when reconstructing a launch command from a source session's `cmd`: the
-# new op re-supplies its own (`--resume … --fork-session` for fork, `--session-id <new>` for a fresh
-# chat). Everything else (model / effort / --append-system-prompt / skip-permissions) is inherited.
-_IDENTITY_VALUE_FLAGS = frozenset({"--session-id", "--resume"})
-_IDENTITY_BARE_FLAGS = frozenset({"--fork-session", "--continue", "-c"})
-
-# Bare claude flags — the ones that do NOT consume a following token. They are what lets the baked
-# initial-prompt positional be told apart when reconstructing a launch command: a positional that
-# follows a bare flag (or stands alone) is the prompt and is dropped (the op seeds its own). EVERY
-# OTHER `--flag` is assumed to take a value, so an unrecognised value-flag keeps its value instead of
-# having it mistaken for the prompt and dropped — which would corrupt the command by leaving a
-# dangling flag to swallow the appended seed. This deny-list (vs. an allow-list of value-flags) is
-# deliberate: `claude --help` documents some value-flags only in prose (e.g. `--append-system-prompt
-# [-file]`), so an allow-list silently missed them; a missed BARE flag here is benign (the worst case
-# is the predecessor prompt carried forward, never a corrupt command). Identity flags are handled above.
-_BARE_FLAGS = frozenset({
-    "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--verbose",
-    "--print", "-p", "--ide", "--tmux", "--strict-mcp-config", "--no-session-persistence",
-    "--exclude-dynamic-system-prompt-sections", "--replay-user-messages",
-    "--include-partial-messages", "--include-hook-events", "--disable-slash-commands",
-    "--chrome", "--no-chrome",
-})
-
-# Shell-control tokens. Once shlex surfaces one of these, the rest of a compound source `cmd` is
-# shell wrapping (separator / logical / pipe / background / subshell / brace-group), NOT claude
-# argv. A fork/handover/rollover is a FRESH claude invocation, not the source's shell pipeline, so
-# everything from the first such token on is dropped (bug #2b).
-_SHELL_CONTROL_TOKENS = frozenset({";", "&", "&&", "||", "|", "|&", "&>", "&>>", "(", ")", "{", "}"})
-
-
-# ----- transcript snapshotting (fork capture, §4 step 5 + the hook backstop) ----------------
-
-def snapshot_transcripts(cwd: str) -> set[str]:
-    """The set of chat uuids whose `.jsonl` currently exists in `cwd`'s project dir. The fork
-    capture diffs a before/after snapshot to find the file the fork minted at startup (#8)."""
-    directory = claude.project_dir(cwd)
-    if not directory.is_dir():
-        return set()
-    return {path.stem for path in directory.glob(f"*{claude.TRANSCRIPT_SUFFIX}")}
-
-
-def newest_unclaimed_transcript(cwd: str, exclude: set[str]) -> str | None:
-    """The most-recently-written transcript uuid in `cwd`'s project dir that is not in `exclude`,
-    or None. The origin-aware hook uses this to complete a fork whose snapshot-diff missed: the
-    fork's `.jsonl` is the newest one that is neither the source chat nor an already-recorded id."""
-    directory = claude.project_dir(cwd)
-    if not directory.is_dir():
-        return None
-    candidates = [
-        (path.stat().st_mtime, path.stem)
-        for path in directory.glob(f"*{claude.TRANSCRIPT_SUFFIX}")
-        if path.stem not in exclude
-    ]
-    if not candidates:
-        return None
-    return max(candidates)[1]
 
 
 # ----- chat selection -----------------------------------------------------------------------
@@ -155,99 +80,11 @@ def active_chat(session: Session) -> ChatRef | None:
     return (open_chats or candidates)[-1]
 
 
-# ----- launch-command reconstruction (inherit the source's flags, swap the identity ones) ---
-
-def _is_shell_control(token: str) -> bool:
-    """Whether a shlex token is a shell operator rather than a claude flag/value: an exact control
-    token, or a redirection (any token starting with `<`/`>`). Enough to find the shell boundary
-    without re-implementing a full shell parser (bug #2b)."""
-    return token in _SHELL_CONTROL_TOKENS or token[:1] in ("<", ">")
-
-
-def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
-    """Split a source `cmd` into (binary, inherited-flags) with the session-identity flags AND any
-    positional initial-prompt removed. Inherits the source's persona (model / effort / system-prompt /
-    settings / --dangerously-skip-permissions / …) so a forked or handed-over session keeps it, and
-    re-supplies its own identity flags + seed.
-
-    Each non-identity `--flag` is inherited WITH its following value UNLESS it is a known bare flag
-    (`_BARE_FLAGS`). Assuming an unknown flag takes a value is the safe default: it keeps an
-    unrecognised value-flag's value (e.g. `--append-system-prompt-file <path>`, or any future flag)
-    instead of dropping it — dropping it would leave a dangling flag that swallows the appended seed
-    and corrupts the command. A positional that follows a bare flag (or stands alone) is the baked
-    prompt and is dropped — the op appends its own seed, so carrying the predecessor's forward would
-    make the fresh session re-run it. Stops at the first shell-control token (a compound `--cmd`'s
-    shell wrapping is not claude argv)."""
-    tokens = shlex.split(source_cmd)
-    binary = tokens[0] if tokens else claude.CLAUDE_BIN
-    inherited: list[str] = []
-    index = 1
-    while index < len(tokens):
-        token = tokens[index]
-        if _is_shell_control(token):
-            break  # shell wrapping begins here — drop it and everything after (bug #2b)
-        if token in _IDENTITY_VALUE_FLAGS:
-            index += 2  # drop the identity flag and its value
-            continue
-        if token in _IDENTITY_BARE_FLAGS:
-            index += 1  # drop — the op re-supplies its own
-            continue
-        if token in _BARE_FLAGS:
-            inherited.append(token)  # bare flag; any positional that follows it is the prompt (dropped)
-            index += 1
-            continue
-        if token.startswith("-"):
-            # A value-flag — a known persona flag or an unknown one. Inherit it WITH its value when a
-            # value follows; never drop the value (that is the corruption the bare/value split guards).
-            if index + 1 < len(tokens) and not tokens[index + 1].startswith("-") \
-                    and not _is_shell_control(tokens[index + 1]):
-                inherited.extend(tokens[index:index + 2])
-                index += 2
-            else:
-                inherited.append(token)  # dangling flag (end of argv / next token is itself a flag)
-                index += 1
-            continue
-        index += 1  # a positional — the source's baked initial prompt; drop it (the op seeds its own)
-    return binary, inherited
-
-
-def _ensure_skip_permissions(command: list[str]) -> list[str]:
-    """A forked/seeded session must not stop on a permission prompt (its initial prompt would never
-    run). Guarantee --dangerously-skip-permissions is present (inherited or added)."""
-    if "--dangerously-skip-permissions" not in command:
-        command.append("--dangerously-skip-permissions")
-    return command
-
-
-def fork_command(source_cmd: str, source_chat: str) -> str:
-    """`claude --resume <src> --fork-session …` with the source's persona flags inherited (§4)."""
-    binary, inherited = _strip_identity(source_cmd)
-    command = _ensure_skip_permissions(
-        [binary, "--resume", source_chat, "--fork-session", *inherited]
-    )
-    return shlex.join(command)
-
-
-def fresh_command(source_cmd: str, new_chat: str) -> str:
-    """`claude --session-id <new> …` for a fresh pre-minted chat (handover worker / rollover
-    successor), inheriting the source's persona flags (#6 — a fresh `--session-id` is accepted)."""
-    binary, inherited = _strip_identity(source_cmd)
-    command = _ensure_skip_permissions([binary, "--session-id", new_chat, *inherited])
-    return shlex.join(command)
-
-
-def seeded_command(base_command: str, seed: str) -> str:
-    """Append `seed` as claude's initial-prompt positional argument. A positional prompt auto-submits
-    in interactive mode (measured), so this replaces tmux send-keys seeding entirely: the prompt is
-    baked into the launch command — no readiness poll, no dropped Enter, fully deterministic.
-    `claude.inject_session_id` keeps this tail verbatim when tx mints a chat id for the distiller."""
-    return f"{base_command} {shlex.quote(seed)}"
-
-
 def _inherited_env(session: Session) -> dict[str, str]:
-    """The source session's env minus the chat-ops control vars (a fork/handover must set its own
-    provenance, not carry the source's forward)."""
-    return {key: value for key, value in session.env.items() if key not in CHAT_CONTROL_ENV}
+    """The source session's env, inherited by a derived op's new session (fork / handover). Provenance
+    no longer rides the env — each op records its own pending `ChatRef` and the hook captures the id
+    from the payload (T4) — so this is a plain copy; `_spawn` overlays a fresh `TX_SESSION_ID`."""
+    return dict(session.env)
 
 
 # ----- helpers shared by the ops -------------------------------------------------------------
@@ -278,8 +115,9 @@ class ChatOpSpec:
     """Everything `_chat-op-finish` needs to complete a handover/rollover, written under
     `$TX_IDE_HOME/chat-ops/<op-id>/spec.json`. The distiller triggers the op with one short verb
     (`tx _chat-op-finish <op-id>`) instead of echoing a long exact command, and the detached watchdog
-    reads the same spec. Fields not used by a kind stay empty (handover ignores `pane`/`new_chat`;
-    rollover ignores `worker_name`/`worker_chat`)."""
+    reads the same spec. Fields not used by a kind stay empty (handover ignores `pane`; rollover
+    ignores `worker_name`). No chat id is carried — the successor's id is captured from its first hook
+    payload (T4), so the op records a pending `ChatRef` the hook fills."""
 
     op_id: str
     kind: str  # "handover" | "rollover"
@@ -289,8 +127,6 @@ class ChatOpSpec:
     artifact_path: str  # the brief (handover) / note (rollover) the distiller writes; "" = self-catch-up
     self_catch_up: bool = False
     worker_name: str = ""   # handover
-    worker_chat: str = ""   # handover
-    new_chat: str = ""      # rollover
     pane: str = ""          # rollover
     distiller_name: str = ""
 
@@ -312,8 +148,7 @@ class ChatOpSpec:
             "op_id": self.op_id, "kind": self.kind, "source_txid": self.source_txid,
             "source_chat": self.source_chat, "cwd": self.cwd, "artifact_path": self.artifact_path,
             "self_catch_up": self.self_catch_up, "worker_name": self.worker_name,
-            "worker_chat": self.worker_chat, "new_chat": self.new_chat, "pane": self.pane,
-            "distiller_name": self.distiller_name,
+            "pane": self.pane, "distiller_name": self.distiller_name,
         }
 
 
@@ -338,62 +173,37 @@ class ChatOps:
 
         cwd = source_chat.cwd
         name = self._unique_name(new_name or f"{source_session.name}-fork")
-        before = snapshot_transcripts(cwd)
 
-        env = {
-            **_inherited_env(source_session),
-            CHAT_ROLE_ENV: "fork",
-            CHAT_ORIGIN_TXID_ENV: source_session.id,
-            CHAT_ORIGIN_CHAT_ENV: source_chat.id,
-        }
         spec = SpawnSpec.for_process(
             name=name, tags=list(source_session.tags), cwd=cwd,
-            cmd=fork_command(source_session.cmd, source_chat.id), env=env,
+            cmd=shlex.join(registry.get(source_session.engine).fork_command(source_session.cmd, source_chat.id)),
+            env=_inherited_env(source_session), records_own_chat=True,
+            engine=source_session.engine,
         )
         new_session = self.service.spawn(spec)
 
-        fork_chat_id = self._capture_fork_chat(cwd, before)
-        self._record_fork_chat(new_session.id, cwd, source_session.id, source_chat.id, fork_chat_id)
-        self.service.log.append(
-            "fork", f"{source_session.name} → {name} (chat {(fork_chat_id or 'pending')[:8]})"
-        )
+        self._record_fork_chat(new_session.id, cwd, source_session.id, source_chat.id)
+        self.service.log.append("fork", f"{source_session.name} → {name} (chat pending)")
         return self.service.store.load(new_session.id)
 
-    def _capture_fork_chat(self, cwd: str, before: set[str]) -> str | None:
-        """Poll the project dir briefly for a new `.jsonl` the fork wrote at startup, returning its
-        uuid — or None (the common case on claude ≥2.1, where the fork writes only on first prompt;
-        the hook then completes the placeholder). If several appear, the newest by mtime is the fork."""
-        for _ in range(FORK_POLL_ATTEMPTS):
-            time.sleep(FORK_POLL_INTERVAL)
-            appeared = snapshot_transcripts(cwd) - before
-            if appeared:
-                return newest_unclaimed_transcript(cwd, before)
-        return None
-
     def _record_fork_chat(
-        self, new_txid: str, cwd: str, source_txid: str, source_chat: str, fork_chat_id: str | None
+        self, new_txid: str, cwd: str, source_txid: str, source_chat: str
     ) -> None:
-        """Append the fork's `ChatRef` to the new record (role=fork, origin→source). Idempotent with
-        the hook backstop: if the hook already created/filled it, only fill a still-null id here."""
+        """Append the fork's PENDING `ChatRef` (id=None, role=fork, origin→source) to the new record.
+        The fork mints its own id at startup; the capture hook fills it from the first payload (T4).
+        Idempotent: skip if a fork ref for this source already exists (the hook never creates one —
+        it only fills a pending ref — so this synchronous write is the sole creator)."""
         session = self.service.store.load(new_txid)
-        existing = next(
-            (chat for chat in session.chats
-             if chat.role == "fork" and chat.origin.chat_id == source_chat),
-            None,
-        )
-        if existing is not None:
-            if existing.id is None and fork_chat_id is not None:
-                existing.id = fork_chat_id
-                existing.transcript_path = str(claude.transcript_path(fork_chat_id, cwd))
-                self.service.store.save(session)
+        if any(chat.role == "fork" and chat.origin.chat_id == source_chat for chat in session.chats):
             return
         session.chats.append(ChatRef(
-            id=fork_chat_id,
+            id=None,
             role="fork",
             cwd=cwd,
-            transcript_path=str(claude.transcript_path(fork_chat_id, cwd)) if fork_chat_id else "",
+            transcript_path="",
             origin=Origin(how="fork", session_id=source_txid, chat_id=source_chat),
             started_at=time.time(),
+            engine=session.engine,
         ))
         self.service.store.save(session)
 
@@ -418,14 +228,13 @@ class ChatOps:
         history.ingest_session(self.service.store, source_session.id, wait=True)
 
         worker_name = self._unique_name(new_name or f"{source_session.name}-handover")
-        worker_chat = str(uuid.uuid4())
         brief_path = history_dir() / source_session.id / f"handover-{_slug(task)}.md"
 
         spec = ChatOpSpec(
             op_id=str(uuid.uuid4()), kind="handover", source_txid=source_session.id,
             source_chat=source_chat.id, cwd=source_chat.cwd,
             artifact_path="" if self_catch_up else str(brief_path),
-            self_catch_up=self_catch_up, worker_name=worker_name, worker_chat=worker_chat,
+            self_catch_up=self_catch_up, worker_name=worker_name,
         )
 
         if self_catch_up:
@@ -446,18 +255,19 @@ class ChatOps:
             f"saved, run exactly this command and nothing else: "
             f"{_tx_invocation()} _chat-op-finish {shlex.quote(spec.op_id)}"
         )
-        self._spawn_distiller(distiller, "handover", source_chat.cwd, seed)
+        self._spawn_distiller(distiller, "handover", source_chat.cwd, seed, source_session.engine)
         self._detach(["_chat-op-watch", spec.op_id])
         self.service.log.append("handover", f"{source_session.name} → {worker_name} (distilling)")
         return worker_name
 
     # ----- rollover (§6) -------------------------------------------------------------------
 
-    def rollover(self, session: str | None = None, self_catch_up: bool = False) -> str:
+    def rollover(self, session: str | None = None, self_catch_up: bool = False) -> None:
         """Rotate the SAME tx session onto a fresh chat in the SAME pane (context exhausted). The
         default summarizes the current chat into a note via a temporary opus distiller, which then
         triggers `_chat-op-finish` (a detached watchdog backstops it); `--self-catch-up` fires the
-        finish directly (detached). Returns the new chat uuid."""
+        finish directly (detached). The successor mints its own chat id, captured from its first hook
+        payload (T4), so there is no id to return."""
         target = session or self.service.tmux.current_session_name()
         if target is None:
             raise NotInsideTmux("rollover: run inside a tmux session or pass <session>")
@@ -469,14 +279,13 @@ class ChatOps:
             raise ServiceError(f"rollover: '{record.name}' has no active chat to roll over")
 
         pane = self._resolve_pane(record)
-        new_chat = str(uuid.uuid4())
         note_path = self._next_rollover_note(record.id)
 
         spec = ChatOpSpec(
             op_id=str(uuid.uuid4()), kind="rollover", source_txid=record.id,
             source_chat=current_chat.id, cwd=current_chat.cwd,
             artifact_path="" if self_catch_up else str(note_path),
-            self_catch_up=self_catch_up, new_chat=new_chat, pane=pane,
+            self_catch_up=self_catch_up, pane=pane,
         )
 
         if self_catch_up:
@@ -484,8 +293,8 @@ class ChatOps:
             # The caller may BE the pane being respawned — fire the finish detached so it survives
             # `respawn-pane -k` killing this process's pane.
             self._detach(["_chat-op-finish", spec.op_id])
-            self.service.log.append("rollover", f"{record.name} (self-catch-up, chat {new_chat[:8]})")
-            return new_chat
+            self.service.log.append("rollover", f"{record.name} (self-catch-up)")
+            return
 
         # Read the freshest bundle (blocking) so the summary reflects the latest turn.
         history.ingest_session(self.service.store, record.id, wait=True)
@@ -499,10 +308,9 @@ class ChatOps:
             f"and decisions — to {note_path} . When the note file is saved, run exactly this command "
             f"and nothing else: {_tx_invocation()} _chat-op-finish {shlex.quote(spec.op_id)}"
         )
-        self._spawn_distiller(distiller, "rollover", current_chat.cwd, seed)
+        self._spawn_distiller(distiller, "rollover", current_chat.cwd, seed, record.engine)
         self._detach(["_chat-op-watch", spec.op_id])
-        self.service.log.append("rollover", f"{record.name} (distilling, chat {new_chat[:8]})")
-        return new_chat
+        self.service.log.append("rollover", f"{record.name} (distilling)")
 
     # ----- the idempotent finish + its watchdog --------------------------------------------
 
@@ -529,9 +337,10 @@ class ChatOps:
             self._cleanup_op(spec)
 
     def _finish_handover(self, spec: ChatOpSpec) -> None:
-        """Spawn the FRESH handover worker (pre-minted `--session-id`), seeded via its initial prompt
-        to read only the brief (no origin baggage). Records `ChatRef{role:handover}`; the worker
-        carries the origin env so the hook backstops the same ref on first prompt."""
+        """Spawn the FRESH handover worker, seeded via its initial prompt to read only the brief (no
+        origin baggage). Records a PENDING `ChatRef{role:handover}`; the worker's first hook captures
+        its chat id from the payload (T4). `records_own_chat` so `_spawn` does not also add an
+        `original` ref."""
         source = self.service.store.load(spec.source_txid)
         if source is None:
             raise SessionNotFound(f"_chat-op-finish: source record '{spec.source_txid}' not found")
@@ -547,28 +356,24 @@ class ChatOps:
                 f"Your task brief is at {spec.artifact_path} — read it and begin. Fuller predecessor "
                 f"history, only if the brief is insufficient: {bundle}/ ."
             )
-        env = {
-            **_inherited_env(source),
-            CHAT_ID_ENV: spec.worker_chat,
-            CHAT_ROLE_ENV: "handover",
-            CHAT_ORIGIN_TXID_ENV: spec.source_txid,
-            CHAT_ORIGIN_CHAT_ENV: spec.source_chat,
-        }
-        launch = seeded_command(fresh_command(source.cmd, spec.worker_chat), seed)
+        launch = shlex.join(registry.get(source.engine).seed_command(source.cmd, seed))
         worker = self.service.spawn(SpawnSpec.for_process(
-            name=spec.worker_name, tags=list(source.tags), cwd=spec.cwd, cmd=launch, env=env,
+            name=spec.worker_name, tags=list(source.tags), cwd=spec.cwd, cmd=launch,
+            env=_inherited_env(source), records_own_chat=True,
+            engine=source.engine,
         ))
         self._record_seeded_chat(
-            worker.id, spec.worker_chat, spec.cwd, "handover", spec.source_txid, spec.source_chat
+            worker.id, spec.cwd, "handover", spec.source_txid, spec.source_chat
         )
-        self.service.log.append("handover-finish", f"{spec.worker_name} (chat {spec.worker_chat[:8]})")
+        self.service.log.append("handover-finish", f"{spec.worker_name} (chat pending)")
 
     def _finish_rollover(self, spec: ChatOpSpec) -> None:
         """Rotate `pane` onto a fresh chat in place. Re-ingests the source's FINAL transcript first
         (so the predecessor bundle the successor catches up from includes anything that happened
-        during the rollover window), then `respawn-pane -k` relaunches claude with the fresh
-        `--session-id` + env baked in and the note seeded as the initial prompt. Appends
-        `ChatRef{role:rollover}` to the SAME record and closes the rotated-out chat."""
+        during the rollover window), then `respawn-pane -k` relaunches a fresh claude (no identity
+        flag) with the note seeded as the initial prompt. Appends a PENDING `ChatRef{role:rollover}`
+        to the SAME record (the successor's first hook captures its id, T4) and closes the
+        rotated-out chat."""
         record = self.service.store.load(spec.source_txid)
         if record is None:
             raise SessionNotFound(f"_chat-op-finish: record '{spec.source_txid}' not found")
@@ -589,20 +394,16 @@ class ChatOps:
                 f"— read it and continue. If it looks truncated or you are missing the most recent "
                 f"context, catch up from the predecessor transcript at {catch_up}/transcript.jsonl ."
             )
-        env = {
-            "TX_SESSION_ID": spec.source_txid,
-            CHAT_ID_ENV: spec.new_chat,
-            CHAT_ROLE_ENV: "rollover",
-            CHAT_ORIGIN_TXID_ENV: spec.source_txid,
-            CHAT_ORIGIN_CHAT_ENV: spec.source_chat,
-        }
-        command = _env_prefix(env) + seeded_command(fresh_command(record.cmd, spec.new_chat), seed)
+        # The rotated pane keeps the SAME tx session, so its hook (TX_SESSION_ID) fills the pending
+        # rollover ref. No chat-control env — provenance is on the ref, the id is captured (T4).
+        env = {"TX_SESSION_ID": spec.source_txid}
+        command = _env_prefix(env) + shlex.join(registry.get(record.engine).seed_command(record.cmd, seed))
         self.service.tmux.respawn_pane(spec.pane, command)
         self._record_seeded_chat(
-            spec.source_txid, spec.new_chat, spec.cwd, "rollover", spec.source_txid,
+            spec.source_txid, spec.cwd, "rollover", spec.source_txid,
             spec.source_chat, close_chat=spec.source_chat,
         )
-        self.service.log.append("rollover-finish", f"{record.name} → chat {spec.new_chat[:8]}")
+        self.service.log.append("rollover-finish", f"{record.name} (chat pending)")
 
     def chat_op_watch(self, op_id: str) -> None:
         """Detached backstop for the distiller (CHD5). Polls for the distiller's artifact (brief/note);
@@ -670,39 +471,47 @@ class ChatOps:
     # ----- ChatRef + distiller spawn shared mechanics --------------------------------------
 
     def _record_seeded_chat(
-        self, txid: str, chat_id: str, cwd: str, role: str, origin_txid: str, origin_chat: str,
+        self, txid: str, cwd: str, role: str, origin_txid: str, origin_chat: str,
         close_chat: str | None = None,
     ) -> None:
-        """Append a seeded op's `ChatRef` (handover worker / rollover successor) synchronously, so
-        `tx chat ls` shows it immediately and ingest finds it. Idempotent with the hook backstop:
-        skip the append if a `ChatRef` for this chat id already exists. `close_chat` stamps
-        `ended_at` on the rotated-out chat (rollover) in the same save — and is the durable
-        predecessor link the successor's `origin.chat_id` points back to for catch-up."""
+        """Append a seeded op's PENDING `ChatRef` (handover worker / rollover successor) synchronously,
+        so `tx chat ls` shows it immediately. Its id + transcript_path are captured from the
+        successor's first hook payload (T4). `close_chat` stamps `ended_at` on the rotated-out chat
+        (rollover) in the same save — the durable predecessor link the successor's `origin.chat_id`
+        points back to for catch-up. Idempotent: skip if a pending ref for this role+origin exists."""
         now = time.time()
         session = self.service.store.load(txid)
         if close_chat is not None:
             for reference in session.chats:
                 if reference.id == close_chat and reference.ended_at is None:
                     reference.ended_at = now
-        if not any(reference.id == chat_id for reference in session.chats):
+        already = any(
+            reference.id is None and reference.role == role and reference.origin.chat_id == origin_chat
+            for reference in session.chats
+        )
+        if not already:
             session.chats.append(ChatRef(
-                id=chat_id,
+                id=None,
                 role=role,
                 cwd=cwd,
-                transcript_path=str(claude.transcript_path(chat_id, cwd)),
+                transcript_path="",
                 origin=Origin(how=role, session_id=origin_txid, chat_id=origin_chat),
                 started_at=now,
+                engine=session.engine,
             ))
         self.service.store.save(session)
 
-    def _spawn_distiller(self, name: str, kind: str, cwd: str, seed: str) -> Session:
+    def _spawn_distiller(self, name: str, kind: str, cwd: str, seed: str, engine: Engine) -> Session:
         """Spawn the temporary distiller with its instructions baked in as the initial prompt (no
-        send-keys). Tagged `temporary` + the op kind so the in-flight helper is visible in `tx ls`.
-        Like every llm session it gets a chat id minted + `--session-id`-injected by `_spawn`
-        (`inject_session_id` keeps the prompt tail verbatim); the throwaway bundle is harmless."""
+        send-keys). The command is the SOURCE engine's fixed distiller (`distiller_command(seed)` —
+        claude→opus/medium, codex→gpt-5.5/high; design §5), dispatched on the source's `engine`.
+        Tagged `temporary` + the op kind so the in-flight helper is visible in `tx ls`. A plain llm
+        spawn, so `_spawn` gives it a pending `original` ChatRef captured from its first hook (T4);
+        the throwaway bundle is harmless."""
         spec = SpawnSpec.for_process(
             name=name, tags=[DISTILLER_TAG, kind], cwd=cwd,
-            cmd=seeded_command(DISTILLER_COMMAND, seed),
+            cmd=shlex.join(registry.get(engine).distiller_command(seed)),
+            engine=engine,
         )
         return self.service.spawn(spec)
 

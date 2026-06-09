@@ -22,7 +22,9 @@ import re
 import time
 from dataclasses import dataclass
 
-from . import claude
+# Side-effect import: each adapter self-registers at import, so registered() sees every engine.
+from .engines import claude, codex  # noqa: F401
+from .engines import registry
 from .events import EventLog
 from .session import Session, State
 from .storage import config_path
@@ -105,7 +107,12 @@ class Reconciler:
         return True
 
     def _is_agent_command(self, command: str) -> bool:
-        return command == claude.CLAUDE_BIN or bool(_VERSION_COMMAND.match(command))
+        """Whether the live `pane_current_command` is an agent still up (C5): ANY registered engine's
+        bare binary (`claude` / `codex` / …) OR a dotted version string an engine's TUI shows while
+        loading (the load window before the binary name settles)."""
+        return any(
+            registry.get(engine).matches_binary(command) for engine in registry.registered()
+        ) or bool(_VERSION_COMMAND.match(command))
 
     def _stuck_threshold(self) -> float:
         """Read the C5 threshold from config.json (a user boundary → tolerate absence + default),
@@ -114,4 +121,6 @@ class Reconciler:
         if not path.exists():
             return DEFAULT_STUCK_WORKING_SECONDS
         config = json.loads(path.read_text())
-        return config.get("stuck_working_threshold_seconds", DEFAULT_STUCK_WORKING_SECONDS)
+        return config.get(
+            "stuck_working_threshold_seconds", DEFAULT_STUCK_WORKING_SECONDS
+        )

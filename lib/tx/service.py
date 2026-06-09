@@ -17,10 +17,10 @@ from __future__ import annotations
 import time
 import uuid
 
-from . import claude
 from .events import EventLog
+from .messages import build_envelope
 from .reconcile import Reconciler
-from .session import ChatRef, Kind, Origin, Role, Session, State
+from .session import ChatRef, Engine, Kind, Origin, Role, Session, State
 from .spawn import SpawnSpec
 from .store import SessionStore
 from .tmux import Tmux, format_envelope
@@ -54,7 +54,9 @@ class SessionService:
         self.tmux = tmux if tmux is not None else Tmux()
         self.log = log if log is not None else EventLog()
         self.reconciler = (
-            reconciler if reconciler is not None else Reconciler(self.store, self.tmux, self.log)
+            reconciler
+            if reconciler is not None
+            else Reconciler(self.store, self.tmux, self.log)
         )
 
     # ----- spawn ---------------------------------------------------------------------------
@@ -90,24 +92,32 @@ class SessionService:
             raise SessionExists(f"session '{tmux_name}' already exists")
 
         now = time.time()
+        # An llm session's engine: set from the spawn spec, read off the record thereafter, never
+        # re-derived from `cmd`. Unset ⇒ default Claude; a non-llm session has none.
+        engine = (spec.engine or Engine.CLAUDE) if spec.role == Role.LLM else None
         launch_env = {"TX_SESSION_ID": session_id, **spec.env}
-        command = spec.cmd
         chats: list[ChatRef] = []
-        if self._mints_original_chat(spec):
-            chat_id = str(uuid.uuid4())
-            launch_env["TX_CHAT_ID"] = chat_id
-            command = claude.inject_session_id(command, chat_id)
-            chats.append(ChatRef(
-                id=chat_id,
-                role="original",
-                cwd=spec.cwd,
-                transcript_path=str(claude.transcript_path(chat_id, spec.cwd)),
-                origin=Origin(how="spawn", session_id=session_id, chat_id=None),
-                started_at=now,
-            ))
+        # Capture-after-launch (design §2/§7): every plain llm spawn gets a PENDING `original` ChatRef
+        # — id + transcript_path are unknown until the first hook (`SessionStart` / `UserPromptSubmit`)
+        # reads them off the payload (hooks.py). No pre-mint, no `--session-id` injection. A chat-op
+        # that records its own ref (fork / handover / resume — `records_own_chat`) skips this.
+        if spec.role == Role.LLM and not spec.records_own_chat:
+            chats.append(
+                ChatRef(
+                    id=None,
+                    role="original",
+                    cwd=spec.cwd,
+                    transcript_path="",
+                    origin=Origin(how="spawn", session_id=session_id, chat_id=None),
+                    started_at=now,
+                    engine=engine,
+                )
+            )
 
         parent = self.tmux.current_session_name()
-        pid = self.tmux.new_session(name=tmux_name, cwd=spec.cwd, command=command, env=launch_env)
+        pid = self.tmux.new_session(
+            name=tmux_name, cwd=spec.cwd, command=spec.cmd, env=launch_env
+        )
         self.tmux.set_tx_id(tmux_name, session_id)
         # C2 (revised, measured on tmux 3.6a): NO per-session `session-closed` hook is registered
         # here. A session's OWN `session-closed` hook does not fire at its own close on 3.6a —
@@ -124,7 +134,8 @@ class SessionService:
             role=spec.role,
             state=State.initial_for(spec.role),
             cwd=spec.cwd,
-            cmd=command,
+            cmd=spec.cmd,
+            engine=engine,
             tags=list(spec.tags),
             env=dict(spec.env),
             parent=parent,
@@ -136,15 +147,6 @@ class SessionService:
         self.store.save(session)
         self.log.append("spawn", f"{spec.name} [{spec.role.value}] {spec.cwd}")
         return session
-
-    def _mints_original_chat(self, spec: SpawnSpec) -> bool:
-        """Whether this spawn must mint a fresh `original` chat id. Every llm session owns a chat id
-        (mandatory — there is no opt-in flag): a plain `claude` spawn gets one minted here and its
-        command `--session-id`-injected so claude adopts exactly it, which makes the recorded id
-        equal claude's transcript filename. A command that already declares its own chat — fork's
-        `--resume … --fork-session`, handover/rollover/resume's `--session-id` / `--resume` — is
-        skipped (those ops record their own `ChatRef`). A non-llm session never mints."""
-        return spec.role == Role.LLM and not claude.command_declares_chat(spec.cmd)
 
     def _require_name_free(self, name: str) -> None:
         """Refuse a spawn/rename onto a display name a LIVE record already holds — the human-name
@@ -195,7 +197,9 @@ class SessionService:
     def tag(self, name_or_id: str, tags: list[str]) -> Session:
         session = self._require(name_or_id)
         session.tags = list(tags)
-        session.attached_to = self.tmux.attached_to(session.tmux_name)  # ride-along snapshot (§4)
+        session.attached_to = self.tmux.attached_to(
+            session.tmux_name
+        )  # ride-along snapshot (§4)
         self.store.save(session)
         self.log.append("tag", f"{session.name} {','.join(tags)}")
         return session
@@ -214,7 +218,9 @@ class SessionService:
         if session.kind == Kind.VIEW and self.tmux.has_session(previous):
             self.tmux.rename_session(previous, new_name)
         session.name = new_name
-        session.attached_to = self.tmux.attached_to(session.tmux_name)  # ride-along snapshot (§4)
+        session.attached_to = self.tmux.attached_to(
+            session.tmux_name
+        )  # ride-along snapshot (§4)
         self.store.save(session)
         self.log.append("rename", f"{previous} → {new_name}")
         return session
@@ -236,7 +242,9 @@ class SessionService:
             session.last_activity = now  # turn start — the C5 stuck-WORKING clock
         if new_state.is_terminal:
             session.ended_at = now
-        session.attached_to = [] if new_state.is_terminal else self.tmux.attached_to(session.tmux_name)
+        session.attached_to = (
+            [] if new_state.is_terminal else self.tmux.attached_to(session.tmux_name)
+        )
         self.store.save(session)
         self.log.append("state", f"{session.name} → {new_state.value}")
         return True
@@ -244,9 +252,9 @@ class SessionService:
     # ----- messaging -----------------------------------------------------------------------
 
     def send_message(self, target: str, body: str) -> None:
-        """Peer-message another session: wrap the body in the `<from-claude session="…">` envelope,
-        type it into the target's active pane, pause, then send Enter (Claude Code's input box
-        drops an Enter that arrives too fast — COMMON.md). Both ends resolve through the store: the
+        """Peer-message another session: wrap the body in the neutral `<from-agent session="…">`
+        envelope, type it into the target's active pane, pause, then send Enter (the agent's input
+        box drops an Enter that arrives too fast — COMMON.md). Both ends resolve through the store: the
         user addresses a PROCESS by its human name but tmux targets it by id, and the envelope must
         carry the sender's human name, not the raw `#S` (which is the sender's id for a worker)."""
         record = self._resolve(target)
@@ -254,10 +262,12 @@ class SessionService:
             raise SessionNotFound(f"target session '{target}' does not exist")
         current = self.tmux.current_session_name()
         if current is None:
-            raise NotInsideTmux("send-message must run inside tmux (needs the sender session name)")
+            raise NotInsideTmux(
+                "send-message must run inside tmux (needs the sender session name)"
+            )
         sender = self._resolve(current)
         sender_name = sender.name if sender is not None else current
-        envelope = f'<from-claude session="{sender_name}">{body}</from-claude>'
+        envelope = build_envelope(sender_name, body)
         self.tmux.send_keys(record.tmux_name, envelope)
         time.sleep(0.3)
         self.tmux.send_keys(record.tmux_name, "Enter")
@@ -291,10 +301,15 @@ class SessionService:
         attrs = self.tmux.focus_attrs(pane_id)
         if attrs is None:
             return ""
-        self._add_record_attrs(attrs, attrs.get("session-name"), "session-kind", "session-tag")
+        self._add_record_attrs(
+            attrs, attrs.get("session-name"), "session-kind", "session-tag"
+        )
         if not attrs.get("inner-remote"):
             self._add_record_attrs(
-                attrs, attrs.get("inner-session-name"), "inner-session-kind", "inner-session-tag"
+                attrs,
+                attrs.get("inner-session-name"),
+                "inner-session-kind",
+                "inner-session-tag",
             )
         return format_envelope(attrs)
 
@@ -328,5 +343,7 @@ class SessionService:
     def _require(self, token: str) -> Session:
         session = self._resolve(token)
         if session is None:
-            raise SessionNotFound(f"session '{token}' not found (no live @tx_id, no store record)")
+            raise SessionNotFound(
+                f"session '{token}' not found (no live @tx_id, no store record)"
+            )
         return session

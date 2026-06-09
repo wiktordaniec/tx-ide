@@ -20,7 +20,7 @@
 #          (Skip this with --keep-records if you'd rather just live with the warnings.)
 #        - the dark mailbox dir ~/.claude/mailbox (old inbox/speaker; expendable).
 #   5. ./install  — the retargeted installer: symlinks tx onto PATH, builds $TX_IDE_HOME, registers
-#      the new hooks via setup/agents/claude.sh (match-by-marker → peon-ping/require-worktree kept),
+#      the new hooks via setup/engines/install.sh (match-by-marker → peon-ping/require-worktree kept),
 #      moves the statusline (C10), marker mode=installed. install backs up settings.json itself.
 #   6. Verify: tx resolves to the python shim, marker mode=installed, hooks under $TX_IDE_HOME,
 #      peon-ping still present, `tx ls` runs clean (no v1 warnings).

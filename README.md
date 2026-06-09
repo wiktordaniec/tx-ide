@@ -136,7 +136,7 @@ session, retag, message a peer. It follows `agents/TX-ASSISTANT.md`.
 | `tx kill <name>` | End a tmux session and mark its record EXITED. |
 | `tx archive <name>` | Retire a session (mark ARCHIVED, keep the record) and force a full history ingest. |
 | `tx rm <id\|name>` | Delete a session record (manual GC; leaves any live tmux session running). |
-| `tx send-message <target> <body>` | Peer-message another Claude Code session (wraps the `<from-claude …>` envelope, handles the post-send pause). |
+| `tx send-message <target> <body>` | Peer-message another agent session (wraps the `<from-agent …>` envelope, handles the post-send pause). |
 | `tx sync push\|pull\|status [--remote PATH] [--s3 BUCKET[/PREFIX]]` | Manual archive sync of the reproducible corpus — never on the hot path. |
 | `tx start [-r\|--restart]` | Ensure the `Views` home base + `tx-assistant` exist, then attach `Views`. |
 
@@ -214,7 +214,8 @@ The model mirrors how Claude Code itself installs: the **cloned repo is the sour
 - symlinks the `tx` CLI onto your `PATH` (`~/.local/bin`),
 - creates the `$TX_IDE_HOME` skeleton,
 - generates the C9-baked Claude hook shims (+ statusline) under `$TX_IDE_HOME`, and
-- registers those hooks in `~/.claude/settings.json` via `setup/agents/claude.sh`, behind a
+- registers those hooks in `~/.claude/settings.json` via the unified engine installer
+  `setup/engines/install.sh` (Claude by default; Codex is opt-in via `--engine codex`), behind a
   self-describing marker so re-runs and uninstall are exact and your other hooks are left untouched.
 
 Re-run any time to update or reconcile drift. After it finishes:
@@ -230,7 +231,7 @@ tx start    # create Views + warm the tx-assistant
 ./uninstall
 ```
 
-Reverses what `./install` did (the per-agent half is `setup/agents/claude.sh uninstall`: it
+Reverses what `./install` did (the per-engine half is `setup/engines/install.sh uninstall`: it
 surgically strips only the marker-recorded hook commands from `settings.json`, restores the
 statusline reference, and removes the generated shims — leaving your records, history, log, and role
 overrides in place).
@@ -243,7 +244,7 @@ The tmux integration reads these user-options (all default `on`). Set them in yo
 ```tmux
 set -g @tx-ide-popups          on                 # prefix+t (tx attach), prefix+/ (tx-assistant)
 set -g @tx-ide-pane-borders    on                 # pane-border integration + colors
-set -g @tx-ide-claude-scroll   on                 # C-u / C-d → PageUp / PageDown in Claude panes
+set -g @tx-ide-agent-scroll    on                 # C-u / C-d → PageUp / PageDown in agent panes
 set -g @tx-ide-pane-keys       on                 # M-1..9 → select-pane
 set -g @tx-ide-window-keys     on                 # User0..8 → select-window
 set -g @tx-ide-session-labels  on                 # prefix+s shows each session's name + tags

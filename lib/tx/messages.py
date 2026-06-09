@@ -1,7 +1,7 @@
 """Reconstruct the inter-agent + user message stream from chat transcripts (read-only, no LLM).
 
 A message in tx is **typed into the recipient's input**: `tx send-message` types a
-`<from-claude session="…">…</from-claude>` envelope into the target pane; the prefix+/ forward and
+`<from-agent session="…">…</from-agent>` envelope into the target pane; the prefix+/ forward and
 the viewer composer type a line into the tx-assistant; and you typing into a session is plain
 input. Claude Code records every one of these verbatim as a `user` turn in the recipient's
 transcript, which tx already mirrors into `$TX_IDE_HOME/history/<tx-id>/<chat>/transcript.jsonl`.
@@ -12,7 +12,7 @@ The **recipient** is the session that owns the transcript; the **sender** is the
 (peer messages) or you (everything else). Classification keys on the leading marker of a genuine
 typed turn:
 
-    <from-claude session="X">…</from-claude>   peer message — the agent↔agent channel (COMMON.md)
+    <from-agent session="X">…</from-agent>     peer message — the agent↔agent channel (COMMON.md)
     <tx-command-prompt …/> <text>              you → tx-assistant via prefix+/ (bin/tx-assistant)
     Act on tx session… / Act on these N…       you → tx-assistant via the viewer composer
     (no marker, plain text)                     you → this session, typed directly
@@ -45,10 +45,13 @@ from .session import Role, Session
 from .storage import history_dir
 from .store import SessionStore
 
-# A genuine peer message: the whole turn IS the envelope (greedy body runs to the LAST close tag, so
-# a body that itself mentions `</from-claude>` still closes correctly). DOTALL — bodies are one
-# logical line but may carry escaped newlines.
-_PEER = re.compile(r'^<from-claude session="([^"]*)">(.*)</from-claude>\s*\Z', re.S)
+# A genuine peer message: the whole turn IS the envelope. The builder emits the engine-neutral
+# `<from-agent>` (engine-abstraction §4.8), but we ALSO parse the legacy `<from-claude>` INDEFINITELY:
+# a live Claude session mid-rollover still emits the old tag, so back-compat is mandatory. This is the
+# one surviving `from-claude` reference — the parse path only, never the builder. The greedy body runs
+# to the LAST close tag, so a body that itself mentions a `</from-…>` close tag still closes correctly.
+# DOTALL — bodies are one logical line but may carry escaped newlines.
+_PEER = re.compile(r'^<from-(?:agent|claude) session="([^"]*)">(.*)</from-(?:agent|claude)>\s*\Z', re.S)
 # The prefix+/ forward: a self-closing focus envelope, then the user's actual message after it.
 _COMMAND_PROMPT = re.compile(r"^<tx-command-prompt\b[^>]*/>\s*(.*)\Z", re.S)
 # The viewer composer's fixed template (server.py `_compose_message`).
@@ -59,6 +62,11 @@ _HARNESS_PREFIXES = ("<task-notification", "<local-command", "<command-", "[Requ
 SENDER_YOU = "you"
 KIND_AGENT = "agent"   # an llm session sent it (the inter-agent channel)
 KIND_YOU = "you"       # you sent it (typed, prefix+/, composer, or send-message from your home)
+
+
+def build_envelope(sender: str, body: str) -> str:
+    """Build the engine-neutral peer-message envelope (`_PEER` still parses the legacy tag too)."""
+    return f'<from-agent session="{sender}">{body}</from-agent>'
 
 
 @dataclass
@@ -192,7 +200,7 @@ def collect_messages(store: SessionStore | None = None) -> list[Message]:
 
     The base source is the durable `~/.tx-ide/history` bundles — every transcript tx has ever
     ingested — so a message survives a `tx rm` of the session that received it (the record is gone,
-    the bundle is not). For a still-live session the live `~/.claude/projects` transcript is read
+    the bundle is not). For a still-live session the live engine transcript is read
     too, contributing the tail not yet ingested (deduped by line uuid against the bundle). The
     recipient is the session that owns the transcript; its display name + launch cmd come from the
     record when it still exists, else the bundle's own tx-id stands in for the name."""
@@ -253,7 +261,7 @@ def _iter_sources(
         for chat in session.chats:
             if chat.id is None:
                 continue
-            live = history.resolve_transcript(chat.id, chat.cwd)
+            live = history.resolve_transcript(chat.id, chat.cwd, chat.engine)
             if live is not None:
                 yield (live, session.id, session.name, session.cmd, chat.id)
 
