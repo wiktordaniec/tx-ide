@@ -395,9 +395,13 @@ class ResumeCommand(Command):
                   "claude --resume may start a fresh conversation", file=sys.stderr)
 
         resume_cmd = shlex.join(engines.get(record.engine).resume_command(chat.id))
+        # Carry the source's engine onto the resumed record (T8 stamping — distinct from resume's
+        # T4-routed command build above): `_spawn` reads `engine` off the spec, so a resumed codex
+        # session stays codex (and `_attach_resumed_chat` resolves the codex rollout) instead of
+        # defaulting to Claude. Set-at-spawn, read-thereafter (design §1).
         spec = SpawnSpec.for_process(
             name=name, tags=list(record.tags), cwd=cwd, cmd=resume_cmd, env=dict(record.env),
-            records_own_chat=True,
+            records_own_chat=True, engine=record.engine,
         )
         new = self.service.spawn(spec)
         self._attach_resumed_chat(new, chat, cwd)

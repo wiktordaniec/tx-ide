@@ -17,7 +17,10 @@ Covers T8's acceptance checklist:
      override; a bare `tx spawn` is still a shell (zero behavior change);
   5. the Codex adapter is REGISTERED on the production import path — this test never imports
      `tx.engines.codex` directly, so `Engine.CODEX in registered()` proving the spawn/reconcile
-     side-effect imports populate the registry (and `engines.get(CODEX)` resolves under `tx spawn`).
+     side-effect imports populate the registry (and `engines.get(CODEX)` resolves under `tx spawn`);
+  6. `tx resume` of a codex session keeps `engine=codex` on the resumed record AND its ChatRef (T8
+     stamping on the resumed record — resume's command build was already engine-routed in T4; a
+     claude session still resumes as claude).
 
 Hermetic: a temp `$TX_IDE_HOME` (records + log) + a fake Tmux (no live server). No real spawn, no
 network, no live home touched (T8 §6 safety).
@@ -36,16 +39,20 @@ from pathlib import Path
 
 # Point the home at a temp dir BEFORE importing tx (storage reads $TX_IDE_HOME).
 os.environ["TX_IDE_HOME"] = tempfile.mkdtemp()
+# Point the engines' own homes at temp dirs too: `tx resume` calls `resolve_transcript` (Codex globs
+# $CODEX_HOME/sessions, Claude reads $CLAUDE_CONFIG_DIR/projects). Hermetic — never touch the real homes.
+os.environ["CODEX_HOME"] = tempfile.mkdtemp()
+os.environ["CLAUDE_CONFIG_DIR"] = tempfile.mkdtemp()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
 # NB: we import the CLI / spawn / reconcile surface but NEVER `tx.engines.codex` — check 5 below
 # asserts the Codex adapter got registered purely by the production side-effect imports.
-from tx.cli import SpawnCommand  # noqa: E402  (imports tx.spawn → registers the bundled adapters)
+from tx.cli import ResumeCommand, SpawnCommand  # noqa: E402  (imports tx.spawn → registers the bundled adapters)
 from tx.engines import registered  # noqa: E402
 from tx.reconcile import Reconciler  # noqa: E402
 from tx.service import SessionService  # noqa: E402
-from tx.session import Engine, Kind, Role, Session, State  # noqa: E402
+from tx.session import ChatRef, Engine, Kind, Origin, Role, Session, State  # noqa: E402
 from tx.spawn import SpawnSpec, infer_role  # noqa: E402
 from tx.storage import ensure_home  # noqa: E402
 from tx.store import SessionStore  # noqa: E402
@@ -276,5 +283,42 @@ except SystemExit as exit_error:
 check("registry: Claude is registered", Engine.CLAUDE in registered())
 check("registry: Codex is registered via the spawn/reconcile side-effect imports (not imported here)",
       Engine.CODEX in registered())
+
+# ----- 6. resume-of-codex keeps the record's engine (T8 stamping on the resumed record) ---------
+# `tx resume` builds its command via `record.engine` (T4) AND now stamps that engine on the new
+# record (T8). A resumed codex session must stay codex — otherwise `_attach_resumed_chat` resolves a
+# Claude transcript path and the record mis-reports its engine (a real T9 resume-of-codex bug).
+
+
+def resume_record(session_id, name, engine, chat_id, cwd):
+    """Store a past (EXITED) llm session with one resumable chat, return a hermetic service over it."""
+    store = SessionStore()
+    store.save(Session(
+        id=session_id, name=name, kind=Kind.PROCESS, role=Role.LLM, state=State.EXITED,
+        cwd=cwd, cmd="(past)", engine=engine, created_at=stale,
+        chats=[ChatRef(id=chat_id, role="original", cwd=cwd, transcript_path="",
+                       origin=Origin(how="spawn", session_id=session_id, chat_id=None),
+                       started_at=stale, engine=engine)]))
+    return SessionService(store=store, tmux=CliTmux(), reconciler=NoReconcile())
+
+
+resume_cwd = tempfile.mkdtemp()  # a real dir — `tx resume` requires Path(cwd).is_dir()
+
+codex_svc = resume_record("past-codex", "past-codex", Engine.CODEX, "CX-CHAT", resume_cwd)
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    rc = ResumeCommand(codex_svc).run(["past-codex", "--as", "codex-resumed", "--cwd", resume_cwd])
+check("resume-of-codex returns 0", rc == 0)
+resumed = codex_svc.store.find_by_name("codex-resumed")
+check("resume-of-codex stamps the resumed record engine == CODEX", resumed.engine == Engine.CODEX)
+check("resume-of-codex builds a `codex resume …` command (T4 routing intact)",
+      resumed.cmd.startswith("codex resume CX-CHAT"))
+check("resume-of-codex stamps the resumed ChatRef engine == CODEX",
+      bool(resumed.chats) and resumed.chats[-1].engine == Engine.CODEX)
+
+claude_svc = resume_record("past-claude", "past-claude", Engine.CLAUDE, "CL-CHAT", resume_cwd)
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    ResumeCommand(claude_svc).run(["past-claude", "--as", "claude-resumed", "--cwd", resume_cwd])
+check("resume-of-claude keeps engine == CLAUDE (unchanged)",
+      claude_svc.store.find_by_name("claude-resumed").engine == Engine.CLAUDE)
 
 print(f"OK — {PASSED} checks passed")
