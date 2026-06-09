@@ -36,6 +36,7 @@ Ground truth measured by the T2 spike (`docs/engine/verification.md`, codex-cli 
 from __future__ import annotations
 
 import os
+import shlex
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
@@ -96,6 +97,91 @@ def find_rollout(chat_id: str) -> Path | None:
     pattern = f"**/{ROLLOUT_PREFIX}*-{chat_id}{TRANSCRIPT_SUFFIX}"
     matches = sorted(sessions_root().glob(pattern))
     return matches[-1] if matches else None
+
+
+# ----- chat-op command derivation (Codex's OWN persona parse, T8b) --------------------------
+# The Codex counterpart to `ClaudeEngine`'s persona parse — reconstructing a fork/handover/rollover
+# launch command from a source session's `cmd`. It inherits the source persona (model `-m`, effort
+# `-c model_reasoning_effort=`, the bypass flags, AND any unknown value-flag) and drops the identity
+# (the `resume`/`fork` subcommand + its id) and the baked positional prompt (the op seeds its own).
+
+# Codex's identity is a positional SUBCOMMAND, not a `--flag` (contrast Claude's `--resume` /
+# `--session-id`): a forked/resumed source `cmd` begins `codex fork <id> …` / `codex resume <id> …`.
+# The verb + its id positional are dropped — the op re-supplies its own (`codex fork <new-id>` for a
+# fork; a bare fresh `codex` for handover/rollover).
+_IDENTITY_SUBCOMMANDS = frozenset({"resume", "fork"})
+
+# Codex BARE flags — the ones that do NOT consume a following token. As with Claude's deny-list, the
+# known bare set is the bypass pair and EVERY OTHER `-flag` is value-by-default, so an unknown codex
+# value-flag (an unrecognised `-c KEY=VALUE`, or a future `--flag VALUE`) keeps its value instead of
+# being mistaken for the prompt and dropped — the SAME "unknown value-flag survives" safe default as
+# Claude's #50 fix (R1). Mind the `-c` collision: codex `-c` is a VALUE flag (`-c KEY=VALUE`), so it
+# is NOT bare here (it IS for Claude, where `-c` == `--continue`); value-by-default reads it correctly.
+_BARE_FLAGS = frozenset(YOLO_FLAGS)
+
+# Shell-control tokens — identical role to Claude's: once shlex surfaces one, the rest of a compound
+# source `cmd` is shell wrapping, not codex argv, and is dropped (a fresh op is not the source's
+# shell pipeline).
+_SHELL_CONTROL_TOKENS = frozenset({";", "&", "&&", "||", "|", "|&", "&>", "&>>", "(", ")", "{", "}"})
+
+
+def _is_shell_control(token: str) -> bool:
+    """Whether a shlex token is a shell operator rather than a codex flag/value (mirrors Claude's):
+    an exact control token, or a redirection (any token starting with `<`/`>`)."""
+    return token in _SHELL_CONTROL_TOKENS or token[:1] in ("<", ">")
+
+
+def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
+    """Split a source codex `cmd` into (binary, inherited-flags) with the identity subcommand
+    (`resume`/`fork` + its id) AND the baked positional prompt removed, inheriting the source persona
+    (`-m VALUE`, `-c KEY=VALUE`, the bypass flags, and ANY unknown value-flag — R1/#50 parity).
+
+    Mirrors `ClaudeEngine._strip_identity` with Codex's grammar: a leading `resume`/`fork` subcommand
+    and its id positional are dropped; each `-flag` is inherited WITH its following value unless it is
+    a known bare flag (the bypass pair) — assuming an unknown flag takes a value is the safe default
+    that keeps an unrecognised `-c KEY=VALUE` rather than mistaking the next token for the prompt and
+    corrupting the command. A standalone positional is the baked seed and is dropped (the op seeds its
+    own). Stops at the first shell-control token."""
+    tokens = shlex.split(source_cmd)
+    binary = tokens[0] if tokens else CODEX_BIN
+    index = 1
+    # Drop a leading identity subcommand + its id positional (a forked/resumed source `cmd`).
+    if index < len(tokens) and tokens[index] in _IDENTITY_SUBCOMMANDS:
+        index += 1
+        if index < len(tokens) and not tokens[index].startswith("-"):
+            index += 1
+    inherited: list[str] = []
+    while index < len(tokens):
+        token = tokens[index]
+        if _is_shell_control(token):
+            break  # shell wrapping begins here — drop it and everything after
+        if token in _BARE_FLAGS:
+            inherited.append(token)  # bare flag; any positional that follows it is the prompt (dropped)
+            index += 1
+            continue
+        if token.startswith("-"):
+            # A value-flag — `-m VALUE`, `-c KEY=VALUE`, or an unknown one. Inherit it WITH its value
+            # when a value follows; never drop the value (the corruption the bare/value split guards).
+            if index + 1 < len(tokens) and not tokens[index + 1].startswith("-") \
+                    and not _is_shell_control(tokens[index + 1]):
+                inherited.extend(tokens[index:index + 2])
+                index += 2
+            else:
+                inherited.append(token)  # dangling flag (end of argv / next token is itself a flag)
+                index += 1
+            continue
+        index += 1  # a positional — the source's baked seed; drop it (the op seeds its own)
+    return binary, inherited
+
+
+def _ensure_yolo(command: list[str]) -> list[str]:
+    """Guarantee both bypass flags are present (inherited or appended). A forked/seeded codex must
+    not stop on an approval prompt (its seed would never run), and the hook-trust bypass is what fires
+    our hooks headlessly (verification Evidence 3) — the Codex analog of `_ensure_skip_permissions`."""
+    for flag in YOLO_FLAGS:
+        if flag not in command:
+            command.append(flag)
+    return command
 
 
 # ----- the adapter --------------------------------------------------------------------------
@@ -177,22 +263,32 @@ class CodexEngine(EngineAdapter):
         (verification.md note: resume accepts the same flag set)."""
         return [CODEX_BIN, "resume", chat_id, *YOLO_FLAGS]
 
-    def fork_command(self, chat_id: str) -> list[str]:
-        """`codex fork <id> --dangerously-bypass-* …` — branch a chat into a new session opening on its
-        full history (Codex's native subcommand). The fork mints a NEW id (recorded as
-        `forked_from_id` on its rollout's `session_meta`, Evidence 2), captured post-hoc like any
-        other — no pre-mint."""
-        return [CODEX_BIN, "fork", chat_id, *YOLO_FLAGS]
+    def fork_command(self, source_cmd: str, chat_id: str) -> list[str]:
+        """`codex fork <chat_id> …` (Codex's native fork subcommand) carrying the SOURCE's persona
+        (`-m` / `-c model_reasoning_effort=` / ANY unknown value-flag — R1/#50 parity) and both bypass
+        flags. Branches a chat into a new session opening on its full history; the fork mints a NEW id
+        (recorded as `forked_from_id` on its rollout, Evidence 2), captured post-hoc — no pre-mint."""
+        binary, inherited = _strip_identity(source_cmd)
+        return _ensure_yolo([binary, "fork", chat_id, *inherited])
 
-    def seed_command(self, prompt: str) -> list[str]:
-        """A fresh `codex "<seed>"` carrying the seed as its positional prompt — handover / rollover's
-        new worker (design §5). The prompt auto-submits, so no send-keys."""
-        return self.build_launch_command(initial_prompt=prompt)
+    def seed_command(self, source_cmd: str, seed: str) -> list[str]:
+        """A fresh `codex …` carrying the SOURCE's persona (no identity subcommand) plus `seed` as its
+        positional prompt — handover worker / rollover successor (design §5). Inherits `-m` / `-c` /
+        ANY unknown value-flag (R1) + the bypass flags; the prompt auto-submits, so no send-keys."""
+        binary, inherited = _strip_identity(source_cmd)
+        command = _ensure_yolo([binary, *inherited])
+        command.append(seed)
+        return command
 
-    def distiller_command(self) -> list[str]:
+    def distiller_command(self, seed: str) -> list[str]:
         """The throwaway distiller that summarizes a chat into a handover/rollover brief: a fresh codex
-        at the default model/effort (`gpt-5.5` at high reasoning effort — design §5)."""
-        return self.build_launch_command()
+        at the default model/effort (`gpt-5.5` at high reasoning effort — design §5), carrying `seed`
+        as its initial-prompt positional. A FIXED per-engine command — it carries NO source persona;
+        the op dispatches on `record.engine`. The seed is appended directly (mirroring `seed_command`
+        + ClaudeEngine's distiller), so it survives even an empty seed."""
+        command = self.build_launch_command()
+        command.append(seed)
+        return command
 
     # ----- transcript ----------------------------------------------------------------------
 

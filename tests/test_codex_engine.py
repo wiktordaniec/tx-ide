@@ -101,20 +101,27 @@ check("resume: codex resume <id> + both bypass flags",
       engine.resume_command("ABC") == ["codex", "resume", "ABC",
                                        "--dangerously-bypass-approvals-and-sandbox",
                                        "--dangerously-bypass-hook-trust"])
-check("fork: codex fork <id> + both bypass flags",
-      engine.fork_command("ABC") == ["codex", "fork", "ABC",
-                                     "--dangerously-bypass-approvals-and-sandbox",
-                                     "--dangerously-bypass-hook-trust"])
-check("seed: a fresh codex carrying the seed as its positional prompt",
-      engine.seed_command("brief") == engine.build_launch_command(initial_prompt="brief"))
-check("seed: the seed is the positional tail", engine.seed_command("brief")[-1] == "brief")
-check("distiller: a fresh codex at the gpt-5.5/high default, no prompt",
-      engine.distiller_command() == engine.build_launch_command())
+
+# The chat-op derivations carry the SOURCE command's persona (T8b): fork/seed parse `source_cmd`
+# (here a canonical fresh codex) and re-supply the identity. Deep persona behavior + R1 unknown-flag
+# survival are tested in tests/test_codex_chatops.py; this keeps the T6 exact-argv shape checks.
+SOURCE = ("codex -m gpt-5.5 -c model_reasoning_effort=high "
+          "--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust")
+check("fork: codex fork <id> + inherited persona + both bypass flags",
+      engine.fork_command(SOURCE, "ABC") == ["codex", "fork", "ABC", "-m", "gpt-5.5", "-c",
+                                             "model_reasoning_effort=high",
+                                             "--dangerously-bypass-approvals-and-sandbox",
+                                             "--dangerously-bypass-hook-trust"])
+check("seed: a fresh codex carrying the source persona + the seed as its positional prompt",
+      engine.seed_command(SOURCE, "brief") == engine.build_launch_command(initial_prompt="brief"))
+check("seed: the seed is the positional tail", engine.seed_command(SOURCE, "brief")[-1] == "brief")
+check("distiller: a fresh codex at the gpt-5.5/high default, carrying the seed (fixed — no persona)",
+      engine.distiller_command("note") == engine.build_launch_command(initial_prompt="note"))
 
 # Every op keeps --dangerously-bypass-hook-trust (Evidence 3: it is what fires our hooks headlessly).
 for op_name, argv in [
-    ("launch", fresh), ("resume", engine.resume_command("X")), ("fork", engine.fork_command("X")),
-    ("seed", engine.seed_command("p")), ("distiller", engine.distiller_command()),
+    ("launch", fresh), ("resume", engine.resume_command("X")), ("fork", engine.fork_command(SOURCE, "X")),
+    ("seed", engine.seed_command(SOURCE, "p")), ("distiller", engine.distiller_command("d")),
 ]:
     check(f"{op_name}: --dangerously-bypass-hook-trust present (hooks fire headlessly)",
           "--dangerously-bypass-hook-trust" in argv)

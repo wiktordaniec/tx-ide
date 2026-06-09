@@ -47,16 +47,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import history
-from .engines import claude
+from .engines import claude, get
 from .service import NotInsideTmux, ServiceError, SessionNotFound, SessionService
-from .session import ChatRef, Origin, Session
+from .session import ChatRef, Engine, Origin, Session
 from .spawn import SpawnSpec
 from .storage import chat_ops_dir, history_dir, tx_ide_home
 
-# A lightweight throwaway distiller that reads the source transcript and writes a brief/note, then
-# triggers the finish. **opus + medium effort** (was sonnet): the distillation is the quality hinge of
-# a handover/rollover, so it is worth opus's judgement even though the mechanics are a read→write.
-DISTILLER_COMMAND = "claude --model opus --effort medium --dangerously-skip-permissions"
+# The throwaway distiller's command is a FIXED per-engine command from the source's engine adapter
+# (`get(record.engine).distiller_command(seed)` — claude→opus/medium, codex→gpt-5.5/high; design §5),
+# not a claude-hardcoded constant. The distillation is the quality hinge of a handover/rollover, so
+# each engine picks a model worth its judgement even though the mechanics are a read→write (T8b).
 DISTILLER_TAG = "temporary"  # plus the op kind (handover|rollover) so the in-flight helper is visible
 
 # Watchdog cadence. A detached `_chat-op-watch` polls for the distiller's artifact (brief/note); once
@@ -66,35 +66,6 @@ DISTILLER_TAG = "temporary"  # plus the op kind (handover|rollover) so the in-fl
 WATCH_POLL_INTERVAL = 2.0
 WATCH_GRACE_SECONDS = 20.0
 WATCH_TIMEOUT_SECONDS = 600.0
-
-# Identity flags stripped when reconstructing a launch command from a source session's `cmd`: the
-# new op re-supplies its own (`--resume … --fork-session` for fork, `--session-id <new>` for a fresh
-# chat). Everything else (model / effort / --append-system-prompt / skip-permissions) is inherited.
-_IDENTITY_VALUE_FLAGS = frozenset({"--session-id", "--resume"})
-_IDENTITY_BARE_FLAGS = frozenset({"--fork-session", "--continue", "-c"})
-
-# Bare claude flags — the ones that do NOT consume a following token. They are what lets the baked
-# initial-prompt positional be told apart when reconstructing a launch command: a positional that
-# follows a bare flag (or stands alone) is the prompt and is dropped (the op seeds its own). EVERY
-# OTHER `--flag` is assumed to take a value, so an unrecognised value-flag keeps its value instead of
-# having it mistaken for the prompt and dropped — which would corrupt the command by leaving a
-# dangling flag to swallow the appended seed. This deny-list (vs. an allow-list of value-flags) is
-# deliberate: `claude --help` documents some value-flags only in prose (e.g. `--append-system-prompt
-# [-file]`), so an allow-list silently missed them; a missed BARE flag here is benign (the worst case
-# is the predecessor prompt carried forward, never a corrupt command). Identity flags are handled above.
-_BARE_FLAGS = frozenset({
-    "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--verbose",
-    "--print", "-p", "--ide", "--tmux", "--strict-mcp-config", "--no-session-persistence",
-    "--exclude-dynamic-system-prompt-sections", "--replay-user-messages",
-    "--include-partial-messages", "--include-hook-events", "--disable-slash-commands",
-    "--chrome", "--no-chrome",
-})
-
-# Shell-control tokens. Once shlex surfaces one of these, the rest of a compound source `cmd` is
-# shell wrapping (separator / logical / pipe / background / subshell / brace-group), NOT claude
-# argv. A fork/handover/rollover is a FRESH claude invocation, not the source's shell pipeline, so
-# everything from the first such token on is dropped (bug #2b).
-_SHELL_CONTROL_TOKENS = frozenset({";", "&", "&&", "||", "|", "|&", "&>", "&>>", "(", ")", "{", "}"})
 
 
 # ----- chat selection -----------------------------------------------------------------------
@@ -107,95 +78,6 @@ def active_chat(session: Session) -> ChatRef | None:
         return None
     open_chats = [chat for chat in candidates if chat.ended_at is None]
     return (open_chats or candidates)[-1]
-
-
-# ----- launch-command reconstruction (inherit the source's flags, swap the identity ones) ---
-
-def _is_shell_control(token: str) -> bool:
-    """Whether a shlex token is a shell operator rather than a claude flag/value: an exact control
-    token, or a redirection (any token starting with `<`/`>`). Enough to find the shell boundary
-    without re-implementing a full shell parser (bug #2b)."""
-    return token in _SHELL_CONTROL_TOKENS or token[:1] in ("<", ">")
-
-
-def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
-    """Split a source `cmd` into (binary, inherited-flags) with the session-identity flags AND any
-    positional initial-prompt removed. Inherits the source's persona (model / effort / system-prompt /
-    settings / --dangerously-skip-permissions / …) so a forked or handed-over session keeps it, and
-    re-supplies its own identity flags + seed.
-
-    Each non-identity `--flag` is inherited WITH its following value UNLESS it is a known bare flag
-    (`_BARE_FLAGS`). Assuming an unknown flag takes a value is the safe default: it keeps an
-    unrecognised value-flag's value (e.g. `--append-system-prompt-file <path>`, or any future flag)
-    instead of dropping it — dropping it would leave a dangling flag that swallows the appended seed
-    and corrupts the command. A positional that follows a bare flag (or stands alone) is the baked
-    prompt and is dropped — the op appends its own seed, so carrying the predecessor's forward would
-    make the fresh session re-run it. Stops at the first shell-control token (a compound `--cmd`'s
-    shell wrapping is not claude argv)."""
-    tokens = shlex.split(source_cmd)
-    binary = tokens[0] if tokens else claude.CLAUDE_BIN
-    inherited: list[str] = []
-    index = 1
-    while index < len(tokens):
-        token = tokens[index]
-        if _is_shell_control(token):
-            break  # shell wrapping begins here — drop it and everything after (bug #2b)
-        if token in _IDENTITY_VALUE_FLAGS:
-            index += 2  # drop the identity flag and its value
-            continue
-        if token in _IDENTITY_BARE_FLAGS:
-            index += 1  # drop — the op re-supplies its own
-            continue
-        if token in _BARE_FLAGS:
-            inherited.append(token)  # bare flag; any positional that follows it is the prompt (dropped)
-            index += 1
-            continue
-        if token.startswith("-"):
-            # A value-flag — a known persona flag or an unknown one. Inherit it WITH its value when a
-            # value follows; never drop the value (that is the corruption the bare/value split guards).
-            if index + 1 < len(tokens) and not tokens[index + 1].startswith("-") \
-                    and not _is_shell_control(tokens[index + 1]):
-                inherited.extend(tokens[index:index + 2])
-                index += 2
-            else:
-                inherited.append(token)  # dangling flag (end of argv / next token is itself a flag)
-                index += 1
-            continue
-        index += 1  # a positional — the source's baked initial prompt; drop it (the op seeds its own)
-    return binary, inherited
-
-
-def _ensure_skip_permissions(command: list[str]) -> list[str]:
-    """A forked/seeded session must not stop on a permission prompt (its initial prompt would never
-    run). Guarantee --dangerously-skip-permissions is present (inherited or added)."""
-    if "--dangerously-skip-permissions" not in command:
-        command.append("--dangerously-skip-permissions")
-    return command
-
-
-def fork_command(source_cmd: str, source_chat: str) -> str:
-    """`claude --resume <src> --fork-session …` with the source's persona flags inherited (§4)."""
-    binary, inherited = _strip_identity(source_cmd)
-    command = _ensure_skip_permissions(
-        [binary, "--resume", source_chat, "--fork-session", *inherited]
-    )
-    return shlex.join(command)
-
-
-def fresh_command(source_cmd: str) -> str:
-    """A fresh `claude …` carrying the source's persona flags (model / effort / system-prompt / …) but
-    NO identity flag (handover worker / rollover successor): claude mints its own chat id, which the
-    capture hook reads off the payload (T4 capture-after-launch). The op records a pending `ChatRef`."""
-    binary, inherited = _strip_identity(source_cmd)
-    command = _ensure_skip_permissions([binary, *inherited])
-    return shlex.join(command)
-
-
-def seeded_command(base_command: str, seed: str) -> str:
-    """Append `seed` as claude's initial-prompt positional argument. A positional prompt auto-submits
-    in interactive mode (measured), so this replaces tmux send-keys seeding entirely: the prompt is
-    baked into the launch command — no readiness poll, no dropped Enter, fully deterministic."""
-    return f"{base_command} {shlex.quote(seed)}"
 
 
 def _inherited_env(session: Session) -> dict[str, str]:
@@ -294,7 +176,7 @@ class ChatOps:
 
         spec = SpawnSpec.for_process(
             name=name, tags=list(source_session.tags), cwd=cwd,
-            cmd=fork_command(source_session.cmd, source_chat.id),
+            cmd=shlex.join(get(source_session.engine).fork_command(source_session.cmd, source_chat.id)),
             env=_inherited_env(source_session), records_own_chat=True,
         )
         new_session = self.service.spawn(spec)
@@ -372,7 +254,7 @@ class ChatOps:
             f"saved, run exactly this command and nothing else: "
             f"{_tx_invocation()} _chat-op-finish {shlex.quote(spec.op_id)}"
         )
-        self._spawn_distiller(distiller, "handover", source_chat.cwd, seed)
+        self._spawn_distiller(distiller, "handover", source_chat.cwd, seed, source_session.engine)
         self._detach(["_chat-op-watch", spec.op_id])
         self.service.log.append("handover", f"{source_session.name} → {worker_name} (distilling)")
         return worker_name
@@ -425,7 +307,7 @@ class ChatOps:
             f"and decisions — to {note_path} . When the note file is saved, run exactly this command "
             f"and nothing else: {_tx_invocation()} _chat-op-finish {shlex.quote(spec.op_id)}"
         )
-        self._spawn_distiller(distiller, "rollover", current_chat.cwd, seed)
+        self._spawn_distiller(distiller, "rollover", current_chat.cwd, seed, record.engine)
         self._detach(["_chat-op-watch", spec.op_id])
         self.service.log.append("rollover", f"{record.name} (distilling)")
 
@@ -473,7 +355,7 @@ class ChatOps:
                 f"Your task brief is at {spec.artifact_path} — read it and begin. Fuller predecessor "
                 f"history, only if the brief is insufficient: {bundle}/ ."
             )
-        launch = seeded_command(fresh_command(source.cmd), seed)
+        launch = shlex.join(get(source.engine).seed_command(source.cmd, seed))
         worker = self.service.spawn(SpawnSpec.for_process(
             name=spec.worker_name, tags=list(source.tags), cwd=spec.cwd, cmd=launch,
             env=_inherited_env(source), records_own_chat=True,
@@ -513,7 +395,7 @@ class ChatOps:
         # The rotated pane keeps the SAME tx session, so its hook (TX_SESSION_ID) fills the pending
         # rollover ref. No chat-control env — provenance is on the ref, the id is captured (T4).
         env = {"TX_SESSION_ID": spec.source_txid}
-        command = _env_prefix(env) + seeded_command(fresh_command(record.cmd), seed)
+        command = _env_prefix(env) + shlex.join(get(record.engine).seed_command(record.cmd, seed))
         self.service.tmux.respawn_pane(spec.pane, command)
         self._record_seeded_chat(
             spec.source_txid, spec.cwd, "rollover", spec.source_txid,
@@ -617,14 +499,16 @@ class ChatOps:
             ))
         self.service.store.save(session)
 
-    def _spawn_distiller(self, name: str, kind: str, cwd: str, seed: str) -> Session:
+    def _spawn_distiller(self, name: str, kind: str, cwd: str, seed: str, engine: Engine) -> Session:
         """Spawn the temporary distiller with its instructions baked in as the initial prompt (no
-        send-keys). Tagged `temporary` + the op kind so the in-flight helper is visible in `tx ls`.
-        A plain llm spawn, so `_spawn` gives it a pending `original` ChatRef captured from its first
-        hook (T4); the throwaway bundle is harmless."""
+        send-keys). The command is the SOURCE engine's fixed distiller (`distiller_command(seed)` —
+        claude→opus/medium, codex→gpt-5.5/high; design §5), dispatched on the source's `engine`.
+        Tagged `temporary` + the op kind so the in-flight helper is visible in `tx ls`. A plain llm
+        spawn, so `_spawn` gives it a pending `original` ChatRef captured from its first hook (T4);
+        the throwaway bundle is harmless."""
         spec = SpawnSpec.for_process(
             name=name, tags=[DISTILLER_TAG, kind], cwd=cwd,
-            cmd=seeded_command(DISTILLER_COMMAND, seed),
+            cmd=shlex.join(get(engine).distiller_command(seed)),
         )
         return self.service.spawn(spec)
 

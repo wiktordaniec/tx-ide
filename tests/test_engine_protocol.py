@@ -54,16 +54,18 @@ def positional_arity(method) -> int:
 
 
 # The required surface (design §2): method name → expected positional arity (self excluded). The
-# launch builders take their `(model, effort, …)` keyword-only, so 0 positional. Properties are
-# checked separately (accessed, not called).
+# launch builders take their `(model, effort, …)` keyword-only, so 0 positional. The chat-op
+# derivations carry the source persona (T8b): `fork_command`/`seed_command` take `(source_cmd, …)`
+# = 2 positional, and `distiller_command(seed)` = 1. Properties are checked separately (accessed,
+# not called).
 REQUIRED_METHODS = {
     "matches_binary": 1,
     "capture_session_id": 1,
     "build_launch_command": 0,
     "resume_command": 1,
-    "fork_command": 1,
-    "seed_command": 1,
-    "distiller_command": 0,
+    "fork_command": 2,
+    "seed_command": 2,
+    "distiller_command": 1,
     "resolve_transcript": 2,
     "iter_messages": 1,
     "bundle_sidecars": 2,
@@ -114,18 +116,26 @@ resume = claude.resume_command("CID-1")
 check("resume_command: binary first", resume[0] == "claude")
 check("resume_command: --resume <id>", resume[1:3] == ["--resume", "CID-1"])
 
-fork = claude.fork_command("CID-2")
+# The chat-op derivations now carry the SOURCE command's persona (T8b); deep behavior (byte-identical
+# differential, #50 unknown-flag survival) is in tests/test_chatops_differential.py — this is the
+# new-signature smoke (binary first, identity swapped, persona inherited, seed is the tail).
+fork = claude.fork_command("claude --model opus --effort high", "CID-2")
 check("fork_command: binary first", fork[0] == "claude")
 check("fork_command: resumes + forks the source",
       "--resume" in fork and "--fork-session" in fork and "CID-2" in fork)
+check("fork_command: inherits the source persona (--model opus)", "--model" in fork and "opus" in fork)
 
-seed = claude.seed_command("read the brief")
+seed = claude.seed_command("claude --model opus", "read the brief")
 check("seed_command: binary first", seed[0] == "claude")
 check("seed_command: seed is the positional tail", seed[-1] == "read the brief")
+check("seed_command: inherits persona, drops identity",
+      "--model" in seed and "opus" in seed and "--resume" not in seed and "--fork-session" not in seed)
 
-distill = claude.distiller_command()
+distill = claude.distiller_command("summarise the chat")
 check("distiller_command: binary first", distill[0] == "claude")
-check("distiller_command: opus at medium effort", distill[1:5] == ["--model", "opus", "--effort", "medium"])
+check("distiller_command: opus at medium effort (fixed — no source persona)",
+      distill[1:5] == ["--model", "opus", "--effort", "medium"])
+check("distiller_command: seed is the positional tail", distill[-1] == "summarise the chat")
 
 # ----- capability flag + event→state table ------------------------------------------------------
 
@@ -170,19 +180,26 @@ check("codex resume_command: native subcommand + id", codex_resume[:3] == ["code
 check("codex resume_command: keeps the hook-trust bypass so hooks fire",
       "--dangerously-bypass-hook-trust" in codex_resume)
 
-codex_fork = codex.fork_command("CID-2")
+# New-signature smoke (T8b); deep Codex persona + R1 unknown-flag survival → tests/test_codex_chatops.py.
+_codex_source = ("codex -m gpt-5.5 -c model_reasoning_effort=high "
+                 "--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust")
+codex_fork = codex.fork_command(_codex_source, "CID-2")
 check("codex fork_command: native subcommand + id", codex_fork[:3] == ["codex", "fork", "CID-2"])
 check("codex fork_command: keeps the hook-trust bypass",
       "--dangerously-bypass-hook-trust" in codex_fork)
+check("codex fork_command: inherits the source persona (-m gpt-5.5)",
+      "-m" in codex_fork and "gpt-5.5" in codex_fork)
 
-codex_seed = codex.seed_command("read the brief")
+codex_seed = codex.seed_command(_codex_source, "read the brief")
 check("codex seed_command: binary first", codex_seed[0] == "codex")
 check("codex seed_command: seed is the positional tail", codex_seed[-1] == "read the brief")
+check("codex seed_command: no fork/resume identity subcommand (a fresh codex)",
+      "fork" not in codex_seed and "resume" not in codex_seed)
 
-codex_distill = codex.distiller_command()
-check("codex distiller_command: gpt-5.5 at high effort, no positional prompt",
-      codex_distill[1:5] == ["-m", "gpt-5.5", "-c", "model_reasoning_effort=high"]
-      and codex_distill[-1] == "--dangerously-bypass-hook-trust")
+codex_distill = codex.distiller_command("summarise the chat")
+check("codex distiller_command: gpt-5.5 at high effort (fixed — no source persona)",
+      codex_distill[1:5] == ["-m", "gpt-5.5", "-c", "model_reasoning_effort=high"])
+check("codex distiller_command: seed is the positional tail", codex_distill[-1] == "summarise the chat")
 
 check("codex state_source is HOOK_EVENTS (Codex emits a Stop hook)",
       codex.state_source is StateSource.HOOK_EVENTS)
