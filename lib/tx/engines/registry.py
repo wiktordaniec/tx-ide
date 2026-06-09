@@ -20,5 +20,14 @@ class EngineRegistry:
     def registered(self) -> frozenset[Engine]:
         return frozenset(self._adapters)
 
+    def engine_for_command(self, command: str) -> Engine | None:
+        """The registered engine whose binary `command` invokes (by adapter `matches_binary`), or
+        None when none matches — lets a hand-written `--cmd` spawn stamp the right engine instead of
+        blind-defaulting to Claude (e.g. `--cmd 'codex …'` without `--engine codex`)."""
+        for engine, adapter in self._adapters.items():
+            if adapter.matches_binary(command):
+                return engine
+        return None
+
 
 registry = EngineRegistry()

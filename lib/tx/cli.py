@@ -184,12 +184,13 @@ class SpawnCommand(Command):
 
     def _resolve_command(self, args: argparse.Namespace) -> tuple[str, Engine | None]:
         """Resolve the launch command + the engine to stamp. Three paths: --cmd → that exact command
-        (engine = whatever --engine declares, never guessed from the command); an agent spawn
+        (engine = --engine if given, else inferred from the command's binary so e.g. `--cmd 'codex …'`
+        is stamped codex, not blind-defaulted to claude); an agent spawn
         (--engine/--prompt/--model/--effort) → tx builds the command via the engine adapter; bare →
         a login shell."""
         requested = Engine(args.engine) if args.engine is not None else None
         if args.cmd is not None:
-            return args.cmd, requested
+            return args.cmd, requested or engines.registry.engine_for_command(args.cmd)
         if (
             requested is not None
             or args.prompt is not None
