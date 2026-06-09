@@ -39,9 +39,8 @@ import os
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
-from ..session import ChatRef, Engine, State
+from ..session import Engine, State
 from . import codex_rollout
-from .claude import bundle_dir
 from .protocol import EngineAdapter, StateSource
 from .registry import register
 
@@ -224,20 +223,12 @@ class CodexEngine(EngineAdapter):
                 "is_environment_context": message.is_environment_context,
             }
 
-    def bundle(self, chat: ChatRef) -> Path:
-        """Mirror a chat into its durable history bundle and return the bundle dir. Codex's bundle is
-        the rollout JSONL **alone — no sidecar** (design §6.4): Codex inlines tool calls / reasoning in
-        the rollout, so there is no sibling dir to copy (contrast `ClaudeEngine.bundle`, which also
-        copies `subagents/` + `tool-results/`). Delegates to history.py's shared, engine-neutral
-        incremental copy — the per-engine LAYOUT (which paths get mirrored) is the only difference; the
-        copy MECHANISM (append-by-offset, copy-if-absent, compaction-detection, the coalescing lock)
-        stays shared there. `bundle_dir` is the engine-neutral location helper (it lives in `claude.py`
-        but is not Claude-specific). Imported lazily because `history` imports the engines package."""
-        from .. import history
-
-        tx_id = Path(chat.bundle_path).parent.name
-        history.ingest_chat(tx_id, chat.id, chat.cwd, Engine.CODEX, wait=True)
-        return bundle_dir(tx_id, chat.id)
+    def bundle_sidecars(self, src_transcript: Path, chat_id: str) -> list[Path]:
+        """Codex's bundle LAYOUT: **no sidecar** — the rollout JSONL inlines tool calls / reasoning, so
+        there is no sibling dir to copy (design §6.4; contrast Claude's `subagents/` + `tool-results/`).
+        The bundle is the rollout alone, mirrored by `history.py`; this names no extra paths. **Pure**
+        — no I/O."""
+        return []
 
     # ----- hooks / state -------------------------------------------------------------------
 

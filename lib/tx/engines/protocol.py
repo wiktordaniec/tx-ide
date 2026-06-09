@@ -14,7 +14,7 @@ protocol".
 The surface mirrors `lib/tx/claude.py`'s existing functions so T1's extraction is a thin wrap:
   - identity      — which binary this is, whether a command is ours, capture id+path from a hook
   - launch / ops  — build the argv for a fresh / resumed / forked / seeded / distiller run
-  - transcript    — resolve the on-disk transcript, iterate its messages, copy it into a bundle
+  - transcript    — resolve the on-disk transcript, iterate its messages, name its bundle sidecar dirs
   - hooks / state — the hook-event → `State` table, and where turn-done state comes from (the flag)
 
 Every method renders the abstract `(model, effort)` pair its own way (Claude `--effort`, Codex
@@ -28,7 +28,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from ..session import ChatRef, State
+from ..session import State
 
 
 class StateSource(str, Enum):
@@ -114,9 +114,14 @@ class EngineAdapter(Protocol):
         history / messages layer."""
         ...
 
-    def bundle(self, chat: ChatRef) -> Path:
-        """Ingest a chat into its durable history bundle and return the bundle dir. Claude copies the
-        transcript + its sidecar dir; Codex copies the rollout JSONL alone (design §5)."""
+    def bundle_sidecars(self, src_transcript: Path, chat_id: str) -> list[Path]:
+        """The per-engine history-bundle LAYOUT: the sidecar directories to copy into the bundle
+        alongside the transcript (design §6.4). **Pure** — no I/O; it only *names* the paths, and
+        `history.py` runs the shared copy mechanism (the transcript by append-by-offset, each sidecar
+        copy-if-absent, under the coalescing lock). Claude returns the sibling `<chat-id>/` dir
+        (`subagents/` + `tool-results/`, the externalized parts a bare `.jsonl` omits); Codex returns
+        `[]` — its rollout inlines everything, so the bundle is the JSONL alone. The transcript itself
+        is always mirrored by `history.py` and is not listed here."""
         ...
 
     # ----- hooks / state -----------------------------------------------------------------------

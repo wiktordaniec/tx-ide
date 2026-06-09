@@ -28,7 +28,7 @@ import os
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
-from ..session import ChatRef, Engine, State
+from ..session import Engine, State
 from ..storage import history_dir
 from .protocol import EngineAdapter, StateSource
 from .registry import register
@@ -215,17 +215,13 @@ class ClaudeEngine(EngineAdapter):
                 if line:
                     yield json.loads(line)
 
-    def bundle(self, chat: ChatRef) -> Path:
-        """Mirror a chat into its durable history bundle (transcript + the sibling sidecar dir) and
-        return the bundle dir. Delegates to history.py's tested incremental copy. The core drives
-        ingest through `history` directly (the engine-neutral copy); the per-engine bundle LAYOUT
-        (Codex's sidecar-free rollout) lands with `CodexEngine` (T6). Imported lazily because
-        `history` imports this module."""
-        from .. import history
-
-        tx_id = Path(chat.bundle_path).parent.name
-        history.ingest_chat(tx_id, chat.id, chat.cwd, Engine.CLAUDE, wait=True)
-        return bundle_dir(tx_id, chat.id)
+    def bundle_sidecars(self, src_transcript: Path, chat_id: str) -> list[Path]:
+        """Claude's bundle LAYOUT: the sibling `<chat-id>/` sidecar dir (`subagents/` + `tool-results/`
+        — the externalized parts a bare `.jsonl` omits, chat-ops §1 #3), taken relative to the
+        **resolved** transcript so a moved cwd still finds its colocated sidecar. **Pure** — it only
+        names the dir; `history.py` runs the shared copy-if-absent (and skips it when the dir is
+        absent). The transcript itself is mirrored by `history.py`, not listed here."""
+        return [src_transcript.parent / chat_id]
 
     # ----- hooks / state -------------------------------------------------------------------
 

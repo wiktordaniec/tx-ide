@@ -11,14 +11,15 @@ Three layers:
     `EngineAdapter`, then each required method/property present + callable with the right arity;
   - **pure-builder smoke (Claude + Codex)** — the launch/ops builders return argv with the binary
     first, on synthetic args, plus the capability flag + the event→state table;
-  - **dual-layout bundle (Claude + Codex, T6 §4)** — the one disk-backed layer: each engine's history
-    bundle LAYOUT, run through history.py's shared copy, asserting Claude mirrors transcript + sidecar
-    dirs and Codex mirrors the rollout JSONL alone (design §6.4).
+  - **bundle LAYOUT (Claude + Codex, T6 §4 / design §6.4)** — the pure `bundle_sidecars` contract
+    (Claude names the sibling `<id>/`, Codex names none) PLUS the disk-backed integration it produces
+    through history.py's shared copy (Claude's bundle has the sidecar dirs; Codex's is the rollout
+    JSONL alone). The integration step is hermetic — temp homes, no live home touched.
 
 The remaining I/O methods (`capture_session_id` / `resolve_transcript` / `iter_messages`) are checked
 present + callable ONLY — their behavior is tested per-engine (`tests/test_codex_engine.py`,
-`tests/test_capture.py`). The dual-layout layer is disk-backed but **hermetic** — every home is a temp
-dir, so no live ~/.claude / ~/.codex / $TX_IDE_HOME is touched.
+`tests/test_capture.py`). Only the bundle-integration step touches disk, and it does so under temp
+homes, so no live ~/.claude / ~/.codex / $TX_IDE_HOME is touched.
 """
 
 from __future__ import annotations
@@ -65,7 +66,7 @@ REQUIRED_METHODS = {
     "distiller_command": 0,
     "resolve_transcript": 2,
     "iter_messages": 1,
-    "bundle": 1,
+    "bundle_sidecars": 2,
 }
 REQUIRED_PROPERTIES = ("binary", "event_to_state", "state_source")
 
@@ -194,13 +195,23 @@ check("codex event_to_state: no SessionEnd edge (Codex has no session-end event)
       "SessionEnd" not in codex.event_to_state)
 
 
-# ----- dual-layout bundle (required, T6 §4) — hermetic, temp homes ------------------------------
-# The per-engine history bundle LAYOUT (design §6.4): Claude mirrors the transcript + its sibling
-# sidecar dirs; Codex mirrors the rollout JSONL ALONE. Both run the SAME shared copy machinery in
-# history.py (append-by-offset + copy-if-absent + the coalescing lock) — only which paths get
-# mirrored differs. Disk-backed but hermetic: every home is a temp dir (T6 §7 — never touch the live
-# ~/.claude / ~/.codex / $TX_IDE_HOME). The homes are read at call time, so setting them here (after
-# the pure checks) is enough.
+# ----- bundle LAYOUT contract (pure — design §6.4) ----------------------------------------------
+# Each engine NAMES its sidecar dirs; history.py runs the shared copy over them. Claude → the sibling
+# <chat-id>/ relative to the resolved transcript; Codex → none. Pure, no I/O (the integration that
+# these names produce the right on-disk bundle is asserted just below).
+
+check("bundle_sidecars/claude: the sibling <chat-id>/ dir, relative to the resolved transcript",
+      claude.bundle_sidecars(Path("/Users/me/proj/CID.jsonl"), "CID") == [Path("/Users/me/proj/CID")])
+check("bundle_sidecars/codex: no sidecar — the rollout JSONL alone",
+      codex.bundle_sidecars(Path("/home/.codex/sessions/2026/06/08/rollout-ts-CID.jsonl"), "CID") == [])
+
+
+# ----- bundle LAYOUT integration (required, T6 §4) — hermetic, temp homes ------------------------
+# The names above, run through history.py's shared copy: Claude mirrors the transcript + its sibling
+# sidecar dirs; Codex mirrors the rollout JSONL ALONE. Both run the SAME machinery in history.py
+# (append-by-offset + copy-if-absent + the coalescing lock) — only the engine-named LAYOUT differs.
+# Disk-backed but hermetic: every home is a temp dir (T6 §7 — never touch the live ~/.claude /
+# ~/.codex / $TX_IDE_HOME). The homes are read at call time, so setting them here is enough.
 
 import os  # noqa: E402
 import shutil  # noqa: E402

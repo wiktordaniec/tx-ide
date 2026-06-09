@@ -122,18 +122,22 @@ def ingest_chat(
     with _ingest_lock(bundle / INGEST_LOCK_NAME, wait=wait) as acquired:
         if not acquired:
             return bundle  # a mirror is already in flight for this chat — coalesce (skip).
-        _mirror(src_transcript, chat_id, bundle)
+        _mirror(src_transcript, chat_id, bundle, engine)
     return bundle
 
 
-def _mirror(src_transcript: Path, chat_id: str, bundle: Path) -> None:
-    """The copy itself: the transcript by offset, then the entire sibling `<chat>/` dir
-    copy-if-absent. The sidecar is taken relative to the RESOLVED transcript (so a moved cwd still
-    finds its colocated sidecar), and copied wholesale — subagents/ + tool-results/ and anything
-    else Claude externalizes — into the bundle root (chat-ops §3.1 layout). Save too much, parse
-    nothing."""
+def _mirror(src_transcript: Path, chat_id: str, bundle: Path, engine: Engine) -> None:
+    """The copy itself: the transcript by offset, then each per-engine sidecar dir copy-if-absent.
+
+    The LAYOUT — *which* sidecar dirs exist — is the engine's (design §6.4): `engine.bundle_sidecars`
+    names them (Claude's sibling `<chat>/` carrying subagents/ + tool-results/, taken relative to the
+    RESOLVED transcript so a moved cwd still finds its colocated sidecar; Codex none, its rollout
+    inlines everything). The *mechanism* stays here, shared and engine-neutral: the transcript appended
+    by offset into `transcript.jsonl`, each named sidecar copied wholesale into the bundle root
+    copy-if-absent (a missing dir is a no-op). Save too much, parse nothing."""
     _append_by_offset(src_transcript, bundle / claude.BUNDLE_TRANSCRIPT_NAME)
-    _copy_tree_if_absent(src_transcript.parent / chat_id, bundle)
+    for sidecar in get(engine).bundle_sidecars(src_transcript, chat_id):
+        _copy_tree_if_absent(sidecar, bundle)
 
 
 def _append_by_offset(src: Path, dst: Path) -> None:

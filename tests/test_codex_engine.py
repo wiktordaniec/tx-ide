@@ -180,6 +180,12 @@ check("iter_messages/fork: carried parent history is present (PONG)",
       any(message["text"] == "PONG" for message in fork_real))
 
 
+# ----- bundle layout: Codex has no sidecar (design §6.4) -------------------------------------
+
+check("bundle_sidecars: Codex names no sidecar dirs (the rollout JSONL is the whole bundle)",
+      engine.bundle_sidecars(FIXTURES / "fresh.jsonl", "ANY-ID") == [])
+
+
 # ----- hooks / state (design §3) -------------------------------------------------------------
 
 check("state_source is HOOK_EVENTS (Codex emits a Stop hook)",
