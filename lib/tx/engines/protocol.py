@@ -88,16 +88,23 @@ class EngineAdapter(Protocol):
         `codex resume <id>`)."""
         ...
 
-    def fork_command(self, chat_id: str) -> list[str]:
-        """The argv to fork an existing chat into a new session that opens on its full history."""
+    def fork_command(self, source_cmd: str, chat_id: str) -> list[str]:
+        """The argv to fork an existing chat into a new session that opens on its full history,
+        carrying the SOURCE command's persona (model / effort / system-prompt / any unknown
+        value-flag) and swapping in this fork's own identity. Each engine parses `source_cmd` with
+        its own flag grammar (Claude `--resume … --fork-session`; Codex `codex fork <id>`) — T8b."""
         ...
 
-    def seed_command(self, prompt: str) -> list[str]:
-        """The argv for a fresh session carrying a seed prompt — handover/rollover's new worker."""
+    def seed_command(self, source_cmd: str, seed: str) -> list[str]:
+        """The argv for a fresh session carrying the SOURCE command's persona (no identity flag) plus
+        `seed` as the initial-prompt positional — handover/rollover's new worker. Persona is parsed
+        from `source_cmd` per-engine, preserving any unknown value-flag (the #50 safe default)."""
         ...
 
-    def distiller_command(self) -> list[str]:
-        """The argv for the distiller pass that summarizes a chat into a handover/rollover brief."""
+    def distiller_command(self, seed: str) -> list[str]:
+        """The argv for the distiller pass that summarizes a chat into a handover/rollover brief,
+        carrying `seed` as its initial prompt. A FIXED per-engine command — it carries NO source
+        persona (design §5: claude→opus, codex→gpt-5.5); the op dispatches on `record.engine`."""
         ...
 
     # ----- transcript --------------------------------------------------------------------------

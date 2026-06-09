@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
@@ -107,6 +108,106 @@ def bundle_transcript_path(tx_id: str, chat_id: str) -> Path:
     return bundle_dir(tx_id, chat_id) / BUNDLE_TRANSCRIPT_NAME
 
 
+# ----- chat-op command derivation (Claude's persona parse — moved here from chat.py, T8b) ----
+# The Claude flag grammar for reconstructing a fork/handover/rollover launch command from a source
+# session's `cmd`. It lives HERE (it is Claude's grammar, not the engine-blind orchestration) and
+# backs `ClaudeEngine.fork_command` / `seed_command`. The chat-op orchestration in `chat.py` is
+# engine-blind and dispatches on `record.engine` (T8b); this is the Claude rendering of that surface.
+# Carried verbatim from the pre-T8b `chat.py` so the derived command is byte-identical (the V-T8b
+# differential gate), preserving the `eae09f3` / #50 unknown-value-flag survival.
+
+# Identity flags stripped when reconstructing a launch command: the new op re-supplies its own
+# (`--resume … --fork-session` for fork, none for a fresh handover/rollover successor). Everything
+# else (model / effort / --append-system-prompt / --settings / skip-permissions) is inherited.
+_IDENTITY_VALUE_FLAGS = frozenset({"--session-id", "--resume"})
+_IDENTITY_BARE_FLAGS = frozenset({"--fork-session", "--continue", "-c"})
+
+# Bare claude flags — the ones that do NOT consume a following token. They are what lets the baked
+# initial-prompt positional be told apart when reconstructing a launch command: a positional that
+# follows a bare flag (or stands alone) is the prompt and is dropped (the op seeds its own). EVERY
+# OTHER `--flag` is assumed to take a value, so an unrecognised value-flag keeps its value instead of
+# having it mistaken for the prompt and dropped — which would corrupt the command by leaving a
+# dangling flag to swallow the appended seed. This deny-list (vs. an allow-list of value-flags) is
+# deliberate: `claude --help` documents some value-flags only in prose (e.g. `--append-system-prompt
+# [-file]`), so an allow-list silently missed them; a missed BARE flag here is benign (the worst case
+# is the predecessor prompt carried forward, never a corrupt command). Identity flags are handled above.
+_BARE_FLAGS = frozenset({
+    "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--verbose",
+    "--print", "-p", "--ide", "--tmux", "--strict-mcp-config", "--no-session-persistence",
+    "--exclude-dynamic-system-prompt-sections", "--replay-user-messages",
+    "--include-partial-messages", "--include-hook-events", "--disable-slash-commands",
+    "--chrome", "--no-chrome",
+})
+
+# Shell-control tokens. Once shlex surfaces one of these, the rest of a compound source `cmd` is
+# shell wrapping (separator / logical / pipe / background / subshell / brace-group), NOT claude
+# argv. A fork/handover/rollover is a FRESH claude invocation, not the source's shell pipeline, so
+# everything from the first such token on is dropped (bug #2b).
+_SHELL_CONTROL_TOKENS = frozenset({";", "&", "&&", "||", "|", "|&", "&>", "&>>", "(", ")", "{", "}"})
+
+
+def _is_shell_control(token: str) -> bool:
+    """Whether a shlex token is a shell operator rather than a claude flag/value: an exact control
+    token, or a redirection (any token starting with `<`/`>`). Enough to find the shell boundary
+    without re-implementing a full shell parser (bug #2b)."""
+    return token in _SHELL_CONTROL_TOKENS or token[:1] in ("<", ">")
+
+
+def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
+    """Split a source `cmd` into (binary, inherited-flags) with the session-identity flags AND any
+    positional initial-prompt removed. Inherits the source's persona (model / effort / system-prompt /
+    settings / --dangerously-skip-permissions / …) so a forked or handed-over session keeps it, and
+    re-supplies its own identity flags + seed.
+
+    Each non-identity `--flag` is inherited WITH its following value UNLESS it is a known bare flag
+    (`_BARE_FLAGS`). Assuming an unknown flag takes a value is the safe default: it keeps an
+    unrecognised value-flag's value (e.g. `--append-system-prompt-file <path>`, or any future flag)
+    instead of dropping it — dropping it would leave a dangling flag that swallows the appended seed
+    and corrupts the command. A positional that follows a bare flag (or stands alone) is the baked
+    prompt and is dropped — the op appends its own seed, so carrying the predecessor's forward would
+    make the fresh session re-run it. Stops at the first shell-control token (a compound `--cmd`'s
+    shell wrapping is not claude argv)."""
+    tokens = shlex.split(source_cmd)
+    binary = tokens[0] if tokens else CLAUDE_BIN
+    inherited: list[str] = []
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if _is_shell_control(token):
+            break  # shell wrapping begins here — drop it and everything after (bug #2b)
+        if token in _IDENTITY_VALUE_FLAGS:
+            index += 2  # drop the identity flag and its value
+            continue
+        if token in _IDENTITY_BARE_FLAGS:
+            index += 1  # drop — the op re-supplies its own
+            continue
+        if token in _BARE_FLAGS:
+            inherited.append(token)  # bare flag; any positional that follows it is the prompt (dropped)
+            index += 1
+            continue
+        if token.startswith("-"):
+            # A value-flag — a known persona flag or an unknown one. Inherit it WITH its value when a
+            # value follows; never drop the value (that is the corruption the bare/value split guards).
+            if index + 1 < len(tokens) and not tokens[index + 1].startswith("-") \
+                    and not _is_shell_control(tokens[index + 1]):
+                inherited.extend(tokens[index:index + 2])
+                index += 2
+            else:
+                inherited.append(token)  # dangling flag (end of argv / next token is itself a flag)
+                index += 1
+            continue
+        index += 1  # a positional — the source's baked initial prompt; drop it (the op seeds its own)
+    return binary, inherited
+
+
+def _ensure_skip_permissions(command: list[str]) -> list[str]:
+    """A forked/seeded session must not stop on a permission prompt (its initial prompt would never
+    run). Guarantee --dangerously-skip-permissions is present (inherited or added)."""
+    if "--dangerously-skip-permissions" not in command:
+        command.append("--dangerously-skip-permissions")
+    return command
+
+
 # ----- the adapter --------------------------------------------------------------------------
 # Claude renders every hook event onto the three live states (§2): the whole "working" family
 # reaffirms WORKING (a missed UserPromptSubmit self-heals on the first tool call), Stop / its
@@ -182,20 +283,37 @@ class ClaudeEngine(EngineAdapter):
         """`claude --resume <chat_id> --dangerously-skip-permissions` — resume a chat in place."""
         return [CLAUDE_BIN, "--resume", chat_id, "--dangerously-skip-permissions"]
 
-    def fork_command(self, chat_id: str) -> list[str]:
-        """`claude --resume <chat_id> --fork-session …` — branch a chat into a new session that opens
-        on its full history (the fork mints its own id at startup, #7/#8)."""
-        return [CLAUDE_BIN, "--resume", chat_id, "--fork-session", "--dangerously-skip-permissions"]
+    def fork_command(self, source_cmd: str, chat_id: str) -> list[str]:
+        """`claude --resume <chat_id> --fork-session …` with the SOURCE's persona flags inherited
+        (model / effort / system-prompt / --settings / any unknown value-flag — #50) and the identity
+        flags swapped for this fork's own (design §5). Branches a chat into a new session opening on
+        its full history; the fork mints its own id at startup (#7/#8)."""
+        binary, inherited = _strip_identity(source_cmd)
+        return _ensure_skip_permissions(
+            [binary, "--resume", chat_id, "--fork-session", *inherited]
+        )
 
-    def seed_command(self, prompt: str) -> list[str]:
-        """A fresh session carrying a seed prompt as its initial-prompt positional (handover/rollover's
-        new worker) — the prompt auto-submits, so no send-keys."""
-        return self.build_launch_command(initial_prompt=prompt)
+    def seed_command(self, source_cmd: str, seed: str) -> list[str]:
+        """A fresh `claude …` carrying the SOURCE's persona flags (model / effort / system-prompt /
+        any unknown value-flag — #50) with NO identity flag, plus `seed` as the initial-prompt
+        positional (handover worker / rollover successor — design §5). claude mints its own chat id,
+        captured from the first hook payload (T4); the positional prompt auto-submits, so no
+        send-keys."""
+        binary, inherited = _strip_identity(source_cmd)
+        command = _ensure_skip_permissions([binary, *inherited])
+        command.append(seed)
+        return command
 
-    def distiller_command(self) -> list[str]:
+    def distiller_command(self, seed: str) -> list[str]:
         """The throwaway distiller that summarizes a chat into a handover/rollover brief: opus at
-        medium effort (the distillation is the quality hinge — worth opus's judgement)."""
-        return self.build_launch_command(model="opus", effort="medium")
+        medium effort (the distillation is the quality hinge — worth opus's judgement), carrying
+        `seed` as its initial-prompt positional. A FIXED per-engine command — it carries NO source
+        persona (design §5: claude→opus); the op dispatches on `record.engine`. The seed is appended
+        unconditionally (not via `build_launch_command`'s truthy filter) so the joined command is
+        byte-identical to the pre-T8b distiller derivation for every seed (the V-T8b differential)."""
+        command = self.build_launch_command(model="opus", effort="medium")
+        command.append(seed)
+        return command
 
     # ----- transcript ----------------------------------------------------------------------
 
