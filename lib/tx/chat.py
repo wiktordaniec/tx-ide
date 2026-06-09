@@ -178,6 +178,7 @@ class ChatOps:
             name=name, tags=list(source_session.tags), cwd=cwd,
             cmd=shlex.join(get(source_session.engine).fork_command(source_session.cmd, source_chat.id)),
             env=_inherited_env(source_session), records_own_chat=True,
+            engine=source_session.engine,
         )
         new_session = self.service.spawn(spec)
 
@@ -359,6 +360,7 @@ class ChatOps:
         worker = self.service.spawn(SpawnSpec.for_process(
             name=spec.worker_name, tags=list(source.tags), cwd=spec.cwd, cmd=launch,
             env=_inherited_env(source), records_own_chat=True,
+            engine=source.engine,
         ))
         self._record_seeded_chat(
             worker.id, spec.cwd, "handover", spec.source_txid, spec.source_chat
@@ -509,6 +511,7 @@ class ChatOps:
         spec = SpawnSpec.for_process(
             name=name, tags=[DISTILLER_TAG, kind], cwd=cwd,
             cmd=shlex.join(get(engine).distiller_command(seed)),
+            engine=engine,
         )
         return self.service.spawn(spec)
 
