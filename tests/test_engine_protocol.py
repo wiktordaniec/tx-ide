@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
-from tx.engines import EngineAdapter, StateSource, get, registered  # noqa: E402
+from tx.engines import EngineAdapter, StateSource, registry  # noqa: E402
 from tx.engines import claude as claude_engine, codex as codex_engine  # noqa: E402,F401
 from tx.session import Engine, State  # noqa: E402
 
@@ -75,12 +75,12 @@ REQUIRED_PROPERTIES = ("binary", "event_to_state", "state_source")
 
 # ----- structural: every registered engine conforms ---------------------------------------------
 
-engines = registered()
+engines = registry.registered()
 check("registry is populated (Claude registered at import)", len(engines) >= 1)
 check("Engine.CLAUDE is registered", Engine.CLAUDE in engines)
 
 for engine_key in engines:
-    adapter = get(engine_key)
+    adapter = registry.get(engine_key)
     name = engine_key.value
     check(f"{name}: isinstance EngineAdapter (runtime_checkable)", isinstance(adapter, EngineAdapter))
     for method_name, expected_arity in REQUIRED_METHODS.items():
@@ -94,7 +94,7 @@ for engine_key in engines:
 
 # ----- pure-builder smoke (Claude) — no I/O -----------------------------------------------------
 
-claude = get(Engine.CLAUDE)
+claude = registry.get(Engine.CLAUDE)
 
 check("binary == 'claude'", claude.binary == "claude")
 check("matches_binary('claude') is True", claude.matches_binary("claude") is True)
@@ -155,7 +155,7 @@ for io_method in ("capture_session_id", "resolve_transcript", "iter_messages"):
 
 # ----- pure-builder smoke (Codex) — no I/O ------------------------------------------------------
 
-codex = get(Engine.CODEX)
+codex = registry.get(Engine.CODEX)
 
 check("codex: binary == 'codex'", codex.binary == "codex")
 check("codex: matches_binary('codex') is True", codex.matches_binary("codex") is True)

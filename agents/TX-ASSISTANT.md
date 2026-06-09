@@ -127,7 +127,7 @@ The schema is open — unknown keys are ignored. If the user names a knob you do
 
 ## Spawning workers
 
-When the user asks for a worker, follow **COMMON § Spawning workers** for the recipe: the `tx spawn … --cmd 'claude …'` pattern, the model/effort defaults, the transitional both-names `--env CLAUDE_REQUIRE_WORKTREE=1 --env TX_REQUIRE_WORKTREE=1` for coding workers, and the role-file priming string. Two things are yours as the assistant, layered on that recipe:
+When the user asks for a worker, follow **COMMON § Spawning workers** for the recipe: the `tx spawn … --cmd 'claude …'` pattern, the model/effort defaults, the `--env TX_REQUIRE_WORKTREE=1` for coding workers, and the role-file priming string. Two things are yours as the assistant, layered on that recipe:
 
 - `<cwd>` — if the user said "here", use `pane-path` / `inner-pane-path` from the focus envelope; otherwise resolve the project root they named.
 - After spawning, tell the user the attach command: `tx attach`, filtered by the scope tag.

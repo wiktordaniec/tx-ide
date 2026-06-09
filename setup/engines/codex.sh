@@ -1,42 +1,5 @@
 #!/usr/bin/env bash
-# setup/engines/codex.sh — the per-engine (OpenAI Codex) integration for tx-ide (engine-abstraction
-# design §4.6/§4.7). Sibling to setup/engines/claude.sh; both are driven by the unified installer
-# setup/engines/install.sh.
-#
-#   codex.sh {install|uninstall|status} [--dry-run] [--settings PATH]
-#
-# Codex's hook system maps onto tx's working/waiting model just like Claude's, but it is wired
-# differently: where Claude's hooks live in the SHARED ~/.claude/settings.json (edited match-by-
-# marker), Codex's live in a DEDICATED tx-owned file ~/.codex/hooks.json, and the statusline is a
-# FIXED segment enum set in ~/.codex/config.toml (Codex has no scriptable statusline). So this script:
-#
-#   install   — generate the Codex hook shims under $TX_IDE_HOME/hooks/codex/{start,pre,work,post}.sh
-#               (stdin KEPT so `tx hook` can read session_id/transcript_path off the payload — the
-#               universal capture path; each shim passes --engine codex to select the Codex adapter),
-#               write the tx-owned ~/.codex/hooks.json fanning the Codex events at those shims, and
-#               append the marked [tui] status_line block to ~/.codex/config.toml.
-#   uninstall — reverse it exactly: strip the marked config.toml block (byte-for-byte), remove our
-#               hooks.json (only if it is still ours), and remove the generated shims.
-#   status    — report what is installed vs. what hooks.json / config.toml hold.
-#
-# BYPASS-FIRST (design Q-D3 / verification §4). tx-built Codex worker commands carry
-# `--dangerously-bypass-hook-trust` (T6's CodexEngine), which the T2 spike proved runs our
-# (untrusted) hooks headlessly with NOTHING persisted. So this installer writes NO
-# `[hooks.state] trusted_hash` — there is no self-computed, pre-seeded trust this wave. (A managed /
-# pre-trusted install is the documented end-state, deferred to a separately-gated micro-spike — out
-# of scope here.) `[features] hooks=true` is NOT written either: hooks are on by default at codex
-# 0.137 (spike §Environment), so only the [tui] block + the hooks.json reference are needed.
-#
-# SAFETY — never touch the live ~/.codex while testing:
-#   * --dry-run prints every action and changes nothing.
-#   * --settings PATH edits THAT config.toml (a COPY) instead of $CODEX_HOME/config.toml, and marks
-#     the run a sandbox: it then REFUSES to proceed unless CODEX_HOME is a throwaway (not the live
-#     ~/.codex), because the tx-owned hooks.json is keyed off CODEX_HOME and a copy can't stand in
-#     for it. Test with BOTH a temp CODEX_HOME and a config.toml copy:
-#       CODEX_HOME=$(mktemp -d) codex.sh install --settings <copy-of-config.toml>
-# config.toml may be a dotfiles symlink, and Codex itself re-normalises it during runs (adds
-# personality / [projects] / [hooks.state]); every edit targets its REALPATH and is atomic
-# (temp + os.replace), tolerant of Codex's edits AROUND our marked block.
+# codex.sh {install|uninstall|status} [--dry-run] [--settings PATH]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,13 +7,10 @@ REPO_ROOT="$(cd -P "$SCRIPT_DIR/../.." && pwd)"
 LIB_DIR="$REPO_ROOT/lib"
 PY="${TX_PYTHON:-python3.14}"
 
-# The home baked into the shims (where the shims live). Default ~/.tx-ide; expand a leading ~ (env
-# vars are not tilde-expanded). Mirrors claude.sh.
+# Expand a leading ~ by hand — env vars are not tilde-expanded.
 TX_HOME="${TX_IDE_HOME:-$HOME/.tx-ide}"
 TX_HOME="${TX_HOME/#\~/$HOME}"
 
-# Codex honours CODEX_HOME (codex: os.environ.get("CODEX_HOME", "~/.codex")) — where hooks.json +
-# config.toml live. Default ~/.codex; the spike + the tests point it at a throwaway dir.
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CODEX_HOME="${CODEX_HOME/#\~/$HOME}"
 LIVE_CODEX_HOME="$HOME/.codex"
@@ -77,8 +37,6 @@ usage: codex.sh {install|uninstall|status} [--dry-run] [--settings PATH]
 EOF
 }
 
-# ----- argument parsing --------------------------------------------------------------------
-
 OP=""; DRY_RUN=0; SETTINGS=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -92,8 +50,8 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$OP" ]] || { usage; exit 2; }
 
-# --settings ⇒ sandbox: edit a config.toml COPY, and refuse to write a LIVE hooks.json (which is
-# keyed off CODEX_HOME, not --settings) — so a sandbox run can never leak into the real ~/.codex.
+# --settings ⇒ sandbox: hooks.json is keyed off CODEX_HOME (not --settings), so refuse a live
+# CODEX_HOME here or a sandbox run would leak into the real ~/.codex.
 SANDBOX=0
 if [[ -n "$SETTINGS" ]]; then
   SANDBOX=1
@@ -106,12 +64,8 @@ else
 fi
 HOOKS_JSON="$CODEX_HOME/hooks.json"
 
-# ----- the Codex hook shims (under $TX_HOME/hooks/codex) ------------------------------------
-# One shim per tx-hook subcommand; the Codex events fan IN to them via hooks.json (design §3). ALL
-# keep stdin (design §4.7): every Codex hook payload carries session_id + transcript_path, so any
-# event can satisfy the capture path. Each passes --engine codex so `tx hook` selects the Codex
-# adapter. No notify/end shims — Codex has no Notification / SessionEnd event (a finished turn rests
-# in WAITING; EXITED still comes from tmux-close → reconcile, already engine-agnostic).
+# Codex events fan in to these shims via hooks.json. No notify/end shims — Codex has no
+# Notification / SessionEnd event.
 START_SHIM="$TX_HOME/hooks/codex/start.sh"  # SessionStart                                                  → session-start
 PRE_SHIM="$TX_HOME/hooks/codex/pre.sh"      # UserPromptSubmit                                              → prompt-submit
 WORK_SHIM="$TX_HOME/hooks/codex/work.sh"    # PreToolUse/PostToolUse/PreCompact/PostCompact/SubagentStart   → working
@@ -141,8 +95,6 @@ remove_shim() {  # <path>
   if [[ $DRY_RUN -eq 1 ]]; then info "would remove shim $path"; return 0; fi
   if [[ -f "$path" ]]; then rm -f "$path"; ok "removed $path"; else info "$path (already absent)"; fi
 }
-
-# ----- hooks.json + config.toml surgery (tx-owned file + marked TOML block; atomic, reversible) ---
 
 run_codex_py() {  # <install|uninstall|status>
   TX_OP="$1" TX_DRYRUN="$DRY_RUN" TX_STAMP="$STAMP" \
@@ -331,8 +283,6 @@ elif op == "status":
     status()
 PY
 }
-
-# ----- subcommands -------------------------------------------------------------------------
 
 cmd_install() {
   printf '%s== codex.sh install ==%s  %s\n' "$B" "$X" "$( ((DRY_RUN)) && echo '(dry-run)'; ((SANDBOX)) && echo "(sandbox: $CONFIG_TOML)")"

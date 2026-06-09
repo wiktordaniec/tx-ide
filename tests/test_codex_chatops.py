@@ -38,10 +38,10 @@ os.environ.setdefault("TX_IDE_HOME", tempfile.mkdtemp())
 
 from tx.chat import ChatOps, _env_prefix  # noqa: E402
 from tx.engines import codex as _codex_engine_module  # noqa: E402,F401 — registers CodexEngine
-from tx.engines import get  # noqa: E402
+from tx.engines import registry  # noqa: E402
 from tx.session import ChatRef, Engine, Kind, Origin, Role, Session, State  # noqa: E402
 
-codex = get(Engine.CODEX)
+codex = registry.get(Engine.CODEX)
 
 BYPASS_A = "--dangerously-bypass-approvals-and-sandbox"
 BYPASS_H = "--dangerously-bypass-hook-trust"
@@ -155,7 +155,7 @@ for flag, value in UNKNOWN_VALUE_FLAGS:
 
 # ----- dispatch routing: ChatOps with a Codex-engine source routes to CodexEngine ----------------
 # A minimal fake service captures the spawned command (no tmux, no disk, no real spawn — T8b §5),
-# proving `chat.py`'s `get(record.engine).<op>(...)` selects Codex for a Codex-engine record.
+# proving `chat.py`'s `registry.get(record.engine).<op>(...)` selects Codex for a Codex-engine record.
 
 class _FakeStore:
     def __init__(self):

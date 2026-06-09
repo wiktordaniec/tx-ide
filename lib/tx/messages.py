@@ -65,9 +65,7 @@ KIND_YOU = "you"       # you sent it (typed, prefix+/, composer, or send-message
 
 
 def build_envelope(sender: str, body: str) -> str:
-    """The peer-message envelope `tx send-message` types into the recipient's pane — the symmetric
-    counterpart of `_PEER`. We BUILD the engine-neutral `<from-agent>` tag; `_PEER` still ALSO accepts
-    the legacy tag for a session mid-rollover (engine-abstraction §4.8)."""
+    """Build the engine-neutral peer-message envelope (`_PEER` still parses the legacy tag too)."""
     return f'<from-agent session="{sender}">{body}</from-agent>'
 
 

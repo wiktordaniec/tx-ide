@@ -61,7 +61,7 @@ import subprocess
 import sys
 
 from . import history
-from .engines import get
+from .engines import registry
 from .service import SessionService
 from .session import Session, State
 
@@ -121,7 +121,9 @@ def dispatch(service: SessionService, argv: list[str]) -> int:
         # The detached child `_trigger_ingest` spawned: `tx hook ingest <tx-id>`. This is where the
         # actual (possibly slow) bundle mirror runs — already off the originating hook's latency
         # path — so it just does the work and exits.
-        _run_ingest(service, argv[1] if len(argv) > 1 else os.environ.get(SESSION_ID_ENV, ""))
+        _run_ingest(
+            service, argv[1] if len(argv) > 1 else os.environ.get(SESSION_ID_ENV, "")
+        )
         return 0
 
     session_id = os.environ.get(SESSION_ID_ENV, "")
@@ -195,26 +197,17 @@ def _capture_chat_ref(service: SessionService, session_id: str) -> None:
     session = service.store.load(session_id)
     if session is None:
         return  # D4: not a record this home tracks.
-    captured_id, captured_path = get(session.engine).capture_session_id(_read_payload())
+    captured_id, captured_path = registry.get(session.engine).capture_session_id(_read_payload())
     _complete_pending(service, session, captured_id, captured_path)
 
 
 def _complete_pending(
     service: SessionService, session: Session, captured_id: str, captured_path: str
 ) -> None:
-    """Stamp the captured `(id, transcript_path)` onto the session's pending `ChatRef` — the one whose
-    `id` is still None. Every spawn writes exactly one pending ref ahead of the first hook, so the
-    latest pending ref is this chat. Idempotent: skip when the captured id is already recorded (a
-    re-fired hook), or when nothing is pending (the synchronous write has not landed yet — a fork's
-    `session-start` can fire before `chat.py` writes the ref; its first `prompt-submit` completes it).
-
-    Lazy-fork guard (V-T4 / codex-plan ruling): a Claude `--fork-session` mints its own new id LAZILY
-    at the first prompt, so its `SessionStart` fires carrying the SOURCE id. Do NOT fill a
-    `role=='fork'` pending ref with an id equal to its own `origin.chat_id` — that is the source, not
-    the fork. Leave it pending so the fork's first `UserPromptSubmit`, which carries claude's now
-    divergent id, fills it via this same path. A general rule (a fork firing with its origin's own id
-    is "not ready"); an engine whose fork id is divergent at `SessionStart` (Codex — spike Evidence 2)
-    never trips it (`captured_id != origin.chat_id` ⇒ fills immediately), so capture-for-all holds."""
+    """Stamp the captured `(id, transcript_path)` onto the session's latest pending `ChatRef` (id is
+    None). Idempotent: skip when the id is already recorded (re-fired hook) or nothing is pending.
+    Lazy-fork guard: a fork firing with an id equal to its own `origin.chat_id` is "not ready" (the
+    source id, not the fork's lazily-minted one) — leave it pending for its first prompt to fill."""
     if any(reference.id == captured_id for reference in session.chats):
         return
     pending = next(

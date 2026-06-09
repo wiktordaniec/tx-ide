@@ -16,8 +16,8 @@ Covers T8's acceptance checklist:
      == CODEX; `--engine claude` / no-engine agent spawns default to Claude; `--cmd` stays a verbatim
      override; a bare `tx spawn` is still a shell (zero behavior change);
   5. the Codex adapter is REGISTERED on the production import path — this test never imports
-     `tx.engines.codex` directly, so `Engine.CODEX in registered()` proving the spawn/reconcile
-     side-effect imports populate the registry (and `engines.get(CODEX)` resolves under `tx spawn`);
+     `tx.engines.codex` directly, so `Engine.CODEX in registry.registered()` proving the spawn/reconcile
+     side-effect imports populate the registry (and `engines.registry.get(CODEX)` resolves under `tx spawn`);
   6. `tx resume` of a codex session keeps `engine=codex` on the resumed record AND its ChatRef (T8
      stamping on the resumed record — resume's command build was already engine-routed in T4; a
      claude session still resumes as claude).
@@ -49,7 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 # NB: we import the CLI / spawn / reconcile surface but NEVER `tx.engines.codex` — check 5 below
 # asserts the Codex adapter got registered purely by the production side-effect imports.
 from tx.cli import ResumeCommand, SpawnCommand  # noqa: E402  (imports tx.spawn → registers the bundled adapters)
-from tx.engines import registered  # noqa: E402
+from tx.engines import registry  # noqa: E402
 from tx.reconcile import Reconciler  # noqa: E402
 from tx.service import SessionService  # noqa: E402
 from tx.session import ChatRef, Engine, Kind, Origin, Role, Session, State  # noqa: E402
@@ -280,9 +280,9 @@ except SystemExit as exit_error:
 
 # ----- 5. the Codex adapter is registered on the PRODUCTION import path (no direct import here) --
 
-check("registry: Claude is registered", Engine.CLAUDE in registered())
+check("registry: Claude is registered", Engine.CLAUDE in registry.registered())
 check("registry: Codex is registered via the spawn/reconcile side-effect imports (not imported here)",
-      Engine.CODEX in registered())
+      Engine.CODEX in registry.registered())
 
 # ----- 6. resume-of-codex keeps the record's engine (T8 stamping on the resumed record) ---------
 # `tx resume` builds its command via `record.engine` (T4) AND now stamps that engine on the new

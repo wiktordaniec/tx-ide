@@ -45,11 +45,11 @@ tx spawn <name> --tag <scope> --cwd <cwd> \
 - Model + effort: `--model "opus[1m]"` and `--effort max` are the defaults; don't downgrade unless asked.
 - Keep `<priming>` short and single-line — long, quoted, special-char-laden prompts crash tmux input.
 
-For **coding workers**, also pass the require-worktree env. It trips a PreToolUse hook (a user-installed `~/.claude/settings.json` guard — **not** a tx-ide feature) that blocks Write/Edit until the worker `cd`s into a linked worktree. Set **both** names transitionally — `TX_REQUIRE_WORKTREE` is the forward name, but the user's existing guard hook still reads the legacy `CLAUDE_REQUIRE_WORKTREE` and tx cannot edit a user-owned hook, so pass both until that hook is migrated, then drop the old one (engine-abstraction §4.9 / `docs/engine/neutralizations.md`):
+For **coding workers**, also pass `TX_REQUIRE_WORKTREE=1`. It trips a PreToolUse hook (a user-installed `~/.claude/settings.json` guard — **not** a tx-ide feature) that blocks Write/Edit until the worker `cd`s into a linked worktree:
 
 ```bash
 tx spawn <name> --tag <scope> --cwd <cwd> \
-  --env CLAUDE_REQUIRE_WORKTREE=1 --env TX_REQUIRE_WORKTREE=1 \
+  --env TX_REQUIRE_WORKTREE=1 \
   --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
 ```
 

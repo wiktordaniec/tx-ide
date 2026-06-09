@@ -45,12 +45,12 @@ os.environ.setdefault("TX_IDE_HOME", tempfile.mkdtemp())
 
 from tx.chat import ChatOps, ChatOpSpec, _env_prefix  # noqa: E402
 from tx.engines import claude as _claude_engine_module  # noqa: E402,F401 — registers ClaudeEngine
-from tx.engines import get  # noqa: E402
+from tx.engines import registry  # noqa: E402
 from tx.session import ChatRef, Engine, Kind, Origin, Role, Session, State  # noqa: E402
 from tx.spawn import SpawnSpec  # noqa: E402,F401
 import tx.chat as chat_module  # noqa: E402
 
-claude = get(Engine.CLAUDE)
+claude = registry.get(Engine.CLAUDE)
 
 PASSED = 0
 

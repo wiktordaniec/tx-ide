@@ -47,14 +47,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import history
-from .engines import claude, get
+from .engines import claude, registry
 from .service import NotInsideTmux, ServiceError, SessionNotFound, SessionService
 from .session import ChatRef, Engine, Origin, Session
 from .spawn import SpawnSpec
 from .storage import chat_ops_dir, history_dir, tx_ide_home
 
 # The throwaway distiller's command is a FIXED per-engine command from the source's engine adapter
-# (`get(record.engine).distiller_command(seed)` — claude→opus/medium, codex→gpt-5.5/high; design §5),
+# (`registry.get(record.engine).distiller_command(seed)` — claude→opus/medium, codex→gpt-5.5/high),
 # not a claude-hardcoded constant. The distillation is the quality hinge of a handover/rollover, so
 # each engine picks a model worth its judgement even though the mechanics are a read→write (T8b).
 DISTILLER_TAG = "temporary"  # plus the op kind (handover|rollover) so the in-flight helper is visible
@@ -176,7 +176,7 @@ class ChatOps:
 
         spec = SpawnSpec.for_process(
             name=name, tags=list(source_session.tags), cwd=cwd,
-            cmd=shlex.join(get(source_session.engine).fork_command(source_session.cmd, source_chat.id)),
+            cmd=shlex.join(registry.get(source_session.engine).fork_command(source_session.cmd, source_chat.id)),
             env=_inherited_env(source_session), records_own_chat=True,
             engine=source_session.engine,
         )
@@ -356,7 +356,7 @@ class ChatOps:
                 f"Your task brief is at {spec.artifact_path} — read it and begin. Fuller predecessor "
                 f"history, only if the brief is insufficient: {bundle}/ ."
             )
-        launch = shlex.join(get(source.engine).seed_command(source.cmd, seed))
+        launch = shlex.join(registry.get(source.engine).seed_command(source.cmd, seed))
         worker = self.service.spawn(SpawnSpec.for_process(
             name=spec.worker_name, tags=list(source.tags), cwd=spec.cwd, cmd=launch,
             env=_inherited_env(source), records_own_chat=True,
@@ -397,7 +397,7 @@ class ChatOps:
         # The rotated pane keeps the SAME tx session, so its hook (TX_SESSION_ID) fills the pending
         # rollover ref. No chat-control env — provenance is on the ref, the id is captured (T4).
         env = {"TX_SESSION_ID": spec.source_txid}
-        command = _env_prefix(env) + shlex.join(get(record.engine).seed_command(record.cmd, seed))
+        command = _env_prefix(env) + shlex.join(registry.get(record.engine).seed_command(record.cmd, seed))
         self.service.tmux.respawn_pane(spec.pane, command)
         self._record_seeded_chat(
             spec.source_txid, spec.cwd, "rollover", spec.source_txid,
@@ -510,7 +510,7 @@ class ChatOps:
         the throwaway bundle is harmless."""
         spec = SpawnSpec.for_process(
             name=name, tags=[DISTILLER_TAG, kind], cwd=cwd,
-            cmd=shlex.join(get(engine).distiller_command(seed)),
+            cmd=shlex.join(registry.get(engine).distiller_command(seed)),
             engine=engine,
         )
         return self.service.spawn(spec)

@@ -97,14 +97,9 @@ class State(str, Enum):
 
 
 class Engine(str, Enum):
-    """Which coding-agent CLI drives an llm session (design §0/§1) — a separate axis from the
-    `model` the engine runs (`opus` is a model; `claude` is the engine). Stored explicitly on the
-    record + `ChatRef` (schema v3, revisiting D9) and read back, never re-derived from a possibly-
-    reconstructed `cmd`. `None` means the session has no engine (a non-llm nvim/shell/other).
-
-    Lives here in `session.py` (a domain entity alongside `Kind`/`Role`/`State`) rather than in the
-    `engines/` package — `engines/` imports this, so housing it there would be a circular import.
-    """
+    """Which coding-agent CLI drives an llm session — a separate axis from the `model` it runs
+    (`opus` is a model; `claude` is the engine). `None` means no engine (a non-llm session). Lives
+    here, not in `engines/` (which imports this), to avoid a circular import."""
 
     CLAUDE = "claude"
     CODEX = "codex"
@@ -240,7 +235,9 @@ class Session:
     state: State
     cwd: str = ""
     cmd: str = ""
-    engine: Engine | None = None  # the session's agent engine, if it has one (v3); None for non-llm
+    engine: Engine | None = (
+        None  # the session's agent engine, if it has one (v3); None for non-llm
+    )
     tags: list[str] = field(default_factory=list)  # free-form scope chips
     env: dict[str, str] = field(default_factory=dict)
     parent: str | None = None

@@ -54,7 +54,9 @@ class SessionService:
         self.tmux = tmux if tmux is not None else Tmux()
         self.log = log if log is not None else EventLog()
         self.reconciler = (
-            reconciler if reconciler is not None else Reconciler(self.store, self.tmux, self.log)
+            reconciler
+            if reconciler is not None
+            else Reconciler(self.store, self.tmux, self.log)
         )
 
     # ----- spawn ---------------------------------------------------------------------------
@@ -90,11 +92,8 @@ class SessionService:
             raise SessionExists(f"session '{tmux_name}' already exists")
 
         now = time.time()
-        # The agent engine of an llm session (v3, design §1) — set from the spawn spec's `engine`
-        # (which carries `tx spawn --engine`, T8) and read off the record from here on, never
-        # re-derived from a reconstructed `cmd`. `spec.engine` unset ⇒ the engine default, Claude;
-        # a non-llm session (nvim/shell/other) has none. Wired onto both the record and its
-        # `original` ChatRef.
+        # An llm session's engine: set from the spawn spec, read off the record thereafter, never
+        # re-derived from `cmd`. Unset ⇒ default Claude; a non-llm session has none.
         engine = (spec.engine or Engine.CLAUDE) if spec.role == Role.LLM else None
         launch_env = {"TX_SESSION_ID": session_id, **spec.env}
         chats: list[ChatRef] = []
@@ -103,18 +102,22 @@ class SessionService:
         # reads them off the payload (hooks.py). No pre-mint, no `--session-id` injection. A chat-op
         # that records its own ref (fork / handover / resume — `records_own_chat`) skips this.
         if spec.role == Role.LLM and not spec.records_own_chat:
-            chats.append(ChatRef(
-                id=None,
-                role="original",
-                cwd=spec.cwd,
-                transcript_path="",
-                origin=Origin(how="spawn", session_id=session_id, chat_id=None),
-                started_at=now,
-                engine=engine,
-            ))
+            chats.append(
+                ChatRef(
+                    id=None,
+                    role="original",
+                    cwd=spec.cwd,
+                    transcript_path="",
+                    origin=Origin(how="spawn", session_id=session_id, chat_id=None),
+                    started_at=now,
+                    engine=engine,
+                )
+            )
 
         parent = self.tmux.current_session_name()
-        pid = self.tmux.new_session(name=tmux_name, cwd=spec.cwd, command=spec.cmd, env=launch_env)
+        pid = self.tmux.new_session(
+            name=tmux_name, cwd=spec.cwd, command=spec.cmd, env=launch_env
+        )
         self.tmux.set_tx_id(tmux_name, session_id)
         # C2 (revised, measured on tmux 3.6a): NO per-session `session-closed` hook is registered
         # here. A session's OWN `session-closed` hook does not fire at its own close on 3.6a —
@@ -194,7 +197,9 @@ class SessionService:
     def tag(self, name_or_id: str, tags: list[str]) -> Session:
         session = self._require(name_or_id)
         session.tags = list(tags)
-        session.attached_to = self.tmux.attached_to(session.tmux_name)  # ride-along snapshot (§4)
+        session.attached_to = self.tmux.attached_to(
+            session.tmux_name
+        )  # ride-along snapshot (§4)
         self.store.save(session)
         self.log.append("tag", f"{session.name} {','.join(tags)}")
         return session
@@ -213,7 +218,9 @@ class SessionService:
         if session.kind == Kind.VIEW and self.tmux.has_session(previous):
             self.tmux.rename_session(previous, new_name)
         session.name = new_name
-        session.attached_to = self.tmux.attached_to(session.tmux_name)  # ride-along snapshot (§4)
+        session.attached_to = self.tmux.attached_to(
+            session.tmux_name
+        )  # ride-along snapshot (§4)
         self.store.save(session)
         self.log.append("rename", f"{previous} → {new_name}")
         return session
@@ -235,7 +242,9 @@ class SessionService:
             session.last_activity = now  # turn start — the C5 stuck-WORKING clock
         if new_state.is_terminal:
             session.ended_at = now
-        session.attached_to = [] if new_state.is_terminal else self.tmux.attached_to(session.tmux_name)
+        session.attached_to = (
+            [] if new_state.is_terminal else self.tmux.attached_to(session.tmux_name)
+        )
         self.store.save(session)
         self.log.append("state", f"{session.name} → {new_state.value}")
         return True
@@ -253,7 +262,9 @@ class SessionService:
             raise SessionNotFound(f"target session '{target}' does not exist")
         current = self.tmux.current_session_name()
         if current is None:
-            raise NotInsideTmux("send-message must run inside tmux (needs the sender session name)")
+            raise NotInsideTmux(
+                "send-message must run inside tmux (needs the sender session name)"
+            )
         sender = self._resolve(current)
         sender_name = sender.name if sender is not None else current
         envelope = build_envelope(sender_name, body)
@@ -290,10 +301,15 @@ class SessionService:
         attrs = self.tmux.focus_attrs(pane_id)
         if attrs is None:
             return ""
-        self._add_record_attrs(attrs, attrs.get("session-name"), "session-kind", "session-tag")
+        self._add_record_attrs(
+            attrs, attrs.get("session-name"), "session-kind", "session-tag"
+        )
         if not attrs.get("inner-remote"):
             self._add_record_attrs(
-                attrs, attrs.get("inner-session-name"), "inner-session-kind", "inner-session-tag"
+                attrs,
+                attrs.get("inner-session-name"),
+                "inner-session-kind",
+                "inner-session-tag",
             )
         return format_envelope(attrs)
 
@@ -327,5 +343,7 @@ class SessionService:
     def _require(self, token: str) -> Session:
         session = self._resolve(token)
         if session is None:
-            raise SessionNotFound(f"session '{token}' not found (no live @tx_id, no store record)")
+            raise SessionNotFound(
+                f"session '{token}' not found (no live @tx_id, no store record)"
+            )
         return session

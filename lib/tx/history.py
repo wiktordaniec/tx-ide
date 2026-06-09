@@ -35,7 +35,7 @@ import shutil
 from collections.abc import Iterator
 from pathlib import Path
 
-from .engines import claude, get
+from .engines import claude, registry
 from .session import Engine
 from .store import SessionStore
 
@@ -52,22 +52,21 @@ _PREFIX_CHECK_BYTES = 65536
 
 # ----- cross-project resolver (chat-ops §3.4 — the only non-copy logic) ---------------------
 
-def resolve_transcript(chat_id: str, cwd_hint: str | None, engine: Engine) -> Path | None:
-    """Locate a chat's source transcript `.jsonl`, or None if it is not on disk yet.
 
-    Engine-routed (design §2/§3, T4): the fast path asks the chat's engine to resolve the transcript
-    from the cwd (`engine.resolve_transcript` — Claude's deterministic formula, Codex's rollout glob),
-    then existence-checks it (the protocol leaves existence to the caller). Fallback (the cwd has moved
-    — a deleted/renamed worktree, or a fork/handover launched elsewhere): glob the projects root for
-    `*/<chat>.jsonl` and take the unique hit, preferring the `cwd_hint` munge when several match
-    (chat-ids are unique, so >1 hit is not expected — prefer the hint defensively). The cross-project
-    fallback is Claude's projects-root layout; the per-engine cross-project glob lands with Codex (T6).
-    """
+def resolve_transcript(
+    chat_id: str, cwd_hint: str | None, engine: Engine
+) -> Path | None:
+    """Locate a chat's source transcript `.jsonl`, or None if not on disk yet. Engine-routed: the
+    fast path asks the engine to resolve it from the cwd, then existence-checks it. Fallback (a moved
+    cwd — deleted/renamed worktree, or a fork/handover launched elsewhere): glob the projects root for
+    `*/<chat>.jsonl`, preferring the `cwd_hint` munge if several match (>1 hit is not expected)."""
     if cwd_hint:
-        fast = get(engine).resolve_transcript(chat_id, cwd_hint)
+        fast = registry.get(engine).resolve_transcript(chat_id, cwd_hint)
         if fast.exists():
             return fast
-    matches = sorted(claude.projects_root().glob(f"*/{chat_id}{claude.TRANSCRIPT_SUFFIX}"))
+    matches = sorted(
+        claude.projects_root().glob(f"*/{chat_id}{claude.TRANSCRIPT_SUFFIX}")
+    )
     if not matches:
         return None
     if len(matches) == 1:
@@ -81,7 +80,10 @@ def resolve_transcript(chat_id: str, cwd_hint: str | None, engine: Engine) -> Pa
 
 # ----- ingest (the copy) --------------------------------------------------------------------
 
-def ingest_session(store: SessionStore, session_id: str, *, wait: bool = False) -> list[str]:
+
+def ingest_session(
+    store: SessionStore, session_id: str, *, wait: bool = False
+) -> list[str]:
     """Mirror every ingestable chat of one tx session into its history bundle (D6 — tx-tracked
     sessions only; the store is the source of truth for which chats exist). Returns the bundle paths
     that were touched. `wait=False` (the hot Stop/SessionEnd path) coalesces; `wait=True`
@@ -111,9 +113,8 @@ def ingest_chat(
     tx_id: str, chat_id: str, cwd_hint: str, engine: Engine, *, wait: bool = False
 ) -> Path | None:
     """Mirror one chat's bundle into `$TX_IDE_HOME/history/<tx-id>/<chat>/`, or None if the source
-    transcript is not on disk yet. The chat's `engine` resolves the source transcript (T4); the copy
-    itself is engine-neutral (the per-engine bundle LAYOUT — Codex's sidecar-free rollout — is T6).
-    Returns the bundle dir (even when a concurrent mirror is skipped — the bundle exists either way)."""
+    transcript is not on disk yet. Returns the bundle dir even when a concurrent mirror is skipped
+    (it exists either way)."""
     src_transcript = resolve_transcript(chat_id, cwd_hint, engine)
     if src_transcript is None:
         return None
@@ -121,22 +122,20 @@ def ingest_chat(
     bundle.mkdir(parents=True, exist_ok=True)
     with _ingest_lock(bundle / INGEST_LOCK_NAME, wait=wait) as acquired:
         if not acquired:
-            return bundle  # a mirror is already in flight for this chat — coalesce (skip).
+            return (
+                bundle  # a mirror is already in flight for this chat — coalesce (skip).
+            )
         _mirror(src_transcript, chat_id, bundle, engine)
     return bundle
 
 
 def _mirror(src_transcript: Path, chat_id: str, bundle: Path, engine: Engine) -> None:
     """The copy itself: the transcript by offset, then each per-engine sidecar dir copy-if-absent.
-
-    The LAYOUT — *which* sidecar dirs exist — is the engine's (design §6.4): `engine.bundle_sidecars`
-    names them (Claude's sibling `<chat>/` carrying subagents/ + tool-results/, taken relative to the
-    RESOLVED transcript so a moved cwd still finds its colocated sidecar; Codex none, its rollout
-    inlines everything). The *mechanism* stays here, shared and engine-neutral: the transcript appended
-    by offset into `transcript.jsonl`, each named sidecar copied wholesale into the bundle root
-    copy-if-absent (a missing dir is a no-op). Save too much, parse nothing."""
+    *Which* sidecar dirs exist is the engine's call (`engine.bundle_sidecars`, taken relative to the
+    RESOLVED transcript so a moved cwd still finds its colocated sidecar); the mechanism here is
+    engine-neutral. A missing sidecar dir is a no-op."""
     _append_by_offset(src_transcript, bundle / claude.BUNDLE_TRANSCRIPT_NAME)
-    for sidecar in get(engine).bundle_sidecars(src_transcript, chat_id):
+    for sidecar in registry.get(engine).bundle_sidecars(src_transcript, chat_id):
         _copy_tree_if_absent(sidecar, bundle)
 
 
@@ -209,7 +208,9 @@ def _ingest_lock(lock_path: Path, *, wait: bool) -> Iterator[bool]:
     acquired = False
     try:
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(
+                descriptor, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB
+            )
             acquired = True
         except OSError:
             acquired = False  # non-blocking lock already held → coalesce.
@@ -220,7 +221,9 @@ def _ingest_lock(lock_path: Path, *, wait: bool) -> Iterator[bool]:
         os.close(descriptor)
 
 
-def _stamp_bundle_paths(store: SessionStore, session_id: str, ingested: dict[str, str]) -> None:
+def _stamp_bundle_paths(
+    store: SessionStore, session_id: str, ingested: dict[str, str]
+) -> None:
     """Stamp `bundle_path` back onto each ingested `ChatRef` (F7).
 
     Re-load the record FRESH right before saving (the slow copy is already done): the detached

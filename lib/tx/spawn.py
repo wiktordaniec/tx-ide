@@ -15,13 +15,9 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-# Import the bundled adapters for their registry SIDE-EFFECT only: each `engines/<name>.py` calls
-# `register(...)` at import, so importing them here is what makes `registered()` (used by
-# `infer_role`) see EVERY engine — not just Claude. The module names are otherwise unused (the
-# lookup goes through `get`/`registered`), hence the noqa. Mirrors the registration import in
-# tests/test_engine_protocol.py.
+# Side-effect import: each adapter self-registers at import, so registered() sees every engine.
 from .engines import claude, codex  # noqa: F401
-from .engines import get, registered
+from .engines import registry
 from .session import Engine, Kind, Role
 
 # Nvim companion command. `tmux new-session -d` strips the terminal's OSC11 background hint, so
@@ -31,20 +27,12 @@ SHELL_COMMANDS = frozenset({"zsh", "bash", "sh", "fish", "dash"})
 
 
 def infer_role(command: str) -> Role:
-    """Derive the session role from its launch command's binary.
-
-    Mirrors install-flip §6's inference: ANY registered engine's binary → LLM, `nvim` → NVIM, a
-    login shell → SHELL, everything else → OTHER. Engine-agnostic by design (T8): the LLM test asks
-    every registered `EngineAdapter` whether the command is its binary (`claude`, `codex`, …) rather
-    than hard-coding `claude`, so a `codex …` command classifies as LLM exactly like `claude …`. This
-    is **role only** — it deliberately does NOT return WHICH engine matched (the engine is set from
-    `--engine` at spawn and stored on the record, never inferred from a command — design §1).
-    Pass an already-resolved command (the CLI defaults an omitted `--cmd` to the real `$SHELL`, so a
-    shell spawn classifies as SHELL rather than OTHER).
-    """
+    """Role (not engine) from a launch command's binary: any registered engine → LLM, nvim → NVIM,
+    a login shell → SHELL, else OTHER. Pass an already-resolved command (an omitted `--cmd` is the
+    real `$SHELL`, so it classifies as SHELL not OTHER)."""
     parts = command.split()
     binary = os.path.basename(parts[0]) if parts else ""
-    if any(get(engine).matches_binary(command) for engine in registered()):
+    if any(registry.get(engine).matches_binary(command) for engine in registry.registered()):
         return Role.LLM
     if binary == "nvim":
         return Role.NVIM
@@ -80,8 +68,14 @@ class SpawnSpec:
 
     @classmethod
     def for_process(
-        cls, *, name: str, tags: list[str], cwd: str, cmd: str,
-        env: dict[str, str] | None = None, records_own_chat: bool = False,
+        cls,
+        *,
+        name: str,
+        tags: list[str],
+        cwd: str,
+        cmd: str,
+        env: dict[str, str] | None = None,
+        records_own_chat: bool = False,
         engine: Engine | None = None,
     ) -> SpawnSpec:
         """A normal worker/agent/shell session (`tx spawn`). A plain llm spawn gets a pending
@@ -90,15 +84,26 @@ class SpawnSpec:
         `engine` carries the `--engine` choice (default Claude resolved in `_spawn`); leave it `None`
         for a shell/nvim/other spawn or to take the engine default."""
         return cls(
-            name=name, kind=Kind.PROCESS, role=infer_role(cmd), cwd=cwd, cmd=cmd,
-            tags=list(tags), env=dict(env or {}), records_own_chat=records_own_chat,
+            name=name,
+            kind=Kind.PROCESS,
+            role=infer_role(cmd),
+            cwd=cwd,
+            cmd=cmd,
+            tags=list(tags),
+            env=dict(env or {}),
+            records_own_chat=records_own_chat,
             engine=engine,
         )
 
     @classmethod
     def for_nvim(
-        cls, *, name: str, tags: list[str], cwd: str,
-        env: dict[str, str] | None = None, diff_base: str | None = None,
+        cls,
+        *,
+        name: str,
+        tags: list[str],
+        cwd: str,
+        env: dict[str, str] | None = None,
+        diff_base: str | None = None,
     ) -> SpawnSpec:
         """An nvim companion (`tx spawn-nvim`). When `diff_base` is given, open straight into a
         diffview against it (`--diff` defaults the base to `main` at the CLI boundary)."""
@@ -106,18 +111,33 @@ class SpawnSpec:
         if diff_base is not None:
             command += f" +'DiffviewOpen {diff_base}'"
         return cls(
-            name=name, kind=Kind.PROCESS, role=Role.NVIM, cwd=cwd, cmd=command,
-            tags=list(tags), env=dict(env or {}),
+            name=name,
+            kind=Kind.PROCESS,
+            role=Role.NVIM,
+            cwd=cwd,
+            cmd=command,
+            tags=list(tags),
+            env=dict(env or {}),
         )
 
     @classmethod
     def for_view(
-        cls, *, name: str, tags: list[str], cwd: str, cmd: str,
+        cls,
+        *,
+        name: str,
+        tags: list[str],
+        cwd: str,
+        cmd: str,
         env: dict[str, str] | None = None,
     ) -> SpawnSpec:
         """A `kind=view` home base (`tx spawn-view`) — surfaces under VIEWS and is filtered out of
         the picker. Role is still inferred from `cmd` (a view runs a shell → SHELL)."""
         return cls(
-            name=name, kind=Kind.VIEW, role=infer_role(cmd), cwd=cwd, cmd=cmd,
-            tags=list(tags), env=dict(env or {}),
+            name=name,
+            kind=Kind.VIEW,
+            role=infer_role(cmd),
+            cwd=cwd,
+            cmd=cmd,
+            tags=list(tags),
+            env=dict(env or {}),
         )
