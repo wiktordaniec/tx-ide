@@ -355,11 +355,14 @@ Transcript = newline-delimited JSON; first line is `session_meta` (see Evidence 
 A **live Codex worker** driven end-to-end through the merged wiring against the **frozen final product**
 (`task/T9-e2e-verify` off `feat/engine-abstraction` @ `c3bfd1d`), by the independent verifier `V-T9-e2e`
 (no self-grading). Each parity flow was OBSERVED on a real `codex` worker and CAPTURED below with real
-artifacts. **Verdict: FAIL** — the core paths (spawn / capture / state / history ingest / resume) and the
-rollover *mechanics* work on the real worker, but **`tx fork` and `tx handover` of a Codex session
-mis-stamp the new record `engine=claude`**, which breaks their engine-routed history ingest (empty
-bundle), and **`tx rollover` raises a `TypeError` in its CLI wrapper**. Defects D1–D2 below;
-the codex-plan-flagged unseeded-fork capture timing is confirmed deferred (D3, expected).
+artifacts. **Verdict: round-1 FAIL → fixed (`task/fix-d1-d2` @ `d31ad90`) → round-2 re-verify PASS**
+(see [Re-verification (round 2)](#re-verification-round-2--d1--d2-fix--d31ad90) at the end). Round 1:
+the core paths (spawn / capture / state / history ingest / resume) and the rollover *mechanics* worked
+on the real worker, but **`tx fork` and `tx handover` of a Codex session mis-stamped the new record
+`engine=claude`**, breaking their engine-routed history ingest (empty bundle), and **`tx rollover`
+raised a `TypeError` in its CLI wrapper** (defects D1–D2 below). Round 2 re-ran the three failed flows
+against the fix and confirmed all pass. The codex-plan-flagged unseeded-fork capture timing is confirmed
+deferred (D3, expected — a separate follow-up, not a fix-blocker).
 
 ### Environment
 
@@ -611,3 +614,84 @@ were kept trivial ("reply PONG/FORKED", "say hello then stop") to minimise spend
    --self-catch-up` / `tx rollover --self-catch-up` / `tx resume --as`.
 4. Re-check `sha256(~/.codex/config.toml|auth.json)` == the pre-run snapshot after every flow; `rm -rf
    "$SANDBOX"`. The live homes are never written.
+
+---
+
+## Re-verification (round 2) — D1 + D2 fix @ `d31ad90`
+
+Round 1 (above) was a **FAIL** that surfaced two fixable defects. The fix landed on `task/fix-d1-d2`
+@ `d31ad90` (off `feat/engine-abstraction`); `V-T9-e2e` re-ran the **three failed flows** live against it,
+in a **fresh dual sandbox**, by the same method (worker runs the FIX code; the live `~/.codex` is never
+written). **Verdict: PASS — D1 and D2 are fixed; all seven parity flows now pass.**
+
+**The fix (confirmed by diff `c3bfd1d..d31ad90`):**
+- **D1** — `lib/tx/chat.py` adds `engine=source.engine` to all three `SpawnSpec.for_process(...)` spawns:
+  `fork()` (:178), `_finish_handover()` (:360), `_spawn_distiller()` (:511). So `_spawn` no longer
+  defaults the engine to Claude for a Codex-sourced op.
+- **D2** — `lib/tx/cli.py` `RolloverCommand` stops subscripting `ChatOps.rollover()`'s `None` return
+  (the successor id is captured async), printing a fixed message instead.
+
+**Re-run environment:** worker = the FIX code `task/fix-d1-d2` @ `d31ad90` (a detached worktree; its
+`bin/tx` + `setup/engines/codex.sh` + `lib` are the fix — the installed shims bake the fix `lib`), codex
+`0.138.0`, fresh temp `$TX_IDE_HOME`/`$CODEX_HOME` (writable auth), worker project realpath-trusted. Live
+`~/.codex` re-checked **byte-identical** before/after every flow (`config.toml` `a2cacd4a…`, `auth.json`
+`c86eadf8…`; no live `hooks.json`); the temp `auth.json` was again not rewritten (no OAuth refresh this
+run). Standing gate at the fix was green (orchestrator: 12 suites / 996 checks; the D1 record-engine test
+is red-without-fix).
+
+### D1 — fork: `engine=codex` + NON-EMPTY bundle  ✅ FIXED
+
+```
+tx fork rv-codex rv-fork
+# cmd: codex fork 019eac8b-92c4-… -m gpt-5.5 -c model_reasoning_effort=high --dangerously-bypass-*
+```
+- **At spawn:** fork record `engine=codex` and the fork `ChatRef` `engine=codex` (round 1: both `claude`).
+- **Capture:** unseeded → deferred `SessionStart` (D3, unchanged); on the first typed turn the fork
+  captured its **own** id `019eac8b-bf3c-7ca0-8dc3-7492c255aea2` (rollout `forked_from_id:
+  019eac8b-92c4-…`).
+- **History ingest (the round-1 break):** the bundle `history/93fefe7d-…/019eac8b-bf3c-…/` now holds
+  **`transcript.jsonl` = 52293 bytes** (round 1: **empty**) + `.ingest.lock`, **no sidecar** — i.e. the
+  engine-routed resolver now globs the Codex rollout (`rollout-…-019eac8b-bf3c-….jsonl`) instead of
+  Claude's projects dir. ✅
+
+### D1 — handover: `engine=codex` + NON-EMPTY bundle  ✅ FIXED
+
+```
+tx handover rv-codex "say hello then stop" rv-handover --self-catch-up
+# worker cmd: codex -m gpt-5.5 -c model_reasoning_effort=high --dangerously-bypass-* '<seed>'
+```
+- **At spawn:** handover worker record `engine=codex` and its handover `ChatRef` `engine=codex` (round 1:
+  `claude`). It captured its own id `019eac8c-6355-7b40-8e0f-7034b2f2c72a`, ran its seeded task (wrote
+  `HANDOVER_BRIEF.md` in the temp project), and reached WAITING.
+- **History ingest:** on the worker's `Stop`, the bundle `history/1b83cb87-…/019eac8c-6355-…/` now holds
+  **`transcript.jsonl` = 84562 bytes** (round 1: **empty**) + `.ingest.lock`, rollout-alone. ✅
+
+### D2 — `tx rollover`: clean exit + record stays `codex`  ✅ FIXED
+
+```
+$ tx rollover rv-codex --self-catch-up
+Rollover scheduled (self-catch-up); the same session rotates onto a fresh chat when ready
+$ echo $?
+0
+```
+- **No `TypeError`** (round 1 crashed with `'NoneType' object is not subscriptable`); **exit code 0**,
+  reworded message.
+- The rollover mechanics still hold: same record stays `engine=codex`, the predecessor chat
+  `019eac8b-92c4-…` is closed (`ended_at` set), and a fresh `rollover` `ChatRef`
+  `019eac8d-79c0-7052-b1ab-35d08cb9b096` (`engine=codex`, `origin.how: rollover`) captured the successor's
+  own id. ✅
+
+### Net result
+
+| Defect | Round 1 | Round 2 (fix @ `d31ad90`) |
+|---|---|---|
+| D1 fork — record engine / bundle | `engine=claude` / empty bundle | **`engine=codex` / 52293-byte bundle** ✅ |
+| D1 handover — record engine / bundle | `engine=claude` / empty bundle | **`engine=codex` / 84562-byte bundle** ✅ |
+| D2 `tx rollover` CLI | `TypeError` crash | **exit 0, record stays `codex`** ✅ |
+
+**All seven parity flows now PASS** on the real worker (spawn+capture, working→waiting, history ingest
+(rollout-alone), fork, handover, rollover, resume). **Remaining follow-ups (NOT fix-blockers):** D3 —
+seed the unseeded fork so its id is captured at spawn rather than on first interaction; and the minor
+Claude-ism in `chat.py`'s handover/rollover catch-up seed text (`"subagents/ + tool-results/"`, harmless
+for Codex's rollout-only bundle). Live homes byte-intact throughout; temp sandbox + the detached fix
+worktree torn down after.
