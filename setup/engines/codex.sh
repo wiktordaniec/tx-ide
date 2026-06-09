@@ -1,0 +1,375 @@
+#!/usr/bin/env bash
+# setup/engines/codex.sh — the per-engine (OpenAI Codex) integration for tx-ide (engine-abstraction
+# design §4.6/§4.7). Sibling to setup/engines/claude.sh; both are driven by the unified installer
+# setup/engines/install.sh.
+#
+#   codex.sh {install|uninstall|status} [--dry-run] [--settings PATH]
+#
+# Codex's hook system maps onto tx's working/waiting model just like Claude's, but it is wired
+# differently: where Claude's hooks live in the SHARED ~/.claude/settings.json (edited match-by-
+# marker), Codex's live in a DEDICATED tx-owned file ~/.codex/hooks.json, and the statusline is a
+# FIXED segment enum set in ~/.codex/config.toml (Codex has no scriptable statusline). So this script:
+#
+#   install   — generate the Codex hook shims under $TX_IDE_HOME/hooks/codex/{start,pre,work,post}.sh
+#               (stdin KEPT so `tx hook` can read session_id/transcript_path off the payload — the
+#               universal capture path; each shim passes --engine codex to select the Codex adapter),
+#               write the tx-owned ~/.codex/hooks.json fanning the Codex events at those shims, and
+#               append the marked [tui] status_line block to ~/.codex/config.toml.
+#   uninstall — reverse it exactly: strip the marked config.toml block (byte-for-byte), remove our
+#               hooks.json (only if it is still ours), and remove the generated shims.
+#   status    — report what is installed vs. what hooks.json / config.toml hold.
+#
+# BYPASS-FIRST (design Q-D3 / verification §4). tx-built Codex worker commands carry
+# `--dangerously-bypass-hook-trust` (T6's CodexEngine), which the T2 spike proved runs our
+# (untrusted) hooks headlessly with NOTHING persisted. So this installer writes NO
+# `[hooks.state] trusted_hash` — there is no self-computed, pre-seeded trust this wave. (A managed /
+# pre-trusted install is the documented end-state, deferred to a separately-gated micro-spike — out
+# of scope here.) `[features] hooks=true` is NOT written either: hooks are on by default at codex
+# 0.137 (spike §Environment), so only the [tui] block + the hooks.json reference are needed.
+#
+# SAFETY — never touch the live ~/.codex while testing:
+#   * --dry-run prints every action and changes nothing.
+#   * --settings PATH edits THAT config.toml (a COPY) instead of $CODEX_HOME/config.toml, and marks
+#     the run a sandbox: it then REFUSES to proceed unless CODEX_HOME is a throwaway (not the live
+#     ~/.codex), because the tx-owned hooks.json is keyed off CODEX_HOME and a copy can't stand in
+#     for it. Test with BOTH a temp CODEX_HOME and a config.toml copy:
+#       CODEX_HOME=$(mktemp -d) codex.sh install --settings <copy-of-config.toml>
+# config.toml may be a dotfiles symlink, and Codex itself re-normalises it during runs (adds
+# personality / [projects] / [hooks.state]); every edit targets its REALPATH and is atomic
+# (temp + os.replace), tolerant of Codex's edits AROUND our marked block.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -P "$SCRIPT_DIR/../.." && pwd)"
+LIB_DIR="$REPO_ROOT/lib"
+PY="${TX_PYTHON:-python3.14}"
+
+# The home baked into the shims (where the shims live). Default ~/.tx-ide; expand a leading ~ (env
+# vars are not tilde-expanded). Mirrors claude.sh.
+TX_HOME="${TX_IDE_HOME:-$HOME/.tx-ide}"
+TX_HOME="${TX_HOME/#\~/$HOME}"
+
+# Codex honours CODEX_HOME (codex: os.environ.get("CODEX_HOME", "~/.codex")) — where hooks.json +
+# config.toml live. Default ~/.codex; the spike + the tests point it at a throwaway dir.
+CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+CODEX_HOME="${CODEX_HOME/#\~/$HOME}"
+LIVE_CODEX_HOME="$HOME/.codex"
+
+STAMP="$(date +%Y%m%d%H%M%S)"
+
+B=$'\e[1m'; G=$'\e[32m'; Y=$'\e[33m'; RED=$'\e[31m'; D=$'\e[2m'; X=$'\e[0m'
+ok()     { printf '  %s→%s %-46s %s%s%s\n' "$G" "$X" "$1" "$G" "${2:-ok}" "$X"; }
+warn()   { printf '  %s→%s %-46s %s%s%s\n' "$Y" "$X" "$1" "$Y" "${2:-}" "$X"; }
+info()   { printf '  %s%s%s\n' "$D" "$*" "$X"; }
+header() { printf '\n%s%s%s\n' "$B" "$*" "$X"; }
+die()    { printf '%scodex.sh: %s%s\n' "$RED" "$*" "$X" >&2; exit 1; }
+
+usage() {
+  cat >&2 <<EOF
+usage: codex.sh {install|uninstall|status} [--dry-run] [--settings PATH]
+
+  install     write tx-ide's Codex hooks (hooks.json + shims) + the marked config.toml [tui] block
+  uninstall   reverse it exactly — strip the config.toml block, remove our hooks.json + shims
+  status      report what is installed vs. what hooks.json / config.toml hold
+
+  --dry-run        print every action, change nothing
+  --settings PATH  edit PATH (a config.toml copy) — sandbox: requires a throwaway CODEX_HOME
+EOF
+}
+
+# ----- argument parsing --------------------------------------------------------------------
+
+OP=""; DRY_RUN=0; SETTINGS=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    install|uninstall|status) OP="$1"; shift ;;
+    --dry-run)        DRY_RUN=1; shift ;;
+    --settings)       SETTINGS="${2:?--settings needs a PATH}"; shift 2 ;;
+    --settings=*)     SETTINGS="${1#*=}"; shift ;;
+    -h|--help)        usage; exit 0 ;;
+    *) printf 'codex.sh: unknown argument: %s\n' "$1" >&2; usage; exit 2 ;;
+  esac
+done
+[[ -n "$OP" ]] || { usage; exit 2; }
+
+# --settings ⇒ sandbox: edit a config.toml COPY, and refuse to write a LIVE hooks.json (which is
+# keyed off CODEX_HOME, not --settings) — so a sandbox run can never leak into the real ~/.codex.
+SANDBOX=0
+if [[ -n "$SETTINGS" ]]; then
+  SANDBOX=1
+  CONFIG_TOML="$SETTINGS"
+  if [[ "$CODEX_HOME" == "$LIVE_CODEX_HOME" ]]; then
+    die "--settings (sandbox) requires a throwaway CODEX_HOME (e.g. CODEX_HOME=\$(mktemp -d)) — refusing to write the live ~/.codex/hooks.json"
+  fi
+else
+  CONFIG_TOML="$CODEX_HOME/config.toml"
+fi
+HOOKS_JSON="$CODEX_HOME/hooks.json"
+
+# ----- the Codex hook shims (under $TX_HOME/hooks/codex) ------------------------------------
+# One shim per tx-hook subcommand; the Codex events fan IN to them via hooks.json (design §3). ALL
+# keep stdin (design §4.7): every Codex hook payload carries session_id + transcript_path, so any
+# event can satisfy the capture path. Each passes --engine codex so `tx hook` selects the Codex
+# adapter. No notify/end shims — Codex has no Notification / SessionEnd event (a finished turn rests
+# in WAITING; EXITED still comes from tmux-close → reconcile, already engine-agnostic).
+START_SHIM="$TX_HOME/hooks/codex/start.sh"  # SessionStart                                                  → session-start
+PRE_SHIM="$TX_HOME/hooks/codex/pre.sh"      # UserPromptSubmit                                              → prompt-submit
+WORK_SHIM="$TX_HOME/hooks/codex/work.sh"    # PreToolUse/PostToolUse/PreCompact/PostCompact/SubagentStart   → working
+POST_SHIM="$TX_HOME/hooks/codex/post.sh"    # Stop / PermissionRequest                                      → stop
+
+write_shim() {  # <path> <subcommand>
+  local path="$1" subcommand="$2"
+  if [[ $DRY_RUN -eq 1 ]]; then
+    info "would generate shim $path  ($subcommand --engine codex, home baked = $TX_HOME)"
+    return 0
+  fi
+  mkdir -p "$(dirname "$path")"
+  cat >"$path" <<EOF
+#!/bin/bash
+# tx-ide Codex hook shim — GENERATED by setup/engines/codex.sh. Do NOT edit; re-run the installer to
+# regenerate. \$TX_IDE_HOME and the package lib are baked in as literals because Codex runs hooks with
+# a minimal env. stdin is left CONNECTED so \`tx hook\` can read session_id/transcript_path off the
+# JSON payload (the universal capture path); --engine codex selects the Codex adapter.
+exec env TX_IDE_HOME="$TX_HOME" PYTHONPATH="$LIB_DIR" "$PY" -m tx hook $subcommand --engine codex
+EOF
+  chmod +x "$path"
+  ok "shim $path" "$subcommand"
+}
+
+remove_shim() {  # <path>
+  local path="$1"
+  if [[ $DRY_RUN -eq 1 ]]; then info "would remove shim $path"; return 0; fi
+  if [[ -f "$path" ]]; then rm -f "$path"; ok "removed $path"; else info "$path (already absent)"; fi
+}
+
+# ----- hooks.json + config.toml surgery (tx-owned file + marked TOML block; atomic, reversible) ---
+
+run_codex_py() {  # <install|uninstall|status>
+  TX_OP="$1" TX_DRYRUN="$DRY_RUN" TX_STAMP="$STAMP" \
+  TX_HOOKS_JSON="$HOOKS_JSON" TX_CONFIG_TOML="$CONFIG_TOML" \
+  TX_START="$START_SHIM" TX_PRE="$PRE_SHIM" TX_WORK="$WORK_SHIM" TX_POST="$POST_SHIM" \
+  "$PY" - <<'PY'
+import json, os, re, tempfile
+
+op          = os.environ["TX_OP"]
+dry_run     = os.environ["TX_DRYRUN"] == "1"
+stamp       = os.environ["TX_STAMP"]
+hooks_json  = os.environ["TX_HOOKS_JSON"]
+config_toml = os.environ["TX_CONFIG_TOML"]
+G, Y, D, X = "\033[32m", "\033[33m", "\033[2m", "\033[0m"
+
+# Codex event → the tx-hook shim that handles it (design §3). The working family fans into one shim,
+# Stop + PermissionRequest into another — the same collapse claude.sh does for the Claude set.
+EVENTS = {
+    "SessionStart":      os.environ["TX_START"],
+    "UserPromptSubmit":  os.environ["TX_PRE"],
+    "PreToolUse":        os.environ["TX_WORK"],
+    "PostToolUse":       os.environ["TX_WORK"],
+    "PreCompact":        os.environ["TX_WORK"],
+    "PostCompact":       os.environ["TX_WORK"],
+    "SubagentStart":     os.environ["TX_WORK"],
+    "Stop":              os.environ["TX_POST"],
+    "PermissionRequest": os.environ["TX_POST"],
+}
+
+# The tx-owned hooks.json: each Codex event → one command entry at its shim (the shape the T2 spike
+# captured). The whole file is tx's, so install writes it wholesale and uninstall removes it.
+DESIRED = {"hooks": {
+    event: [{"hooks": [{"type": "command", "command": command}]}]
+    for event, command in EVENTS.items()
+}}
+DESIRED_TEXT = json.dumps(DESIRED, indent=2) + "\n"
+
+# The marked config.toml [tui] block (design §4.7) — a raw-TOML block, since status_line is a fixed
+# segment enum, not a scriptable command. Copied from the known-good manual config.
+MARK_BEGIN = "# === BEGIN tx-ide (codex) ==="
+MARK_END   = "# === END tx-ide (codex) ==="
+BLOCK_BODY = (
+    "[tui]\n"
+    'status_line = ["model", "reasoning", "project-name", "git-branch", "context-used"]\n'
+    "status_line_use_colors = true\n"
+)
+BLOCK = MARK_BEGIN + "\n" + BLOCK_BODY + MARK_END + "\n"
+# Appended with a single leading newline separator; uninstall strips exactly that (the leading
+# newline is optional in the pattern so a block that landed first in the file also reverses clean).
+APPENDED = "\n" + BLOCK
+BLOCK_RE = re.compile(r"\n?" + re.escape(MARK_BEGIN) + r".*?" + re.escape(MARK_END) + r"\n", re.DOTALL)
+
+
+def atomic_write(real, text):
+    """Atomic write to the REALPATH (config.toml may be a dotfiles symlink): temp + os.replace."""
+    directory = os.path.dirname(real) or "."
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".tx-codex.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, real)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def backup(real, text):
+    with open(f"{real}.bak.{stamp}", "w") as fh:
+        fh.write(text)
+
+
+def load_json(real):
+    if not os.path.exists(real):
+        return None
+    with open(real) as fh:
+        try:
+            return json.load(fh)
+        except ValueError:
+            return None
+
+
+def install_hooks_json():
+    real = os.path.realpath(hooks_json)
+    current = load_json(real)
+    if current == DESIRED:
+        print(f"  {G}→{X} hooks.json already current  {D}{hooks_json}{X}")
+        return
+    action = "written"
+    if os.path.exists(real):
+        action = f"replaced (backup .bak.{stamp})"
+    if dry_run:
+        print(f"  {D}would write {hooks_json} ({action}){X}")
+        return
+    if os.path.exists(real):
+        with open(real) as fh:
+            backup(real, fh.read())
+    os.makedirs(os.path.dirname(real) or ".", exist_ok=True)
+    atomic_write(real, DESIRED_TEXT)
+    print(f"  {G}→{X} hooks.json {action}  {D}{hooks_json}{X}")
+
+
+def uninstall_hooks_json():
+    real = os.path.realpath(hooks_json)
+    if not os.path.exists(real):
+        print(f"  {D}hooks.json (already absent) {hooks_json}{X}")
+        return
+    if load_json(real) != DESIRED:
+        print(f"  {Y}→{X} hooks.json present but not ours (drift) — left alone  {D}{hooks_json}{X}")
+        return
+    if dry_run:
+        print(f"  {D}would remove {hooks_json}{X}")
+        return
+    os.remove(real)
+    print(f"  {G}→{X} hooks.json removed  {D}{hooks_json}{X}")
+
+
+def install_config_block():
+    real = os.path.realpath(config_toml)
+    content = ""
+    if os.path.exists(real):
+        with open(real) as fh:
+            content = fh.read()
+    if MARK_BEGIN in content:
+        print(f"  {G}→{X} config.toml [tui] block already present  {D}{config_toml}{X}")
+        return
+    if re.search(r"(?m)^\s*\[tui\]", content):
+        print(f"  {Y}!{X} config.toml already has a [tui] table — our marked block would DUPLICATE it; review {config_toml}")
+    if dry_run:
+        print(f"  {D}would append the marked [tui] block to {config_toml}{X}")
+        return
+    if content:
+        backup(real, content)
+    atomic_write(real, content + APPENDED)
+    tail = f"  {D}(backup .bak.{stamp}){X}" if content else ""
+    print(f"  {G}→{X} config.toml [tui] block appended  {D}{config_toml}{X}{tail}")
+
+
+def uninstall_config_block():
+    real = os.path.realpath(config_toml)
+    if not os.path.exists(real):
+        print(f"  {D}config.toml (absent) {config_toml}{X}")
+        return
+    with open(real) as fh:
+        content = fh.read()
+    if MARK_BEGIN not in content:
+        print(f"  {D}config.toml — no tx-ide block {config_toml}{X}")
+        return
+    new = BLOCK_RE.sub("", content, count=1)
+    if dry_run:
+        print(f"  {D}would strip the marked [tui] block from {config_toml}{X}")
+        return
+    backup(real, content)
+    atomic_write(real, new)
+    print(f"  {G}→{X} config.toml [tui] block stripped  {D}{config_toml}{X}  {D}(backup .bak.{stamp}){X}")
+
+
+def status():
+    real = os.path.realpath(hooks_json)
+    if not os.path.exists(real):
+        flag = f"{Y}absent{X}"
+    elif load_json(real) == DESIRED:
+        flag = f"{G}ours{X}"
+    else:
+        flag = f"{Y}present but not ours (drift){X}"
+    print(f"  hooks.json:              {flag}  {D}{hooks_json}{X}")
+
+    real = os.path.realpath(config_toml)
+    content = ""
+    if os.path.exists(real):
+        with open(real) as fh:
+            content = fh.read()
+    flag = f"{G}present{X}" if MARK_BEGIN in content else f"{Y}absent{X}"
+    print(f"  config.toml [tui] block: {flag}  {D}{config_toml}{X}")
+    note = f"  {Y}(config has a [hooks.state] table — not written by us){X}" if "[hooks.state]" in content else ""
+    print(f"  [hooks.state] trust:     {D}none — bypass-first (verification §4){X}{note}")
+
+
+if op == "install":
+    install_hooks_json()
+    install_config_block()
+elif op == "uninstall":
+    uninstall_config_block()
+    uninstall_hooks_json()
+elif op == "status":
+    status()
+PY
+}
+
+# ----- subcommands -------------------------------------------------------------------------
+
+cmd_install() {
+  printf '%s== codex.sh install ==%s  %s\n' "$B" "$X" "$( ((DRY_RUN)) && echo '(dry-run)'; ((SANDBOX)) && echo "(sandbox: $CONFIG_TOML)")"
+  header "Codex hook shims under $TX_HOME/hooks/codex (stdin kept, --engine codex)"
+  write_shim "$START_SHIM" session-start
+  write_shim "$PRE_SHIM"   prompt-submit
+  write_shim "$WORK_SHIM"  working
+  write_shim "$POST_SHIM"  stop
+
+  header "tx-owned hooks.json + marked config.toml [tui] block (no trust hash — bypass-first)"
+  run_codex_py install
+}
+
+cmd_uninstall() {
+  printf '%s== codex.sh uninstall ==%s  %s\n' "$B" "$X" "$( ((DRY_RUN)) && echo '(dry-run)'; ((SANDBOX)) && echo "(sandbox: $CONFIG_TOML)")"
+  header "Reverse the marked config.toml [tui] block + the tx-owned hooks.json"
+  run_codex_py uninstall
+
+  header "Remove generated Codex hook shims"
+  remove_shim "$START_SHIM"
+  remove_shim "$PRE_SHIM"
+  remove_shim "$WORK_SHIM"
+  remove_shim "$POST_SHIM"
+}
+
+cmd_status() {
+  printf '%s== codex.sh status ==%s  %sCODEX_HOME=%s%s\n' "$B" "$X" "$D" "$CODEX_HOME" "$X"
+  header "Codex integration"
+  run_codex_py status
+  header "Generated shims ($TX_HOME/hooks/codex)"
+  for shim in "$START_SHIM" "$PRE_SHIM" "$WORK_SHIM" "$POST_SHIM"; do
+    if [[ -f "$shim" ]]; then ok "$shim" "present"; else warn "$shim" "missing"; fi
+  done
+}
+
+case "$OP" in
+  install)   cmd_install ;;
+  uninstall) cmd_uninstall ;;
+  status)    cmd_status ;;
+esac

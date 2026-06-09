@@ -1,7 +1,7 @@
 """Hook entry points — drive session `state` from Claude + tmux hooks (stage S2).
 
 `tx hook <event>` routes here from the C9-baked shims the installer generates under
-`$TX_IDE_HOME/hooks/` (`setup/agents/claude.sh`). Each shim drains the hook payload and execs
+`$TX_IDE_HOME/hooks/` (`setup/engines/claude.sh`). Each shim drains the hook payload and execs
 `python3.14 -m tx hook <event>` with the dev/real home + the package on `PYTHONPATH` baked in
 (hooks run with a minimal env — C9). This module is pure dispatch over `SessionService`; all the
 state-transition rules (C3 terminal guard, C4 dirty-check, the last_activity clock) live in

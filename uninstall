@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Reverse the tx-ide install (install-flip.md §9). The core uninstall is independent of the
 # per-agent (Claude) registration:
-#   ./uninstall                reverse everything (calls setup/agents/claude.sh uninstall)
+#   ./uninstall                reverse everything (calls setup/engines/install.sh uninstall)
 #   ./uninstall --keep-agent   leave the Claude hooks + statusline + marker in place
 #   ./uninstall --purge        also remove sessions/, history/, user-agents/ (your state)
 #
@@ -53,7 +53,7 @@ I will remove:
   - the tx-ide block from ~/.tmux.conf (matched by markers)
   - the tx-ide PATH block from ~/.zshrc / ~/.bash_profile (matched by markers)
 $( ((KEEP_AGENT)) && echo "  - (--keep-agent) leaving the Claude hooks + statusline + marker in place" || cat <<INNER
-  - the Claude integration via setup/agents/claude.sh uninstall:
+  - the Claude integration via setup/engines/install.sh uninstall:
       the 4 tx hook entries + marker + the baked \$TX_IDE_HOME/hooks shims
   - the statusLine entry + $TX_IDE_DIR/statusline.sh (only if it is ours)
 INNER
@@ -127,8 +127,8 @@ PY
     skip "$SETTINGS_MAIN" "not present"
   fi
 
-  printf '\n%sClaude hooks (setup/agents/claude.sh uninstall)%s\n' "$B" "$X"
-  "$REPO/setup/agents/claude.sh" uninstall
+  printf '\n%sEngine hooks (setup/engines/install.sh uninstall)%s\n' "$B" "$X"
+  "$REPO/setup/engines/install.sh" uninstall
 
   if [[ -f "$TX_IDE_DIR/statusline.sh" ]]; then
     rm -f "$TX_IDE_DIR/statusline.sh"
