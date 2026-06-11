@@ -78,13 +78,21 @@ class SessionStore:
         return sessions
 
     def find_by_name(self, name: str) -> Session | None:
-        """First record with this tmux name (id-sorted order). Names are reusable across
-        non-concurrent sessions (D7), so a caller that needs the *live* one reconciles first and
-        filters on liveness — this is the plain lookup."""
+        """Record with this name, preferring a live one. Names are reusable across non-concurrent
+        sessions (D7), so a long-lived name (e.g. tx-assistant) accrues terminal "corpse" records
+        alongside the running session. Returning the first id-sorted match lets a corpse shadow the
+        live session and breaks name-targeting — `tx send-message <name>` and `_tmux-name` (and so
+        the prefix+/ binding) resolve to a dead tmux target. Prefer the first non-terminal record;
+        fall back to the first match overall when none are live (pure-history lookups)."""
+        first: Session | None = None
         for session in self.all():
-            if session.name == name:
+            if session.name != name:
+                continue
+            if session.is_alive():
                 return session
-        return None
+            if first is None:
+                first = session
+        return first
 
     def query(self, predicate: Callable[[Session], bool]) -> list[Session]:
         """Records matching an arbitrary predicate, e.g.
