@@ -26,29 +26,55 @@ from .storage import sessions_dir
 class SessionStore:
     def __init__(self, directory: Path | None = None):
         self.directory = directory if directory is not None else sessions_dir()
+        # Latched off the first time a write proves the home unwritable (a sandboxed caller confined
+        # away from $TX_IDE_HOME — e.g. codex under a read-only Seatbelt profile). One process owns
+        # one SessionStore, so this resets per `tx` invocation; within an invocation it stops a
+        # multi-record reconcile sweep from re-attempting (and re-warning) a doomed write per record.
+        self._can_persist = True
 
     def _path(self, session_id: str) -> Path:
         return self.directory / f"{session_id}.json"
 
-    def save(self, session: Session) -> None:
+    def save(self, session: Session) -> bool:
         """Persist a record atomically: write a temp file in the same directory, then
         `os.replace` it over the target. Rename is atomic within one filesystem, so a concurrent
         reader sees either the old or the new record, never a half-written one. uuid-sharded
-        filenames mean two sessions never contend (§4)."""
-        self.directory.mkdir(parents=True, exist_ok=True)
+        filenames mean two sessions never contend (§4).
+
+        Returns True when the record was persisted, False when the write was SKIPPED because
+        `$TX_IDE_HOME` is not writable. A caller confined away from the home by a sandbox — codex
+        under a read-only Seatbelt profile running `tx send-message`/`ls`/`whoami` — must degrade,
+        not crash: the home lives outside its writable tree, so `mkstemp`/`os.replace` raise EPERM.
+        We treat that exactly like the unreadable-record tolerance in `all()` (OPEN-0b) — warn once
+        on stderr and let the caller's primary action stand (the message was still delivered; `ls`
+        still lists from disk). The first failed write latches `_can_persist` off so a multi-record
+        reconcile sweep makes no further write attempt — a read-only command then writes nothing at
+        all. The atomic temp+replace itself is unchanged; only its failure is now soft."""
+        if not self._can_persist:
+            return False
         payload = json.dumps(session.to_dict(), indent=2)
-        descriptor, temp_path = tempfile.mkstemp(
-            dir=self.directory, prefix=f".{session.id}.", suffix=".tmp"
-        )
         try:
-            with os.fdopen(descriptor, "w") as handle:
-                handle.write(payload)
-            os.replace(temp_path, self._path(session.id))
-        except BaseException:
-            # The replace never happened — drop the orphan temp file before re-raising.
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
-            raise
+            self.directory.mkdir(parents=True, exist_ok=True)
+            descriptor, temp_path = tempfile.mkstemp(
+                dir=self.directory, prefix=f".{session.id}.", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(descriptor, "w") as handle:
+                    handle.write(payload)
+                os.replace(temp_path, self._path(session.id))
+            except BaseException:
+                # The replace never happened — drop the orphan temp file before re-raising.
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                raise
+        except OSError as error:
+            self._can_persist = False
+            print(
+                f"tx: $TX_IDE_HOME not writable ({error}); session state not persisted this run",
+                file=sys.stderr,
+            )
+            return False
+        return True
 
     def load(self, session_id: str) -> Session | None:
         """Load one record by id, or None if there is no such file. Propagates
