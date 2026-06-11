@@ -2,6 +2,16 @@
 
 These conventions apply to every Claude Code session in this system: the tx-assistant, every worker, and any ad-hoc session you spin up inside the orchestration repo.
 
+## Session self-introduction
+
+Lead your **first response** in a session with a brief self-introduction so the operator can confirm your setup at a glance:
+
+1. Your tx session name (`tx whoami`) + cwd and current git branch.
+2. Which convention/role files you have loaded — always this `COMMON.md`; state whether a role file (`DEVELOPER.md`, etc.) is **also** loaded, and quote one identifying line from each so it is verifiable.
+3. One line on your purpose.
+
+Keep it to a few lines, then continue with whatever was asked (or wait for instructions if nothing was).
+
 ## Spawning sessions
 
 Use `tx spawn` (bare) and `tx spawn-nvim` (nvim companion). Both require `--tag` and refuse without it — no inheritance, no auto-magic, you pass the tags explicitly.
