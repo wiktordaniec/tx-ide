@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -38,19 +39,38 @@ PIPE_BUF = 512
 class EventLog:
     def __init__(self, path: Path | None = None):
         self.path = path if path is not None else log_path()
+        # Latched off the first time a write proves the home unwritable (a sandboxed caller confined
+        # away from $TX_IDE_HOME) — mirrors `SessionStore._can_persist`. Resets per `tx` invocation.
+        self._can_append = True
 
     def append(self, type: str, msg: str, *, actor: str | None = None) -> None:
         """Append one provenance line. `actor` defaults to `$TX_SESSION_ID` (empty if unset, e.g.
-        a hand-started session). `ts` is epoch seconds."""
+        a hand-started session). `ts` is epoch seconds.
+
+        Degrades like `SessionStore.save`: a sandboxed caller confined away from `$TX_IDE_HOME`
+        (codex under a read-only Seatbelt profile) cannot write `log.jsonl`, so `os.open`/`os.write`
+        raise EPERM. Provenance is not payload — dropping a line when the home is read-only is
+        acceptable, crashing the caller is not — so warn once on stderr and continue, letting the
+        action that triggered the log stand (a delivered `send-message`, a reconcile transition).
+        `_can_append` latches off after the first failure so one invocation warns at most once."""
+        if not self._can_append:
+            return
         if actor is None:
             actor = os.environ.get(ACTOR_ENV, "")
         line = self._encode({"ts": time.time(), "actor": actor, "type": type, "msg": msg})
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
         try:
-            os.write(descriptor, line)
-        finally:
-            os.close(descriptor)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+            try:
+                os.write(descriptor, line)
+            finally:
+                os.close(descriptor)
+        except OSError as error:
+            self._can_append = False
+            print(
+                f"tx: $TX_IDE_HOME not writable ({error}); provenance log not updated this run",
+                file=sys.stderr,
+            )
 
     def _encode(self, record: dict) -> bytes:
         """Compact JSON + newline, kept within PIPE_BUF so the append stays atomic. If the line is
