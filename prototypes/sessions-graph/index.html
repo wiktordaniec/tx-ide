@@ -418,6 +418,9 @@
   body:not(.tab-graph) .graph-only, body:not(.tab-graph) #canvas { display: none; }
   body:not(.tab-table) #table { display: none; }
   body:not(.tab-messages) #messages { display: none; }
+  /* The whole #filterbar (time · states/tags/kind · usage) collapses under a body class, same pure-CSS
+     idiom as the tabs — the header's "filters" chevron toggles it (see the filter-bar collapse JS). */
+  body.filterbar-collapsed #filterbar { display: none; }
 
   /* ---- tag selector (graph + table, inside #filterbar) ------------------------------------ */
   /* Click tag chips to keep only sessions carrying any selected tag — the no-typing complement to
@@ -529,6 +532,7 @@
     <span class="spacer"></span>
     <label class="control"><input type="search" id="filter" placeholder="filter name / tag…" autocomplete="off" /></label>
     <label class="control toggle"><input type="checkbox" id="auto" checked /> live</label>
+    <button id="filterbarToggle" title="hide the filter bar (time · states · tags · usage)">▾ filters</button>
     <button id="fit" class="graph-only" title="reset zoom &amp; recenter on the graph">1:1</button>
     <button id="shuffle" class="graph-only" title="release every pinned node &amp; re-run the layout">⤮ shuffle</button>
     <button id="refresh" title="reload records now">↻ refresh</button>
@@ -1964,6 +1968,27 @@ $("copy").addEventListener("click", async () => {
 $("refresh").addEventListener("click", () => { fetchAndRender(true); fetchMessages(); fetchUsage(); });
 $("filter").addEventListener("input", paintActive);
 
+// ---- filter-bar collapse ------------------------------------------------------------------------
+// The header's "filters" chevron hides / shows the whole #filterbar (time · states/tags/kind ·
+// usage) via the body class above — chrome only: every filter keeps applying while the bar is
+// collapsed, and the bar keeps repainting underneath, so re-expanding needs no catch-up render.
+// The choice persists like the node pins, so a reload keeps the bar the way it was left.
+const FILTERBAR_KEY = "tx-filterbar-collapsed-v1";   // localStorage: "1" while the bar is collapsed
+let filterbarCollapsed = false;
+try { filterbarCollapsed = localStorage.getItem(FILTERBAR_KEY) === "1"; } catch { /* private mode — ignore */ }
+
+function applyFilterbarUI() {
+  document.body.classList.toggle("filterbar-collapsed", filterbarCollapsed);
+  const button = $("filterbarToggle");
+  button.textContent = filterbarCollapsed ? "▸ filters" : "▾ filters";
+  button.title = `${filterbarCollapsed ? "show" : "hide"} the filter bar (time · states · tags · usage)`;
+}
+$("filterbarToggle").addEventListener("click", () => {
+  filterbarCollapsed = !filterbarCollapsed;
+  try { localStorage.setItem(FILTERBAR_KEY, filterbarCollapsed ? "1" : "0"); } catch { /* private mode — ignore */ }
+  applyFilterbarUI();
+});
+
 // ---- time-range control -------------------------------------------------------------------------
 // The header <select> picks "all" / a relative preset (rel:<seconds>) / "custom"; "custom" reveals the
 // two datetime inputs. Either path rebuilds the single shared timeFilter and repaints the active view —
@@ -2290,6 +2315,7 @@ setInterval(() => {
 }, 1000);
 
 renderFilterBar();          // paint the bar's state chips immediately, before the first feed lands
+applyFilterbarUI();         // restore the persisted collapse before anything shows
 $("timeRange").value = "all"; applyTimeRangeUI();   // force a known initial window (a browser may restore a stale <select> on reload)
 fetchAndRender(true);
 fetchUsage();               // pull both providers' rate-limit usage for the header readout
