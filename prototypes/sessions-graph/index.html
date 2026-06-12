@@ -2052,7 +2052,7 @@ $("msgBody").addEventListener("dblclick", (event) => {
 // container: pin the world point under the cursor, rescale, then re-derive scroll so that point
 // stays put. macOS pinch arrives here as a ctrl+wheel event, so it zooms naturally too. The wheel
 // is the only zoom control, so it clamps to a fixed range of its own.
-const ZOOM_MIN = 0.5, ZOOM_MAX = 1.5;
+const ZOOM_MIN = 0.25, ZOOM_MAX = 1.5;
 canvas.addEventListener("wheel", (event) => {
   event.preventDefault();                                // replace the container's native scroll
   const rect = canvas.getBoundingClientRect();
