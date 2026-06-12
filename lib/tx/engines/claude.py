@@ -75,22 +75,45 @@ def bundle_transcript_path(tx_id: str, chat_id: str) -> Path:
 # Identity flags stripped when reconstructing a launch command: the new op re-supplies its own
 # (`--resume … --fork-session` for fork, none for a fresh handover/rollover successor). Everything
 # else (model / effort / --append-system-prompt / --settings / skip-permissions) is inherited.
-_IDENTITY_VALUE_FLAGS = frozenset({"--session-id", "--resume"})
-_IDENTITY_BARE_FLAGS = frozenset({"--fork-session", "--continue", "-c"})
+# `--session-id` REQUIRES a value; `--resume`/`-r`/`--from-pr` take an OPTIONAL one (commander
+# `[value]` — consumed only when the next token is not a flag), so they are stripped with the same
+# rule. `--worktree`/`-w` (and `--tmux`, which requires it) place the SOURCE in a fresh worktree —
+# workspace placement, not persona: the successor continues in the source's resolved cwd, so
+# carrying them would relocate (or fail) the relaunch.
+_IDENTITY_VALUE_FLAGS = frozenset({"--session-id"})
+_IDENTITY_OPTIONAL_VALUE_FLAGS = frozenset({"--resume", "-r", "--from-pr", "--worktree", "-w"})
+_IDENTITY_BARE_FLAGS = frozenset({"--fork-session", "--continue", "-c", "--tmux"})
 
 # Bare claude flags — those that do NOT consume a following token, so a positional that follows one
 # (or stands alone) is the baked initial prompt and gets dropped. EVERY OTHER `--flag` is assumed to
 # take a value, so an unknown value-flag keeps its value instead of being mistaken for the prompt —
 # dropping it would leave a dangling flag that swallows the appended seed. A deny-list (not an
 # allow-list of value-flags) is deliberate: `claude --help` documents some value-flags only in prose
-# (e.g. `--append-system-prompt[-file]`), so an allow-list silently missed them; a missed BARE flag
-# here is benign (worst case: the predecessor prompt carried forward, never a corrupt command).
+# (e.g. `--append-system-prompt[-file]`), so an allow-list silently missed them. A MISSED bare flag
+# here is NOT benign: it would glue the following token to itself as a bogus value — and in the
+# standard worker shape (`claude <flags> "<priming>"`) that token is the baked priming, which then
+# survives the strip and rides into the successor's command beside the new seed (AND-171). Kept in
+# sync with `claude --help`.
 _BARE_FLAGS = frozenset({
     "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--verbose",
-    "--print", "-p", "--ide", "--tmux", "--strict-mcp-config", "--no-session-persistence",
+    "--print", "-p", "--ide", "--strict-mcp-config", "--no-session-persistence",
     "--exclude-dynamic-system-prompt-sections", "--replay-user-messages",
     "--include-partial-messages", "--include-hook-events", "--disable-slash-commands",
     "--chrome", "--no-chrome",
+    "--bare", "--brief", "--safe-mode", "--mcp-debug", "--help", "-h", "--version", "-v",
+})
+
+# Persona flags with an OPTIONAL value (`-d [filter]`, `--prompt-suggestions [value]`,
+# `--remote-control [name]`) need no listing: commander consumes the next token exactly when it is
+# a non-flag — the same rule the unknown-value-flag default below applies — so they inherit
+# correctly as-is.
+
+# Persona flags that are VARIADIC (commander `<values...>`): claude consumes every following token
+# up to the next flag as a value, so the strip mirrors that — inheriting them all keeps `--add-dir
+# /a /b` intact instead of dropping `/b` as a stray positional.
+_VARIADIC_VALUE_FLAGS = frozenset({
+    "--add-dir", "--allowedTools", "--allowed-tools", "--disallowedTools", "--disallowed-tools",
+    "--mcp-config", "--betas", "--file", "--tools",
 })
 
 # Shell-control tokens. Once shlex surfaces one of these, the rest of a compound source `cmd` is
@@ -106,9 +129,20 @@ def _is_shell_control(token: str) -> bool:
     return token in _SHELL_CONTROL_TOKENS or token[:1] in ("<", ">")
 
 
+def _takes_next_token(tokens: list[str], index: int) -> bool:
+    """Whether the token after `tokens[index]` exists and would be consumed as a flag value —
+    commander's rule for both optional (`[value]`) and unknown required values: a non-flag,
+    non-shell-control token follows."""
+    return index + 1 < len(tokens) and not tokens[index + 1].startswith("-") \
+        and not _is_shell_control(tokens[index + 1])
+
+
 def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
     """Split a source `cmd` into (binary, inherited-flags), dropping the identity flags and any
-    positional initial-prompt so the op can re-supply its own; the persona flags are inherited."""
+    positional initial-prompt so the op can re-supply its own; the persona flags are inherited.
+    The flag grammar mirrors claude's own (commander) parse — bare / optional-value / variadic /
+    required-value — so every token lands on the same side of the flag/positional line that claude
+    itself puts it on."""
     tokens = shlex.split(source_cmd)
     binary = tokens[0] if tokens else CLAUDE_BIN
     inherited: list[str] = []
@@ -118,7 +152,10 @@ def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
         if _is_shell_control(token):
             break  # shell wrapping begins here — drop it and everything after
         if token in _IDENTITY_VALUE_FLAGS:
-            index += 2  # drop the identity flag and its value
+            index += 2  # drop the identity flag and its required value
+            continue
+        if token in _IDENTITY_OPTIONAL_VALUE_FLAGS:
+            index += 2 if _takes_next_token(tokens, index) else 1  # drop flag + optional value
             continue
         if token in _IDENTITY_BARE_FLAGS:
             index += 1  # drop — the op re-supplies its own
@@ -127,11 +164,18 @@ def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
             inherited.append(token)  # bare flag; any positional that follows it is the prompt (dropped)
             index += 1
             continue
+        if token in _VARIADIC_VALUE_FLAGS:
+            inherited.append(token)  # variadic: claude eats every non-flag token that follows
+            index += 1
+            while index < len(tokens) and not tokens[index].startswith("-") \
+                    and not _is_shell_control(tokens[index]):
+                inherited.append(tokens[index])
+                index += 1
+            continue
         if token.startswith("-"):
-            # Value-flag (known or unknown): inherit it WITH its value when one follows; never drop
-            # the value — a dangling flag would swallow the appended seed.
-            if index + 1 < len(tokens) and not tokens[index + 1].startswith("-") \
-                    and not _is_shell_control(tokens[index + 1]):
+            # Value-flag (known, unknown, or optional-value): inherit it WITH its value when one
+            # follows; never drop the value — a dangling flag would swallow the appended seed.
+            if _takes_next_token(tokens, index):
                 inherited.extend(tokens[index:index + 2])
                 index += 2
             else:
