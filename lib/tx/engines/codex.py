@@ -58,14 +58,27 @@ def find_rollout(chat_id: str) -> Path | None:
 
 # Codex's identity is a positional SUBCOMMAND, not a `--flag` (contrast Claude's `--resume`): a
 # forked/resumed source `cmd` begins `codex fork <id> …` / `codex resume <id> …`. The verb + its id
-# positional are dropped — the op re-supplies its own.
+# positional are dropped — the op re-supplies its own. The subcommands' own session-picker flags
+# (`resume --last` / `--all` / `--include-non-interactive`) are identity too: they select WHICH
+# session to continue, and clap rejects them on a bare `codex`, so carrying one kills the relaunch.
 _IDENTITY_SUBCOMMANDS = frozenset({"resume", "fork"})
+_IDENTITY_BARE_FLAGS = frozenset({"--last", "--all", "--include-non-interactive"})
 
-# BARE flags — those that do NOT consume a following token. The known bare set is the bypass pair;
-# every other `-flag` is value-by-default, so an unknown value-flag keeps its value instead of being
-# mistaken for the prompt and dropped. Mind the `-c` collision: codex `-c` is a VALUE flag
-# (`-c KEY=VALUE`), so it is NOT bare here (it IS for Claude, where `-c` == `--continue`).
-_BARE_FLAGS = frozenset(YOLO_FLAGS)
+# BARE flags — those that do NOT consume a following token (kept in sync with `codex --help`): the
+# bypass pair plus today's boolean flags. Every other `-flag` is value-by-default, so an unknown
+# value-flag keeps its value instead of being mistaken for the prompt and dropped — a MISSED bare
+# flag would glue the following token (the baked priming, in the standard worker shape) to itself
+# and carry it into the successor's command (AND-171). Mind the `-c` collision: codex `-c` is a
+# VALUE flag (`-c KEY=VALUE`), so it is NOT bare here (it IS for Claude, where `-c` == `--continue`).
+_BARE_FLAGS = frozenset({
+    *YOLO_FLAGS,
+    "--oss", "--search", "--no-alt-screen", "--strict-config",
+    "--help", "-h", "--version", "-V",
+})
+
+# VARIADIC persona flags (clap `<FILE>...`): codex consumes every following token up to the next
+# flag as a value, so the strip mirrors that — `-i a.png b.png` keeps both images.
+_VARIADIC_VALUE_FLAGS = frozenset({"-i", "--image"})
 
 # Once shlex surfaces a shell-control token, the rest of a compound source `cmd` is shell wrapping,
 # not codex argv, and is dropped.
@@ -78,8 +91,9 @@ def _is_shell_control(token: str) -> bool:
 
 
 def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
-    """Split a source codex `cmd` into (binary, inherited-flags), dropping the identity subcommand + its
-    id and the baked positional prompt, keeping the persona (`-m`, `-c KEY=VALUE`, any unknown flag)."""
+    """Split a source codex `cmd` into (binary, inherited-flags), dropping the identity subcommand,
+    its id, its session-picker flags (`--last` / `--all` / `--include-non-interactive`), and the baked
+    positional prompt, keeping the persona (`-m`, `-c KEY=VALUE`, any unknown flag)."""
     tokens = shlex.split(source_cmd)
     binary = tokens[0] if tokens else CODEX_BIN
     index = 1
@@ -93,9 +107,20 @@ def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
         token = tokens[index]
         if _is_shell_control(token):
             break  # shell wrapping begins here — drop it and everything after
+        if token in _IDENTITY_BARE_FLAGS:
+            index += 1  # a resume/fork session-picker flag — the op re-supplies its own identity
+            continue
         if token in _BARE_FLAGS:
             inherited.append(token)  # any positional that follows a bare flag is the prompt (dropped)
             index += 1
+            continue
+        if token in _VARIADIC_VALUE_FLAGS:
+            inherited.append(token)  # variadic: codex eats every non-flag token that follows
+            index += 1
+            while index < len(tokens) and not tokens[index].startswith("-") \
+                    and not _is_shell_control(tokens[index]):
+                inherited.append(tokens[index])
+                index += 1
             continue
         if token.startswith("-"):
             # Value-flag: inherit it WITH its value when one follows; assuming an unknown flag takes a
