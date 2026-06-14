@@ -2,6 +2,21 @@
 
 These conventions apply to every agent session in this system: the tx-assistant, every worker, and any ad-hoc session you spin up inside the orchestration repo.
 
+## tx, not raw tmux
+
+**Every operation that creates, ends, or mutates a session — spawn, kill, tag, message, rename, attach — MUST go through `tx`, never raw `tmux`.** `tx` owns the durable record at `~/.tx-ide/sessions/<uuid>.json` and updates it in the same step it touches tmux. A raw `tmux` command changes live tmux state but leaves that record stale, and the picker, history, and supervisor all read the record — so the drift is silent and survives the tmux process. Every such operation has a `tx` verb; use it:
+
+| operation | use | never |
+|---|---|---|
+| spawn | `tx spawn` / `tx spawn-nvim` | `tmux new-session` |
+| kill | `tx kill` | `tmux kill-session` |
+| tag | `tx tag` (or the picker's Ctrl-T) | `tmux set @tag` |
+| message | `tx send-message` | `tmux send-keys` |
+| rename | `tx rename` | `tmux rename-session` |
+| attach | `tx attach` / `tx start` | `tmux attach` / `switch-client` |
+
+Raw `tmux` is a **read-only fallback only** — for inspection and in-pane navigation that `tx` does not wrap: moving between panes/windows, scrolling, copy-mode, or a raw `tmux list-sessions` to see the opaque ids. Anything that *creates, ends, renames, retags, messages, or selects* a session goes through `tx`.
+
 ## Session self-introduction
 
 Lead your **first response** in a session with a brief self-introduction so the operator can confirm your setup at a glance:
