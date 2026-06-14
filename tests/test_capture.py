@@ -240,4 +240,44 @@ done = svc.store.load("tx-fork").chats[0]
 check("lazy-fork: a later divergent-id payload fills the fork ref with the fork's own id",
       done.id == FORK_ID and done.transcript_path.endswith(f"{FORK_ID}.jsonl"))
 
+# ----- 5. Ownership guard: a captured id already owned by ANOTHER session is refused (crossover) --
+# The fix-maker-accounting incident: a leaked / stale TX_SESSION_ID fired a capture hook for the
+# victim session carrying a chat id (SHARED) that actually belonged to a DIFFERENT live session.
+# Without the guard it cross-bound — the victim's fork ref got stamped with the other session's chat,
+# orphaning the fork's real transcript. The guard refuses any captured id already recorded elsewhere,
+# leaving the ref pending so the legitimate divergent payload fills it.
+SHARED_ID = "SHARED-cccc"   # owned by the orchestrator session below
+VICTIM_ID = "VICT-dddd"     # the victim fork's own (legitimate) divergent id
+svc = fresh_service()
+# (owner) a long-lived session that already owns SHARED_ID as a real, non-pending chat.
+svc.store.save(Session(
+    id="tx-orch", name="orch", kind=Kind.PROCESS, role=Role.LLM, state=State.IDLE,
+    cwd="/p", cmd="claude", engine=Engine.CLAUDE, created_at=time.time(),
+    chats=[ChatRef(id=SHARED_ID, role="original", cwd="/p", transcript_path=f"/x/{SHARED_ID}.jsonl",
+                   origin=Origin(how="spawn", session_id="tx-orch", chat_id=None),
+                   started_at=time.time(), engine=Engine.CLAUDE)]))
+# (victim) a fresh fork session whose ref is still pending. origin.chat_id != SHARED, so the lazy-fork
+# guard does NOT short-circuit — we genuinely exercise the ownership guard.
+svc.store.save(Session(
+    id="tx-victim", name="victim", kind=Kind.PROCESS, role=Role.LLM, state=State.IDLE,
+    cwd="/p", cmd="claude --resume SRC --fork-session", engine=Engine.CLAUDE, created_at=time.time(),
+    chats=[ChatRef(id=None, role="fork", cwd="/p", transcript_path="",
+                   origin=Origin(how="fork", session_id="tx-src", chat_id="SRC-other"),
+                   started_at=time.time(), engine=Engine.CLAUDE)]))
+os.environ["TX_SESSION_ID"] = "tx-victim"
+
+# crossfire: a capture event for the victim carrying the orchestrator's chat → REFUSED.
+feed({"session_id": SHARED_ID, "transcript_path": f"/x/{SHARED_ID}.jsonl"})
+check("ownership guard: crossfire dispatch still returns 0", hooks.dispatch(svc, ["session-start"]) == 0)
+check("ownership guard: victim ref stays pending (crossfire refused)",
+      svc.store.load("tx-victim").chats[0].id is None)
+check("ownership guard: the owner session's chat is untouched",
+      svc.store.load("tx-orch").chats[0].id == SHARED_ID)
+
+# the victim's own divergent id is NOT owned elsewhere → it fills the ref normally.
+feed({"session_id": VICTIM_ID, "transcript_path": f"/x/{VICTIM_ID}.jsonl"})
+hooks.dispatch(svc, ["prompt-submit"])
+check("ownership guard: the victim's own (un-owned) id still fills the ref",
+      svc.store.load("tx-victim").chats[0].id == VICTIM_ID)
+
 print(f"OK — {PASSED} checks passed")
