@@ -209,7 +209,7 @@ class SpawnCommand(Command):
 
 class SpawnNvimCommand(Command):
     name = "spawn-nvim"
-    summary = "Spawn a detached nvim companion (--diff opens a diffview, base defaults to main)."
+    summary = "Spawn a detached nvim companion (--diff opens a diffview; --open opens a file)."
 
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
@@ -217,6 +217,7 @@ class SpawnNvimCommand(Command):
         parser.add_argument("--tag", required=True)
         parser.add_argument("--cwd")
         parser.add_argument("--diff", nargs="?", const="main", default=None)
+        parser.add_argument("--open", default=None)
         parser.add_argument("--env", action="append", type=_env_pair)
         args = parser.parse_args(argv)
         tags = _split_tags(args.tag)
@@ -228,9 +229,15 @@ class SpawnNvimCommand(Command):
             cwd=args.cwd or self._default_cwd(),
             env=_parse_env(args.env),
             diff_base=args.diff,
+            open_file=args.open,
         )
         session = self.service.spawn_nvim(spec)
-        suffix = f", diff={args.diff}" if args.diff is not None else ""
+        details = [
+            f"{label}={value}"
+            for label, value in (("diff", args.diff), ("open", args.open))
+            if value is not None
+        ]
+        suffix = f", {', '.join(details)}" if details else ""
         print(
             f"Spawned nvim '{session.name}' (cwd={session.cwd}, tag={args.tag}{suffix})"
         )

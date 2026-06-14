@@ -33,7 +33,7 @@ Use `tx spawn` (bare) and `tx spawn-nvim` (nvim companion). Both require `--tag`
 
 ```bash
 tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
-tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]
+tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--open FILE] [--env K=V ...]
 ```
 
 `--env` may repeat — pass any env vars the spawned process needs (e.g. the require-worktree env vars for coding workers — see **§ Spawning workers**).
