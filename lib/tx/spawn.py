@@ -13,6 +13,7 @@ See tx-service-redesign.md §1 (SpawnSpec). `agent` is intentionally absent (D9 
 from __future__ import annotations
 
 import os
+import shlex
 from dataclasses import dataclass, field
 
 # Side-effect import: each adapter self-registers at import, so registered() sees every engine.
@@ -104,12 +105,16 @@ class SpawnSpec:
         cwd: str,
         env: dict[str, str] | None = None,
         diff_base: str | None = None,
+        open_file: str | None = None,
     ) -> SpawnSpec:
-        """An nvim companion (`tx spawn-nvim`). When `diff_base` is given, open straight into a
-        diffview against it (`--diff` defaults the base to `main` at the CLI boundary)."""
+        """An nvim companion (`tx spawn-nvim`). `diff_base` opens straight into a diffview against it
+        (`--diff` defaults the base to `main` at the CLI boundary); `open_file` opens a file
+        (`--open`) — e.g. a plan handed to a worker for review."""
         command = NVIM_BASE_COMMAND
         if diff_base is not None:
             command += f" +'DiffviewOpen {diff_base}'"
+        if open_file is not None:
+            command += f" {shlex.quote(open_file)}"
         return cls(
             name=name,
             kind=Kind.PROCESS,
