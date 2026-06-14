@@ -207,7 +207,10 @@ def _complete_pending(
     """Stamp the captured `(id, transcript_path)` onto the session's latest pending `ChatRef` (id is
     None). Idempotent: skip when the id is already recorded (re-fired hook) or nothing is pending.
     Lazy-fork guard: a fork firing with an id equal to its own `origin.chat_id` is "not ready" (the
-    source id, not the fork's lazily-minted one) — leave it pending for its first prompt to fill."""
+    source id, not the fork's lazily-minted one) — leave it pending for its first prompt to fill.
+    Ownership guard: a captured id already recorded on ANOTHER session is a crossover — a leaked /
+    stale `TX_SESSION_ID` fired this hook carrying a chat that isn't ours — so refuse it (leave the ref
+    pending for the legitimate payload) rather than cross-wire two sessions onto one chat."""
     if any(reference.id == captured_id for reference in session.chats):
         return
     pending = next(
@@ -218,9 +221,26 @@ def _complete_pending(
         return
     if pending.role == "fork" and captured_id == pending.origin.chat_id:
         return
+    if _owned_by_other_session(service, session.id, captured_id):
+        service.log.append(
+            "capture-skip",
+            f"{session.name}: chat {captured_id} owned by another session — refused cross-bind",
+        )
+        return
     pending.id = captured_id
     pending.transcript_path = captured_path
     service.store.save(session)
+
+
+def _owned_by_other_session(service: SessionService, session_id: str, captured_id: str) -> bool:
+    """True when `captured_id` is already a recorded chat on a DIFFERENT session. A chat id lives on
+    exactly one tx session across fork / handover / rollover (resume records a known-id ref, caught by
+    the idempotency check before this runs), so any other owner means the payload belongs to that
+    session, not ours — the fingerprint of a leaked / stale `TX_SESSION_ID`."""
+    return any(
+        other.id != session_id and any(reference.id == captured_id for reference in other.chats)
+        for other in service.store.all()
+    )
 
 
 def _trigger_ingest(session_id: str) -> None:
