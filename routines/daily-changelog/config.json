@@ -1,0 +1,21 @@
+{
+  "timezone": "Europe/Warsaw",
+  "projects": [
+    {
+      "name": "tx-ide",
+      "repo": "~/Desktop/Coding/tx-ide",
+      "branch": "main",
+      "linear_project": "tx-ide",
+      "linear_doc_id": "68efb11f-f93a-4a7d-8088-746f123e6c6a",
+      "linear_doc_url": "https://linear.app/andrzej-zdobywca-personal/document/daily-changelog-tx-ide-85fee186e946"
+    },
+    {
+      "name": "polymarket",
+      "repo": "~/Desktop/Coding/polymarket",
+      "branch": "master",
+      "linear_project": "poly-trading",
+      "linear_doc_id": "e5a3db2d-4aab-4d10-973d-5cc1b813fae9",
+      "linear_doc_url": "https://linear.app/andrzej-zdobywca-personal/document/daily-changelog-poly-trading-b30c949a4db3"
+    }
+  ]
+}
