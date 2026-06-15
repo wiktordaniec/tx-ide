@@ -377,10 +377,19 @@ check("dispatch/fork: #50 flag survived the LIVE fork path",
       "--append-system-prompt-file /tmp/x.md" in fork_spec.cmd)
 
 # --- handover finish (chat.py:476) ---
+# The artifact files must EXIST: the finish seeds the note/brief pointer only for an artifact the
+# distiller actually wrote (a missing one falls back to the self-catch-up seed — AND-171), and in
+# the live flow the finish always runs after the distiller's write.
+_ARTIFACTS = Path(tempfile.mkdtemp())
+_BRIEF = _ARTIFACTS / "brief.md"
+_BRIEF.write_text("# brief")
+_NOTE = _ARTIFACTS / "note.md"
+_NOTE.write_text("# note")
+
 service = _FakeService()
 service.register(_source_session("SRC2", "src2", PERSONA_CMD))
 handover_spec = ChatOpSpec(op_id="op-h", kind="handover", source_txid="SRC2", source_chat=CHAT_ID,
-                           cwd="/work", artifact_path="/tmp/brief.md", worker_name="hw")
+                           cwd="/work", artifact_path=str(_BRIEF), worker_name="hw")
 ChatOps(service)._finish_handover(handover_spec)
 handover_launch = service.spawned[-1].cmd
 check("dispatch/handover: inherits the full source persona before the seed",
@@ -388,7 +397,7 @@ check("dispatch/handover: inherits the full source persona before the seed",
           "claude --model opus --effort high --append-system-prompt-file /tmp/x.md "
           "--dangerously-skip-permissions "))
 check("dispatch/handover: the launch is a valid shlex string ending on the brief seed",
-      shlex.split(handover_launch)[0] == "claude" and "/tmp/brief.md" in shlex.split(handover_launch)[-1])
+      shlex.split(handover_launch)[0] == "claude" and str(_BRIEF) in shlex.split(handover_launch)[-1])
 
 # --- rollover finish (chat.py:516) — env-prefix MUST be preserved ---
 _orig_ingest = chat_module.history.ingest_session
@@ -397,7 +406,7 @@ try:
     service = _FakeService()
     service.register(_source_session("SRC3", "src3", PERSONA_CMD))
     rollover_spec = ChatOpSpec(op_id="op-r", kind="rollover", source_txid="SRC3", source_chat=CHAT_ID,
-                               cwd="/work", artifact_path="/tmp/note.md", pane="%9")
+                               cwd="/work", artifact_path=str(_NOTE), pane="%9")
     ChatOps(service)._finish_rollover(rollover_spec)
     pane, rollover_command = service.tmux.respawned[-1]
     check("dispatch/rollover: respawns the resolved pane", pane == "%9")

@@ -345,7 +345,7 @@ class ChatOps:
         if source is None:
             raise SessionNotFound(f"_chat-op-finish: source record '{spec.source_txid}' not found")
         bundle = claude.bundle_dir(spec.source_txid, spec.source_chat)
-        if spec.self_catch_up:
+        if self._artifact_missing(spec):
             seed = (
                 f"You are taking over work via tx handover. There is no pre-written brief — read the "
                 f"predecessor bundle at {bundle}/ (transcript.jsonl + subagents/ + tool-results/), "
@@ -371,9 +371,9 @@ class ChatOps:
         """Rotate `pane` onto a fresh chat in place. Re-ingests the source's FINAL transcript first
         (so the predecessor bundle the successor catches up from includes anything that happened
         during the rollover window), then `respawn-pane -k` relaunches a fresh claude (no identity
-        flag) with the note seeded as the initial prompt. Appends a PENDING `ChatRef{role:rollover}`
-        to the SAME record (the successor's first hook captures its id, T4) and closes the
-        rotated-out chat."""
+        flag) with the note seeded as the initial prompt — or the bundle pointer when the note was
+        never written (`_artifact_missing`). Appends a PENDING `ChatRef{role:rollover}` to the SAME
+        record (the successor's first hook captures its id, T4) and closes the rotated-out chat."""
         record = self.service.store.load(spec.source_txid)
         if record is None:
             raise SessionNotFound(f"_chat-op-finish: record '{spec.source_txid}' not found")
@@ -382,7 +382,7 @@ class ChatOps:
         history.ingest_session(self.service.store, spec.source_txid, wait=True)
         catch_up = claude.bundle_dir(spec.source_txid, spec.source_chat)
 
-        if spec.self_catch_up:
+        if self._artifact_missing(spec):
             seed = (
                 f"Continuing prior work in a fresh chat (rollover). The predecessor bundle is at "
                 f"{catch_up}/ (transcript.jsonl + subagents/ + tool-results/) — read what you need to "
@@ -404,6 +404,13 @@ class ChatOps:
             spec.source_chat, close_chat=spec.source_chat,
         )
         self.service.log.append("rollover-finish", f"{record.name} (chat pending)")
+
+    def _artifact_missing(self, spec: ChatOpSpec) -> bool:
+        """Whether the finish must fall back to the self-catch-up seed: the op was self-catch-up
+        (no artifact by design), or the distiller never wrote its brief/note (it flaked and the
+        watchdog force-finished, or it ran the finish before saving). A successor primed to read a
+        nonexistent file starts from nothing — the bundle pointer is the working fallback (AND-171)."""
+        return spec.self_catch_up or not Path(spec.artifact_path).exists()
 
     def chat_op_watch(self, op_id: str) -> None:
         """Detached backstop for the distiller (CHD5). Polls for the distiller's artifact (brief/note);
