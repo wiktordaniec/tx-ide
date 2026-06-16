@@ -596,7 +596,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._respond(200, json.dumps(build_messages_feed()).encode(), "application/json")
         elif self.path.startswith("/api/usage"):
             self._respond(200, json.dumps(build_usage_feed()).encode(), "application/json")
-        elif self.path in ("/", "/index.html"):
+        elif self.path.split("?", 1)[0] in ("/", "/index.html"):
+            # Match the page route on the path alone — the page reads its opening filter from the query
+            # string (?tag=…/?q=…), so `/?tag=wrangler-port` must still serve index.html, not 404.
             self._respond(200, PAGE.read_bytes(), "text/html; charset=utf-8")
         else:
             self._respond(404, b"not found\n", "text/plain; charset=utf-8")
