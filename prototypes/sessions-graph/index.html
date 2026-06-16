@@ -2361,6 +2361,24 @@ setInterval(() => {
   if (timeFilter.kind === "relative" && !interacting()) paintActive();
 }, 1000);
 
+// Deep-link the opening filter from the URL so a link can land straight on one body of work:
+//   ?tag=wrangler-port        pre-select one (or comma-separated several) tag chips
+//   ?q=wrangler               pre-fill the search box (matches name + tags)
+//   ?isolate=0                open in dim-in-place mode instead of the default hide
+// A tag/search deep-link also reveals the terminal states (exited/archived start hidden): asking to
+// see "all the X sessions" means the finished ones too, which is most of them. With isolate on (the
+// default) the graph then opens collapsed to exactly that set.
+(function applyDeepLink() {
+  const params = new URLSearchParams(location.search);
+  const tags = (params.get("tag") || "").split(",").map((tag) => tag.trim()).filter(Boolean);
+  const query = params.get("q") || "";
+  const isolate = params.get("isolate");
+  if (isolate !== null) isolateMatches = isolate !== "0" && isolate !== "false";
+  if (tags.length) selectedTags = new Set(tags);
+  if (query) $("filter").value = query;
+  if (tags.length || query) hiddenStates = new Set();   // show every state so the whole matched set is visible
+})();
+
 renderFilterBar();          // paint the bar's state chips immediately, before the first feed lands
 applyFilterbarUI();         // restore the persisted collapse before anything shows
 $("timeRange").value = "all"; applyTimeRangeUI();   // force a known initial window (a browser may restore a stale <select> on reload)
