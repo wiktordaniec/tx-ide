@@ -439,6 +439,18 @@
   .tagchip.on .n { color: var(--dim); }
   .tagclear { font-size: 11px; padding: 3px 9px; color: var(--muted); }
 
+  /* The graph-only isolate toggle (renderFilterBar): on (default) the active tag / search filter hides
+     the excluded nodes; off, they stay dimmed in place. On reads as an active mode (accent fill, like
+     a pressed tagchip); off is a quiet secondary. */
+  .isobtn {
+    font: inherit; font-size: 11px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 10px; border-radius: 999px;
+    color: var(--muted); border: 1px solid var(--border); background: transparent;
+  }
+  .isobtn:hover { color: var(--accent); border-color: var(--accent); }
+  .isobtn.on { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+
   /* ---- table view ------------------------------------------------------------------------- */
   /* A Notion-style grid over the same records the graph draws — sortable headers, one row per
      session, filtered by the shared search box. Reuses the card vocabulary: the state dot + colour
@@ -685,6 +697,7 @@ let pendingRender = false;        // a stream push that landed mid-interaction, 
 let activeTab = "graph";          // which view is showing — "graph" (force layout), "table" (grid), or "messages"
 let tableSort = { key: "last_activity", dir: "desc" };   // table: active sort column + direction (newest-first default, matching the feed order)
 let selectedTags = new Set();     // table: tags picked in the tag bar — a row shows if it carries ANY of them (empty ⇒ no tag filter)
+let isolateMatches = true;        // graph: when on, an active tag / search filter HIDES the non-matching nodes (collapsing to just the matched sessions + the lineage tying them together) instead of dimming them. No-op until a filter is active, so it never changes the unfiltered view
 let cursorId = null;              // table: record id of the keyboard-highlighted row (arrow keys move it, f focuses it) — independent of focusedId (terminal pane) and selectedId (drawer)
 let messagesFeed = null;          // messages: the /api/messages payload ({ messages:[…] }) — from the SSE `messages` channel or a one-shot fetch
 let messagesSort = { key: "ts", dir: "desc" };   // messages: active sort column + direction (newest-first default)
@@ -846,10 +859,17 @@ function buildNodes(feed) {
 // visible ancestor, prune ghosts left with no visible descendants. Sets `effParent` (the visible
 // parent each node should be sprung toward); the physics turns those into edges.
 function visibleForest(allNodes) {
-  // A node is hidden by a filtered-off state OR by falling outside the shared time window; either way
-  // effectiveParent() walks past it so an in-window descendant re-attaches to its nearest visible
-  // ancestor. Ghosts (no state, no timestamps) are never hidden here — the ghost-keep pass prunes them.
-  const hidden = (node) => !node.ghost && (hiddenStates.has(node.state) || !sessionInWindow(node.createdAt, node.lastActivity));
+  // A node is hidden by a filtered-off state, by falling outside the shared time window, or — when
+  // isolate is on — by failing the active tag / search filter (graphExcluded). Either way
+  // effectiveParent() walks past it so a still-visible descendant re-attaches to its nearest visible
+  // ancestor: that is what lets isolate collapse to just the matched sessions while the lineage that
+  // ties them together survives. Ghosts (no state, no timestamps) are never hidden here — the
+  // ghost-keep pass prunes them.
+  const query = $("filter").value.trim().toLowerCase();
+  const hidden = (node) => !node.ghost && (
+    hiddenStates.has(node.state) ||
+    !sessionInWindow(node.createdAt, node.lastActivity) ||
+    (isolateMatches && graphExcluded(node, query)));
   const effectiveParent = (node) => {
     let cursor = node.parent, guard = 0;
     while (cursor && hidden(cursor) && guard++ < 1000) cursor = cursor.parent;
@@ -1079,6 +1099,18 @@ function matchesQuery(record, query) {
 function matchesTags(record) {
   if (selectedTags.size === 0) return true;
   return record.tags.some((tag) => selectedTags.has(tag));
+}
+
+// Whether the active graph filters EXCLUDE a node — it fails the search box (matched on name + tags,
+// the graph's long-standing dim rule) OR the tag selector. Ghosts (lineage-only placeholders) are
+// never excluded. This is the graph's single notion of "filtered out", driving both of its responses:
+// mountNodes DIMS the excluded set when isolate is off, visibleForest HIDES it when isolate is on — so
+// the dimmed set and the isolated-away set are always exactly the same set.
+function graphExcluded(node, query) {
+  if (node.ghost) return false;
+  const matchesSearch = !query ||
+    node.name.toLowerCase().includes(query) || (node.tags || []).join(" ").toLowerCase().includes(query);
+  return !matchesSearch || !matchesTags(node);
 }
 
 // Row visibility by state — reads the same hiddenStates the graph legend drives, so the table's
@@ -1385,11 +1417,10 @@ function mountNodes(kept) {
       graph.appendChild(el);
       node.el = el;
     }
-    // Dim a node the active filters exclude — failing the search box OR the shared tag selector
-    // (matchesTags). Ghosts (lineage-only) never dim. The graph dims; the table hides the same set.
-    const matchesSearch = !query ||
-      dataNode.name.toLowerCase().includes(query) || (dataNode.tags || []).join(" ").toLowerCase().includes(query);
-    const dim = !dataNode.ghost && (!matchesSearch || !matchesTags(dataNode));
+    // Dim a node the active filters exclude (graphExcluded — search box OR tag selector). With isolate
+    // on, the excluded nodes were already dropped by visibleForest, so nothing here dims; with isolate
+    // off, this is the long-standing dim-in-place behavior. Either way the dimmed/hidden set is one set.
+    const dim = graphExcluded(dataNode, query);
     const className = "node s-" + dataNode.state +
       (dataNode.ghost ? " ghost" : "") +
       (node.pinned ? " pinned" : "") +
@@ -1493,9 +1524,24 @@ function centerView() {
 function renderFilterBar() {
   const bar = $("filterchips");   // the dynamic half — the time control is a stable sibling we never clobber
   if (activeTab === "messages") { bar.innerHTML = kindSectionHtml(); return; }
-  const pinHint = activeTab === "graph"
-    ? `<span class="spacer"></span><span class="hint">drag a node to pin it · click for actions</span>` : "";
-  bar.innerHTML = `<span class="hint">states — click to show / hide:</span>${stateChipsHtml()}${tagSectionHtml()}${pinHint}`;
+  // The isolate toggle and pin hint are graph-only: the table already hides its non-matches, so there
+  // is nothing for isolate to do there.
+  const graphExtras = activeTab === "graph"
+    ? isolateToggleHtml() + `<span class="spacer"></span><span class="hint">drag a node to pin it · click for actions</span>`
+    : "";
+  bar.innerHTML = `<span class="hint">states — click to show / hide:</span>${stateChipsHtml()}${tagSectionHtml()}${graphExtras}`;
+}
+
+// The graph-only isolate switch. On (default), an active tag / search filter HIDES the excluded nodes
+// so the graph collapses to just the matched sessions plus the lineage tying them together; off, the
+// excluded nodes stay put but dimmed. Rebuilt into the bar string each render, toggled via the
+// delegated #filterbar handler (data-isolate) — no per-render listener to bind.
+function isolateToggleHtml() {
+  const on = isolateMatches;
+  return `<span class="fsep"></span>` +
+    `<button class="isobtn${on ? " on" : ""}" data-isolate="1" aria-pressed="${on}" ` +
+    `title="isolate the filtered set — hide everything a tag / search filter excludes (default), instead of dimming it in place">` +
+    `${on ? "◉" : "◯"} isolate</button>`;
 }
 
 // The six state chips, reflecting hiddenStates with live per-state counts. data-state drives the
@@ -1567,6 +1613,7 @@ $("filterbar").addEventListener("click", (event) => {
     paintActive();
     return;
   }
+  if (event.target.closest("[data-isolate]")) { isolateMatches = !isolateMatches; paintActive(); return; }
   if (event.target.closest("[data-cleartags]")) { selectedTags.clear(); paintActive(); return; }
   const tagChip = event.target.closest(".tagchip");
   if (tagChip) {
