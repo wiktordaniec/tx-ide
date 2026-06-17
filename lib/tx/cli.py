@@ -159,6 +159,11 @@ class SpawnCommand(Command):
         parser.add_argument(
             "--effort", help="reasoning-effort override for an --engine agent spawn"
         )
+        parser.add_argument(
+            "--no-prime",
+            action="store_true",
+            help="bypass the default developer priming prompt for LLM agent sessions",
+        )
         parser.add_argument("--env", action="append", type=_env_pair)
         args = parser.parse_args(argv)
         tags = _split_tags(args.tag)
@@ -198,9 +203,24 @@ class SpawnCommand(Command):
             or args.effort is not None
         ):
             engine = requested or Engine.CLAUDE
+            prompt = args.prompt
+            if not getattr(args, "no_prime", False):
+                priming = (
+                    "Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/DEVELOPER.md as your first actions. "
+                    "Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.md, "
+                    "~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/DEVELOPER.md, "
+                    "and ~/.tx-ide/user-agents/DEVELOPER.local.md (any user-agents/X.md replaces "
+                    "the shipped one; any user-agents/X.local.md extends it). "
+                    "Follow all of these for the duration of this session."
+                )
+                if prompt:
+                    prompt = f"{priming} Then {prompt}"
+                else:
+                    prompt = f"{priming} Await instructions."
+
             command = shlex.join(
                 engines.registry.get(engine).build_launch_command(
-                    model=args.model, effort=args.effort, initial_prompt=args.prompt
+                    model=args.model, effort=args.effort, initial_prompt=prompt
                 )
             )
             return command, engine

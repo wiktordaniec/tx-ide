@@ -219,37 +219,62 @@ check("_spawn: a non-llm command nulls the engine even when one is passed", othe
 
 # ----- 4. `tx spawn --engine …` builds the command via the adapter + stamps the engine ----------
 
+PRIMING_PREFIX = (
+    "Read ~/.tx-ide/agents/COMMON.md and ~/.tx-ide/agents/DEVELOPER.md as your first actions. "
+    "Then, if they exist, also read ~/.tx-ide/user-agents/COMMON.md, "
+    "~/.tx-ide/user-agents/COMMON.local.md, ~/.tx-ide/user-agents/DEVELOPER.md, "
+    "and ~/.tx-ide/user-agents/DEVELOPER.local.md (any user-agents/X.md replaces "
+    "the shipped one; any user-agents/X.local.md extends it). "
+    "Follow all of these for the duration of this session."
+)
+
 session, command = run_spawn("w-codex", ["--tag", "scope", "--cwd", "/p", "--engine", "codex", "--prompt", "ship-it"])
-check("tx spawn --engine codex builds the exact adapter command",
-      command == CODEX_PREFIX + " ship-it")
+check("tx spawn --engine codex builds the exact adapter command (with default priming)",
+      command == CODEX_PREFIX + " " + shlex.quote(PRIMING_PREFIX + " Then ship-it"))
 check("tx spawn --engine codex stamps record.engine == CODEX", session.engine == Engine.CODEX)
 check("tx spawn --engine codex is role LLM", session.role == Role.LLM)
 
 session, command = run_spawn("w-codex-bare", ["--tag", "s", "--cwd", "/p", "--engine", "codex"])
-check("tx spawn --engine codex with no --prompt builds the default codex command (no trailing prompt)",
-      command == CODEX_PREFIX)
+check("tx spawn --engine codex with no --prompt builds the default codex command (with default priming)",
+      command == CODEX_PREFIX + " " + shlex.quote(PRIMING_PREFIX + " Await instructions."))
 check("tx spawn --engine codex (no prompt) still stamps CODEX", session.engine == Engine.CODEX)
 
 session, command = run_spawn("w-codex-me",
                              ["--tag", "s", "--cwd", "/p", "--engine", "codex",
                               "--model", "gpt-5.5-codex", "--effort", "xhigh"])
-check("tx spawn --engine codex --model/--effort render the Codex way",
+check("tx spawn --engine codex --model/--effort render the Codex way (with default priming)",
       command == "codex -m gpt-5.5-codex -c model_reasoning_effort=xhigh "
-                 "--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust")
+                 "--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust "
+                 + shlex.quote(PRIMING_PREFIX + " Await instructions."))
 
 session, command = run_spawn("w-claude", ["--tag", "s", "--cwd", "/p", "--engine", "claude", "--prompt", "ship-it"])
-check("tx spawn --engine claude builds the claude command", command == CLAUDE_PREFIX + " ship-it")
+check("tx spawn --engine claude builds the claude command (with default priming)",
+      command == CLAUDE_PREFIX + " " + shlex.quote(PRIMING_PREFIX + " Then ship-it"))
 check("tx spawn --engine claude stamps CLAUDE", session.engine == Engine.CLAUDE)
 
 # "default still Claude": an AGENT spawn (a --prompt, no --engine) builds claude and stamps CLAUDE.
 session, command = run_spawn("w-default-agent", ["--tag", "s", "--cwd", "/p", "--prompt", "ship-it"])
-check("tx spawn --prompt with no --engine defaults to the claude adapter", command == CLAUDE_PREFIX + " ship-it")
+check("tx spawn --prompt with no --engine defaults to the claude adapter (with default priming)",
+      command == CLAUDE_PREFIX + " " + shlex.quote(PRIMING_PREFIX + " Then ship-it"))
 check("tx spawn --prompt with no --engine stamps CLAUDE", session.engine == Engine.CLAUDE)
 
 # A spaced prompt is shell-quoted by the command builder (it auto-submits as one positional).
 session, command = run_spawn("w-codex-spaced", ["--tag", "s", "--cwd", "/p", "--engine", "codex", "--prompt", "do the thing"])
 check("tx spawn --engine codex shell-quotes a multi-word prompt",
-      command == CODEX_PREFIX + " " + shlex.quote("do the thing"))
+      command == CODEX_PREFIX + " " + shlex.quote(PRIMING_PREFIX + " Then do the thing"))
+
+# ----- 4b. `tx spawn --engine … --no-prime` bypasses default priming ----------
+session, command = run_spawn("w-codex-noprime", ["--tag", "scope", "--cwd", "/p", "--engine", "codex", "--no-prime", "--prompt", "ship-it"])
+check("tx spawn --engine codex --no-prime builds the raw command",
+      command == CODEX_PREFIX + " ship-it")
+
+session, command = run_spawn("w-codex-noprime-bare", ["--tag", "s", "--cwd", "/p", "--engine", "codex", "--no-prime"])
+check("tx spawn --engine codex --no-prime with no prompt builds raw bare command",
+      command == CODEX_PREFIX)
+
+session, command = run_spawn("w-claude-noprime", ["--tag", "s", "--cwd", "/p", "--engine", "claude", "--no-prime", "--prompt", "ship-it"])
+check("tx spawn --engine claude --no-prime builds the raw command",
+      command == CLAUDE_PREFIX + " ship-it")
 
 # --cmd stays a verbatim override; with no --engine an llm command still defaults to CLAUDE (unchanged).
 session, command = run_spawn("w-cmd-claude", ["--tag", "s", "--cwd", "/p", "--cmd", CLAUDE_PREFIX])
