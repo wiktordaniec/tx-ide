@@ -276,7 +276,14 @@ symlink, so `git pull` updates them for every install:
   peer messaging, the AINote workflow).
 - `agents/TX-ASSISTANT.md` — the assistant role (how to interpret requests, what to spawn, guard
   rails).
-- `agents/DEVELOPER.md` — the coding-worker role (worktree-first, atomic commits, draft PR).
+- `agents/DEVELOPER.md` — the coding foundation + interactive developer: coding standards, git
+  workflow, self-verify; you converse with the human, who reviews and merges.
+- `agents/WORKFLOW-DEVELOPER.md` — the build-fleet layer on `DEVELOPER.md`: orchestrator-spawned,
+  runs its own codex QA, reports codex-clean, emits fixtures.
+- `agents/ORCHESTRATOR.md` — drives a multi-agent build: decompose, spawn developers, gate on
+  codex-clean, merge autonomously, sequence phases.
+- `agents/OVERSIGHT.md` — watches a running build (context-rollover + direction) and is the sole
+  human contact.
 - `agents/HISTORIAN.md` — the read-only history-synthesis role.
 
 ### Overrides
