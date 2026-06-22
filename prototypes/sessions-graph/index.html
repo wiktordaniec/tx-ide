@@ -173,14 +173,16 @@
   #canvas {
     position: relative;
     flex: 1 1 auto;
-    overflow: auto;
+    overflow: hidden;               /* infinite canvas: pan/zoom is a transform on #graph, never native scroll */
     cursor: grab;
     background:
       radial-gradient(circle at 1px 1px, rgba(122,162,247,.08) 1px, transparent 0) 0 0 / 26px 26px;
   }
   #canvas.panning { cursor: grabbing; }
   #sizer { position: relative; }
-  #graph { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+  /* #graph is the world layer — nodes + edges live in world coordinates inside it, and a single
+     translate()+scale() (set in applyTransform) maps the world into the viewport. */
+  #graph { position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform; }
   #edges { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
   #edges line { stroke: var(--border); stroke-width: 1.6; }
   #edges line.lit { stroke: var(--accent); stroke-width: 2.4; }
@@ -677,6 +679,7 @@ let composerGroup = null;         // when the composer targets the multi-select 
 let selectedGroup = new Set();    // ids shift-selected into the multi-select group (the "message many" set)
 let marquee = null;               // { startX, startY, moved } while a shift-drag rubber-band is active
 let zoom = 1;
+let panX = 0, panY = 0;           // screen-px translation of the world layer (#graph) within the viewport — the pan offset. A world point W maps to screen (panX + W·zoom). Unbounded in every direction: nothing clamps these.
 let isPanning = false;
 let lastFetchAt = 0;
 let firstRender = true;
@@ -702,7 +705,7 @@ let suppressClick = false;        // a drag that moved must not also open the ac
 let pins = {};                    // { id: {x, y} } — dragged nodes; loaded from the server in boot (awaited before the first paint), then kept in sync by savePins()
 
 const $ = (id) => document.getElementById(id);
-const canvas = $("canvas"), sizer = $("sizer"), graph = $("graph"), svg = $("edges");
+const canvas = $("canvas"), graph = $("graph"), svg = $("edges");
 
 const rand = (lo, hi) => lo + Math.random() * (hi - lo);
 
@@ -1024,7 +1027,7 @@ function render() {
   pruneSelection(kept);
   const changed = syncSim(kept);
 
-  applyZoom();
+  applyTransform();
   mountNodes(kept);
   buildEdges();
   if (changed) reheat(0.9);
@@ -1368,15 +1371,20 @@ async function fetchMessages() {
   }
 }
 
-function applyZoom() {
+// Map the world layer into the viewport with the current pan + zoom. This single transform IS the
+// camera — there is no scroll container, so pan (panX/panY) is unbounded in every direction and zoom
+// scales about world origin. Node/edge positions stay in fixed world coordinates; only this changes.
+function applyTransform() {
   graph.style.width = WORLD_W + "px";
   graph.style.height = WORLD_H + "px";
-  graph.style.transform = `scale(${zoom})`;
-  sizer.style.width = WORLD_W * zoom + "px";
-  sizer.style.height = WORLD_H * zoom + "px";
+  graph.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
   svg.setAttribute("width", WORLD_W);
   svg.setAttribute("height", WORLD_H);
   svg.setAttribute("viewBox", `0 0 ${WORLD_W} ${WORLD_H}`);
+  // The dot grid is anchored to world origin: it translates with the pan and its spacing tracks the
+  // zoom, so empty canvas still shows motion when you pan and depth when you zoom.
+  canvas.style.backgroundPosition = `${panX}px ${panY}px`;
+  canvas.style.backgroundSize = `${26 * zoom}px ${26 * zoom}px`;
 }
 
 // Diff the node elements against the kept set: reuse an existing element (keeps the action-menu
@@ -1485,14 +1493,16 @@ function updateSummary(kept) {
   setSummary(shown);
 }
 
-// Scroll so the cluster's centroid sits in the middle of the viewport (accounting for zoom).
+// Pan (no clamp) so the cluster's centroid lands at the viewport center. A world point W maps to
+// screen panX + W·zoom, so panX = viewportCenter − centroid·zoom puts the centroid dead center.
 function centerView() {
   if (sim.size === 0) return;
   let cx = 0, cy = 0;
   for (const node of sim.values()) { cx += node.x; cy += node.y; }
   cx /= sim.size; cy /= sim.size;
-  canvas.scrollLeft = Math.max(0, cx * zoom - canvas.clientWidth / 2);
-  canvas.scrollTop = Math.max(0, cy * zoom - canvas.clientHeight / 2);
+  panX = canvas.clientWidth / 2 - cx * zoom;
+  panY = canvas.clientHeight / 2 - cy * zoom;
+  applyTransform();
 }
 
 // ---- shared filter bar (states · tags · kind) ---------------------------------------------------
@@ -2041,7 +2051,7 @@ $("timeRange").addEventListener("change", () => {
 $("customRange").addEventListener("input", () => { timeFilter = buildCustomFilter(); applyTimeRangeUI(); paintActive(); });
 
 $("fit").addEventListener("click", () => {
-  zoom = 1; applyZoom(); centerView();
+  zoom = 1; applyTransform(); centerView();   // reset zoom to 1:1, then recenter on the cluster
 });
 
 // View tabs + table interactions. The header cells and rows are rebuilt on every renderTable(), so
@@ -2084,26 +2094,31 @@ $("msgBody").addEventListener("dblclick", (event) => {
   if (row && row.dataset.recipient) focusSession(row.dataset.recipient);
 });
 
-// Over the canvas the wheel zooms toward the pointer (Figma-style) instead of scrolling the
-// container: pin the world point under the cursor, rescale, then re-derive scroll so that point
-// stays put. macOS pinch arrives here as a ctrl+wheel event, so it zooms naturally too. The wheel
-// is the only zoom control, so it clamps to a fixed range of its own.
-const ZOOM_MIN = 0.25, ZOOM_MAX = 1.5;
+// Wheel = the infinite-canvas camera (Figma/Excalidraw input model). The browser reports a pinch or
+// Ctrl/⌘+wheel as a wheel event with ctrlKey/metaKey set — that ZOOMS toward the cursor; every other
+// wheel / two-finger trackpad swipe PANS by its delta. Both paths are unbounded: there is no scroll
+// container, so nothing clamps the pan and nothing recenters. Zoom alone is railed to a sane range.
+const ZOOM_MIN = 0.1, ZOOM_MAX = 4;
 canvas.addEventListener("wheel", (event) => {
-  event.preventDefault();                                // replace the container's native scroll
-  const rect = canvas.getBoundingClientRect();
-  const vx = event.clientX - rect.left, vy = event.clientY - rect.top;   // cursor within the viewport
-  const worldX = (canvas.scrollLeft + vx) / zoom;        // world point held fixed under the cursor
-  const worldY = (canvas.scrollTop + vy) / zoom;
-  let delta = event.deltaY;                              // fold line / page deltas down to pixels
-  if (event.deltaMode === 1) delta *= 16;
-  else if (event.deltaMode === 2) delta *= canvas.clientHeight;
-  const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom * Math.exp(-delta * 0.0035)));
-  if (next === zoom) return;                              // already railed at min / max — nothing to do
-  zoom = next;
-  applyZoom();                                            // grow / shrink the sizer before re-scrolling
-  canvas.scrollLeft = worldX * zoom - vx;
-  canvas.scrollTop = worldY * zoom - vy;
+  event.preventDefault();                                // we own the wheel — never scroll the page
+  let dx = event.deltaX, dy = event.deltaY;              // fold line / page deltas down to pixels
+  if (event.deltaMode === 1) { dx *= 16; dy *= 16; }
+  else if (event.deltaMode === 2) { dx *= canvas.clientWidth; dy *= canvas.clientHeight; }
+
+  if (event.ctrlKey || event.metaKey) {                  // pinch / Ctrl|⌘+wheel → zoom toward the cursor
+    const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom * Math.exp(-dy * 0.0035)));
+    if (next === zoom) return;                            // railed at a limit — nothing to do
+    const rect = canvas.getBoundingClientRect();
+    const vx = event.clientX - rect.left, vy = event.clientY - rect.top;   // cursor within the viewport
+    const worldX = (vx - panX) / zoom, worldY = (vy - panY) / zoom;        // world point under the cursor
+    zoom = next;
+    panX = vx - worldX * zoom;                            // hold that world point pinned under the cursor
+    panY = vy - worldY * zoom;
+  } else {                                               // plain wheel / two-finger swipe → pan
+    panX -= dx;
+    panY -= dy;
+  }
+  applyTransform();
 }, { passive: false });
 $("shuffle").addEventListener("click", () => {
   pins = {}; savePins();
@@ -2158,7 +2173,7 @@ canvas.addEventListener("mousedown", (event) => {
   isPanning = true;
   panMoved = false;
   canvas.classList.add("panning");
-  panStart = { x: event.clientX, y: event.clientY, left: canvas.scrollLeft, top: canvas.scrollTop };
+  panStart = { x: event.clientX, y: event.clientY, panX, panY };   // snapshot the pan offset at grab time
 });
 
 window.addEventListener("mousemove", (event) => {
@@ -2187,8 +2202,9 @@ window.addEventListener("mousemove", (event) => {
   }
   if (!isPanning) return;
   if (Math.abs(event.clientX - panStart.x) + Math.abs(event.clientY - panStart.y) > 4) panMoved = true;
-  canvas.scrollLeft = panStart.left - (event.clientX - panStart.x);
-  canvas.scrollTop = panStart.top - (event.clientY - panStart.y);
+  panX = panStart.panX + (event.clientX - panStart.x);   // grab-style: the world follows the cursor, unbounded
+  panY = panStart.panY + (event.clientY - panStart.y);
+  applyTransform();
 });
 
 window.addEventListener("mouseup", () => {
