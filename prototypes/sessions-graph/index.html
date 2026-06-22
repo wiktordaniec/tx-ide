@@ -34,6 +34,16 @@
   .s-archived { --state: var(--magenta); }
   .s-ghost    { --state: var(--muted); }
 
+  /* Per-ROLE accent colour — an axis ORTHOGONAL to state above. State rides the node's dot; role
+     rides the card's left stripe + the role badge, so one node shows both at once. Four hues picked
+     to stay distinct from each other AND from the per-state dot colour they sit beside:
+     llm = purple (the agent / brain), nvim = green (vim), shell = orange (terminal), other = slate
+     (neutral). The static key in the filter bar (roleLegendHtml) decodes them. */
+  .r-llm   { --role: #bb9af7; }
+  .r-nvim  { --role: #9ece6a; }
+  .r-shell { --role: #ff9e64; }
+  .r-other { --role: #737aa2; }
+
   * { box-sizing: border-box; }
   /* color-scheme: dark makes every native widget — the time-range <select> and its dropdown, the
      custom-range datetime pickers, the search field's affordances, and the scrollbars — render in the
@@ -146,6 +156,13 @@
   .lchip:hover { border-color: var(--state); }
   /* A thin vertical rule between the bar's filter groups (states │ tags). */
   .legend .fsep { flex: 0 0 auto; width: 1px; height: 16px; background: var(--border); margin: 0 6px; }
+  /* Role legend — a static KEY (not a filter) decoding the per-role node stripe + badge colours. Mirrors
+     the state chips' dot+label, but non-interactive (cursor:default, no aria-pressed / hover) so it
+     reads as a key, not a button. The swatch dot inherits --role from the .r-* class it also carries;
+     the view-host marker is a hollow dashed dot, matching the .kind badge on the node. */
+  .rolekey { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); cursor: default; }
+  .rolekey .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--role, var(--muted)); }
+  .rolekey.kindkey .dot { background: transparent; border: 1.5px dashed var(--dim); }
   /* The dynamic half of the filter bar — renderFilterBar() fills this with the state/tag (graph · table)
      or kind (messages) chips, leaving the time control (its stable sibling) untouched on every repaint.
      Flexes like the bar itself so the chips keep their spacing and the graph's pin-hint spacer still
@@ -225,6 +242,16 @@
     content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
     box-shadow: inset 0 0 0 2px var(--accent);
   }
+  /* Role stripe — a slim colour band down the card's LEFT edge: the at-a-glance "what kind of session
+     is this" signal that survives zoom-out (where the badge text no longer reads), paired with the
+     state dot which encodes the orthogonal axis. --role comes from the .r-* class; a ghost (lineage-
+     only, no record/role) leaves it unset, so its stripe falls back to transparent. Clipped to the
+     card's rounded corners by the node's overflow:hidden; an independent ::before, so it composes with
+     the .focused ::after ring and the pinned/sel box-shadows rather than fighting the border. */
+  .node::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+    background: var(--role, transparent); pointer-events: none;
+  }
 
   .node .row1 { display: flex; align-items: center; gap: 7px; }
   .node .dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--state); }
@@ -267,11 +294,23 @@
     background: color-mix(in srgb, var(--chip) 16%, transparent);
     white-space: nowrap;
   }
-  /* Role badge — a neutral pill before the tags, so it reads as metadata rather than a tag. */
+  /* Role badge — the labelled type swatch, now carrying the role's OWN colour (matching the left
+     stripe + the legend) instead of a neutral grey, so the glanceable stripe and the named badge read
+     as one thing. Falls back to the old neutral pill if --role is unset (a defensive default — every
+     real node sets it). Tinted fill like .chip, so it stays a pill, not a solid block. */
   .role {
     font-size: 9.5px; letter-spacing: .4px; text-transform: uppercase; white-space: nowrap;
     padding: 1px 6px; border-radius: 999px;
-    color: var(--dim); border: 1px solid var(--border); background: var(--surface-hi);
+    color: var(--role, var(--dim)); border: 1px solid var(--role, var(--border));
+    background: color-mix(in srgb, var(--role, var(--surface-hi)) 16%, transparent);
+  }
+  /* Kind badge — shown ONLY for a VIEW (a "Views" host that nests other sessions); processes are the
+     default and stay unbadged so the 300+ normal nodes carry no noise. A dashed outline so a host
+     reads as a container rather than a tag. */
+  .kind {
+    font-size: 9.5px; letter-spacing: .4px; text-transform: uppercase; white-space: nowrap;
+    padding: 1px 6px; border-radius: 999px;
+    color: var(--dim); border: 1px dashed var(--dim); background: transparent;
   }
 
   /* ---- empty state ------------------------------------------------------------------------ */
@@ -481,7 +520,7 @@
   .grid tbody tr.focused td:last-child { box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent), inset -2px 0 0 var(--accent); }
   .tname { display: inline-flex; align-items: center; gap: 8px; color: var(--fg); font-weight: 600; }
   .tname .dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--state); }
-  .trole { font-size: 10px; letter-spacing: .4px; text-transform: uppercase; color: var(--muted); }
+  .trole { font-size: 10px; letter-spacing: .4px; text-transform: uppercase; color: var(--role, var(--muted)); }
   .tstate { color: var(--state); }
   .tchips { display: inline-flex; gap: 4px; flex-wrap: wrap; }
   .ttime { font-variant-numeric: tabular-nums; }         /* steady columns — no jitter as ages tick */
@@ -1055,7 +1094,7 @@ const COLUMNS = [
   { key: "state", label: "state", sortVal: (e) => e.record.state,
     cell: (e) => `<span class="tstate">${escapeHtml(e.record.state)}</span>` },
   { key: "role", label: "role", sortVal: (e) => e.record.role,
-    cell: (e) => `<span class="trole">${escapeHtml(e.record.role)}</span>` },
+    cell: (e) => `<span class="trole r-${e.record.role}">${escapeHtml(e.record.role)}</span>` },
   { key: "tags", label: "tags", sortVal: (e) => e.record.tags.join(",").toLowerCase(),
     cell: (e) => `<span class="tchips">${tableChips(e)}</span>` },
   { key: "created_at", label: "created", sortVal: (e) => e.record.created_at || 0,
@@ -1410,7 +1449,7 @@ function mountNodes(kept) {
       dataNode.name.toLowerCase().includes(query) || (dataNode.tags || []).join(" ").toLowerCase().includes(query);
     const dim = !dataNode.ghost && (!matchesSearch || !matchesTags(dataNode));
     const className = "node s-" + dataNode.state +
-      (dataNode.ghost ? " ghost" : "") +
+      (dataNode.ghost ? " ghost" : " r-" + dataNode.role) +   // r-* sets --role → the left stripe + badge colour
       (node.pinned ? " pinned" : "") +
       (dataNode.id === selectedId ? " sel" : "") +
       (selectedGroup.has(dataNode.id) ? " picked" : "") +
@@ -1440,6 +1479,9 @@ function nodeInner(dataNode, simNode) {
            `<div class="ghosthint">parent — lineage only</div>`;
   }
   const pin = simNode.pinned ? `<span class="pin" title="pinned — click to release">📌</span>` : "";
+  // Flag a Views host (only kind that isn't the implied "process") so it's distinguishable from the
+  // workers it nests; processes stay unbadged so the common case carries no chrome.
+  const kind = dataNode.kind === "view" ? `<span class="kind" title="a Views host — nests other sessions">view</span>` : "";
   const role = `<span class="role">${escapeHtml(dataNode.role)}</span>`;
   const chips = (dataNode.tags || []).map((tag) => {
     const color = (dataNode.derived.tag_colors && dataNode.derived.tag_colors[tag]) || "var(--dim)";
@@ -1452,7 +1494,7 @@ function nodeInner(dataNode, simNode) {
     : `<span class="dot"></span>`;
   return `<div class="row1">${dot}` +
          `<span class="name">${escapeHtml(dataNode.name)}</span>${pin}</div>` +
-         `<div class="chips">${role}${chips}</div>`;
+         `<div class="chips">${kind}${role}${chips}</div>`;
 }
 
 function buildEdges() {
@@ -1516,7 +1558,20 @@ function renderFilterBar() {
   if (activeTab === "messages") { bar.innerHTML = kindSectionHtml(); return; }
   const pinHint = activeTab === "graph"
     ? `<span class="spacer"></span><span class="hint">drag a node to pin it · click for actions</span>` : "";
-  bar.innerHTML = `<span class="hint">states — click to show / hide:</span>${stateChipsHtml()}${tagSectionHtml()}${pinHint}`;
+  bar.innerHTML = `<span class="hint">states — click to show / hide:</span>${stateChipsHtml()}${tagSectionHtml()}${roleLegendHtml()}${pinHint}`;
+}
+
+// The role legend — a STATIC key (not a filter) decoding the per-role node colours (the left stripe +
+// the role badge), plus the view-host marker. Sits in the shared bar alongside the state/tag chips on
+// the graph + table tabs (both surface role: the graph as a stripe, the table as a coloured cell), but
+// is non-interactive — clicking a swatch does nothing, which is why it carries no data-* hook and the
+// delegated bar listener never matches it. Each swatch reuses the .r-* class so its dot inherits --role.
+function roleLegendHtml() {
+  const swatches = ["llm", "nvim", "shell", "other"]
+    .map((role) => `<span class="rolekey r-${role}"><span class="dot"></span>${role}</span>`)
+    .join("");
+  return `<span class="fsep"></span><span class="hint">type:</span>${swatches}` +
+         `<span class="rolekey kindkey" title="a Views host — nests other sessions"><span class="dot"></span>view host</span>`;
 }
 
 // The six state chips, reflecting hiddenStates with live per-state counts. data-state drives the
