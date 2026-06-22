@@ -639,7 +639,6 @@
 const NODE_W = 172, NODE_H = 40;          // card width; height is measured per node (NODE_H seeds it)
 const WORLD_W = 3600, WORLD_H = 2600;     // fixed virtual canvas the cluster floats inside
 const WORLD_CX = WORLD_W / 2, WORLD_CY = WORLD_H / 2;
-const PIN_KEY = "tx-graph-pins-v1";       // localStorage: { id: {x, y} } for dragged-and-pinned nodes
 
 // Force-sim tuning (an Obsidian-style spread: nodes repel, edges pull, a weak gravity keeps the
 // whole thing framed). The sim sleeps when it settles, so a quiescent graph costs no CPU.
@@ -700,19 +699,31 @@ let alpha = 0;                     // sim temperature; >ALPHA_MIN keeps the rAF 
 let running = false;
 let drag = null;                   // { node, moved, offX, offY, startGX, startGY } while dragging
 let suppressClick = false;        // a drag that moved must not also open the action menu
-let pins = loadPins();            // { id: {x, y} } — dragged nodes, restored on load
+let pins = {};                    // { id: {x, y} } — dragged nodes; loaded from the server in boot (awaited before the first paint), then kept in sync by savePins()
 
 const $ = (id) => document.getElementById(id);
 const canvas = $("canvas"), sizer = $("sizer"), graph = $("graph"), svg = $("edges");
 
 const rand = (lo, hi) => lo + Math.random() * (hi - lo);
 
-// ---- pin persistence ----------------------------------------------------------------------------
-function loadPins() {
-  try { return JSON.parse(localStorage.getItem(PIN_KEY)) || {}; } catch { return {}; }
+// ---- pin persistence (server-side) --------------------------------------------------------------
+// The dragged-node layout lives on the SERVER ({id: {x, y}} at $TX_IDE_HOME/sessions-graph.layout.json),
+// not in this browser's localStorage — so the positions you arrange are restored on every page load,
+// from any browser or machine. loadPins() pulls the saved layout once on boot (awaited before the first
+// paint, so pinned nodes mount at their spots instead of force-laying-out and then snapping); savePins()
+// writes the whole pin set back on each drag / unpin / shuffle, fire-and-forget like the focus poke.
+async function loadPins() {
+  try {
+    const response = await fetch("/api/layout", { cache: "no-store" });
+    return (await response.json()).pins || {};
+  } catch { return {}; }
 }
 function savePins() {
-  try { localStorage.setItem(PIN_KEY, JSON.stringify(pins)); } catch { /* private mode — ignore */ }
+  fetch("/api/layout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pins }),
+  }).catch(() => { /* server unreachable — the in-memory pins still hold for this page session */ });
 }
 
 // ---- data fetch ---------------------------------------------------------------------------------
@@ -2317,9 +2328,17 @@ setInterval(() => {
 renderFilterBar();          // paint the bar's state chips immediately, before the first feed lands
 applyFilterbarUI();         // restore the persisted collapse before anything shows
 $("timeRange").value = "all"; applyTimeRangeUI();   // force a known initial window (a browser may restore a stale <select> on reload)
-fetchAndRender(true);
-fetchUsage();               // pull both providers' rate-limit usage for the header readout
-if ($("auto").checked) connectStream();
+
+// Restore the saved layout from the SERVER before the first feed paints, so pinned nodes mount at
+// their saved spots instead of force-laying-out and then snapping into place — the whole point of
+// server-side persistence. loadPins() is a quick localhost round-trip; the feed fetch and the live
+// stream wait on it so neither can render a frame before the pins are in hand.
+(async () => {
+  pins = await loadPins();
+  fetchAndRender(true);
+  fetchUsage();             // pull both providers' rate-limit usage for the header readout
+  if ($("auto").checked) connectStream();
+})();
 </script>
 </body>
 </html>

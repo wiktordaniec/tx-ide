@@ -51,6 +51,11 @@ DEFAULT_PORT = 8765
 # POST /api/focus-changed to it — and finds nothing to poke when the dashboard is down (file absent).
 # Written on startup, removed on exit. `$TX_IDE_HOME` is resolved exactly as `tx` resolves it.
 ENDPOINT_FILE = tx_ide_home() / "sessions-graph.port"
+# The positions the user drags nodes to are persisted here — one JSON map {session-id: {x, y}} — so
+# the graph's layout is restored from the SERVER on every page load instead of from a single browser's
+# localStorage (which never followed the user to another browser or machine). Keyed by the same id the
+# records use; `$TX_IDE_HOME` is resolved exactly as `tx` resolves it, like ENDPOINT_FILE above.
+LAYOUT_FILE = tx_ide_home() / "sessions-graph.layout.json"
 # How often the shared poll loop rebuilds the feed and pushes any change to connected SSE clients.
 # One tmux reconcile per tick total (not per tab); the loop idles entirely when no tab is connected.
 POLL_INTERVAL_SECONDS = 1.0
@@ -521,13 +526,64 @@ def message_assistant(target_ids: list[str], request: str) -> tuple[int, dict]:
     return 200, {"ok": True, "count": len(targets), "name": targets[0].name, "assistant": assistant.id}
 
 
+# ----- graph layout persistence ------------------------------------------------------------------
+# The page lets you drag session nodes around; those positions are saved here, server-side, and
+# restored on the next load. One JSON object {id: {x, y}} keyed by session id — read on load, and
+# rewritten whole on every drag / unpin / shuffle (the page always sends its complete pin set). A lock
+# guards the file because this ThreadingHTTPServer can read it (a GET) and write it (a POST) at once.
+_layout_lock = threading.Lock()
+
+
+def read_layout() -> dict:
+    """The saved node positions {id: {x, y}} — the graph's persisted layout, served for restore-on-
+    load. The file is an external boundary: absent until the first save, and a reader can race a
+    writer, so a missing or half-written/corrupt file reads as an empty layout rather than raising
+    (the same tolerant-parse discipline the Codex rollout reader uses)."""
+    with _layout_lock:
+        if not LAYOUT_FILE.exists():
+            return {}
+        try:
+            return json.loads(LAYOUT_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+
+def write_layout(pins: dict) -> None:
+    """Persist the node positions, replacing the file whole. Written atomically — a temp file swapped
+    in with os.replace — so a concurrent reader (another tab's GET) never sees a partial write."""
+    with _layout_lock:
+        LAYOUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temp = LAYOUT_FILE.with_name(LAYOUT_FILE.name + ".tmp")
+        temp.write_text(json.dumps(pins))
+        temp.replace(LAYOUT_FILE)
+
+
+def set_layout(body: dict) -> tuple[int, dict]:
+    """Persist the layout a drag / unpin / shuffle just POSTed. A request boundary, so the shape is
+    sanitized here rather than trusted by the page that reads it back: only {id: {x, y}} entries with
+    numeric coordinates survive."""
+    pins = body.get("pins")
+    if not isinstance(pins, dict):
+        return 400, {"ok": False, "error": "pins must be an object"}
+    clean = {
+        str(node_id): {"x": position["x"], "y": position["y"]}
+        for node_id, position in pins.items()
+        if isinstance(position, dict)
+        and isinstance(position.get("x"), (int, float))
+        and isinstance(position.get("y"), (int, float))
+    }
+    write_layout(clean)
+    return 200, {"ok": True, "count": len(clean)}
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     """Routes: `/api/stream` (Server-Sent live feed + named `focus` channel — one shared loop fans
     changes out to every tab, so the graph stays current even while its tab is unfocused),
     `/api/sessions` (one-shot JSON feed for the initial paint, the manual refresh, and the on-focus
     resync), `/api/messages` (one-shot message feed for the Messages tab; also pushed live on the
     `messages` SSE channel), `/api/usage` (one-shot both-provider rate-limit feed for the header
-    readout), `POST /api/focus` (jump the user's tmux to a session's pane),
+    readout), `/api/layout` (GET the saved node positions for restore-on-load; POST the page's pin
+    set to persist the dragged layout — see read_layout / set_layout), `POST /api/focus` (jump the user's tmux to a session's pane),
     `POST /api/focus-changed` (the tmux hook's poke — recompute & push the focused ring),
     `POST /api/anthropic-usage` (a Claude Code statusline pushing its ephemeral Anthropic
     rate-limit snapshot — see set_anthropic_usage), `POST /api/message` (type a request about one session — `id` — or a multi-select group — `ids` —
@@ -596,6 +652,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._respond(200, json.dumps(build_messages_feed()).encode(), "application/json")
         elif self.path.startswith("/api/usage"):
             self._respond(200, json.dumps(build_usage_feed()).encode(), "application/json")
+        elif self.path.startswith("/api/layout"):
+            self._respond(200, json.dumps({"pins": read_layout()}).encode(), "application/json")
         elif self.path in ("/", "/index.html"):
             self._respond(200, PAGE.read_bytes(), "text/html; charset=utf-8")
         else:
@@ -623,6 +681,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             ids = body.get("ids")
             target_ids = [str(value) for value in ids] if isinstance(ids, list) else [str(body.get("id", ""))]
             status, payload = message_assistant(target_ids, str(body.get("request", "")))
+        elif self.path.startswith("/api/layout"):
+            # The page persisting the layout — its complete {id: {x, y}} pin set, rewritten whole.
+            # A request boundary, so set_layout sanitizes the shape before it touches disk.
+            status, payload = set_layout(body)
         else:
             self._respond(404, b"not found\n", "text/plain; charset=utf-8")
             return
