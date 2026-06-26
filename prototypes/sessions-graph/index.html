@@ -191,6 +191,7 @@
     position: relative;
     flex: 1 1 auto;
     overflow: hidden;               /* infinite canvas: pan/zoom is a transform on #graph, never native scroll */
+    touch-action: none;             /* mobile: the canvas owns every touch gesture — our touch handlers pan/pinch, so the browser never scrolls or page-zooms over it. Scoped here, so the toolbar / table / drawer keep native browser zoom. */
     cursor: grab;
     background:
       radial-gradient(circle at 1px 1px, rgba(122,162,247,.08) 1px, transparent 0) 0 0 / 26px 26px;
@@ -2294,6 +2295,77 @@ window.addEventListener("mouseup", () => {
   canvas.classList.remove("panning");
   flushPending();                                        // …or during a pan
 });
+
+// ---- touch camera (mobile): one-finger pan · two-finger pinch-zoom ------------------------------
+// A touchscreen emits neither `wheel` nor the drag-stream of `mousemove` the camera above relies on,
+// so all of it is dead on mobile. These handlers drive the SAME panX/panY/zoom from touches: one
+// finger pans (grab-style), two fingers pinch-zoom toward their midpoint (reusing the wheel path's
+// "pin the world point under the focus" math) and pan by the midpoint's travel. Node drag + marquee
+// stay mouse-only — on touch the canvas ALWAYS pans, even when the press lands on a node.
+//
+// The one subtlety is the tap: we preventDefault only once a gesture actually MOVES (in touchmove,
+// and on the 2nd finger), never on a still single-finger touchstart. So a stationary tap keeps its
+// synthesized click, which still opens a node's action menu — the one interaction that already
+// worked on mobile. The browser only emits compatibility mouse events for that un-prevented tap (a
+// single same-spot mousedown+mouseup — a no-op for the pan logic), so the desktop mouse-pan can
+// never double-fire underneath a moving touch gesture.
+let touchPan = null;     // one-finger pan: last touch position in client coords ({x, y}), or null
+let pinch = null;        // two-finger pinch: last finger gap + midpoint ({dist, cx, cy}), or null
+
+const touchMid = (touches) => ({
+  x: (touches[0].clientX + touches[1].clientX) / 2,
+  y: (touches[0].clientY + touches[1].clientY) / 2,
+});
+const touchGap = (touches) =>
+  Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+
+canvas.addEventListener("touchstart", (event) => {
+  if (event.touches.length === 1) {
+    touchPan = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+    pinch = null;                                          // no preventDefault — a still tap must keep its click (node menu)
+  } else if (event.touches.length === 2) {
+    closeMenu();
+    touchPan = null;
+    const mid = touchMid(event.touches);
+    pinch = { dist: touchGap(event.touches), cx: mid.x, cy: mid.y };
+    event.preventDefault();                                // a 2nd finger is always zoom — never the browser's native pinch
+  }
+}, { passive: false });
+
+canvas.addEventListener("touchmove", (event) => {
+  if (pinch && event.touches.length >= 2) {
+    event.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const mid = touchMid(event.touches), gap = touchGap(event.touches);
+    const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom * (gap / pinch.dist)));
+    const vx = mid.x - rect.left, vy = mid.y - rect.top;   // pinch midpoint within the viewport
+    const worldX = (vx - panX) / zoom, worldY = (vy - panY) / zoom;   // world point under the midpoint
+    zoom = next;
+    panX = vx - worldX * zoom;                             // hold that world point pinned under the midpoint…
+    panY = vy - worldY * zoom;
+    panX += mid.x - pinch.cx;                              // …and pan by the midpoint's own travel (pinch + slide)
+    panY += mid.y - pinch.cy;
+    pinch = { dist: gap, cx: mid.x, cy: mid.y };
+    applyTransform();
+  } else if (touchPan && event.touches.length === 1) {
+    event.preventDefault();
+    const touch = event.touches[0];
+    panX += touch.clientX - touchPan.x;                    // grab-style: the world follows the finger, unbounded
+    panY += touch.clientY - touchPan.y;
+    touchPan = { x: touch.clientX, y: touch.clientY };
+    applyTransform();
+  }
+}, { passive: false });
+
+function endTouch(event) {
+  if (event.touches.length === 0) { touchPan = null; pinch = null; }
+  else if (event.touches.length === 1) {                  // lifted from two fingers down to one → resume panning
+    pinch = null;
+    touchPan = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+  }
+}
+canvas.addEventListener("touchend", endTouch);
+canvas.addEventListener("touchcancel", endTouch);
 
 // A plain click on empty canvas — not a node — drops the selection group and closes the drawer.
 canvas.addEventListener("click", (event) => {
