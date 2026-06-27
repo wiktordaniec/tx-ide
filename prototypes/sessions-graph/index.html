@@ -163,6 +163,9 @@
   .rolekey { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); cursor: default; }
   .rolekey .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--role, var(--muted)); }
   .rolekey.kindkey .dot { background: transparent; border: 1.5px dashed var(--dim); }
+  /* Attachment key (attachmentLegendHtml) — reuses .rolekey's inline-flex/font/cursor; the detached
+     variant recedes to --muted, matching the muted detached row under a node. */
+  .rolekey.lockey.detached { color: var(--muted); }
   /* The dynamic half of the filter bar — renderFilterBar() fills this with the state/tag (graph · table)
      or kind (messages) chips, leaving the time control (its stable sibling) untouched on every repaint.
      Flexes like the bar itself so the chips keep their spacing and the graph's pin-hint spacer still
@@ -312,6 +315,16 @@
     padding: 1px 6px; border-radius: 999px;
     color: var(--dim); border: 1px dashed var(--dim); background: transparent;
   }
+  /* Attachment readout — the "where is this surfaced" line under the chips (see locationRow). Laid out
+     like .ghosthint (single clipped line) so a long window name can't widen the card. An attached row
+     reads in --dim; `detached` recedes to --muted so the eye lands on what IS open somewhere. */
+  .node .loc {
+    color: var(--dim); font-size: 11px; margin-top: 4px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .node .loc.detached { color: var(--muted); }
+  .node .loc .locmark { margin-right: 4px; }
+  .node .loc .locmore { margin-left: 5px; color: var(--muted); }
 
   /* ---- empty state ------------------------------------------------------------------------ */
   #empty {
@@ -851,6 +864,7 @@ function buildNodes(feed) {
     tags: entry.record.tags,
     lastActivity: entry.record.last_activity || 0,
     createdAt: entry.record.created_at || 0,         // for the shared time-window filter (visibleForest)
+    attachedTo: entry.record.attached_to || [],      // live (server compute-on-read): panes surfacing this session
     derived: entry.derived,
     json: entry.json,
     ghost: false,
@@ -1494,7 +1508,24 @@ function nodeInner(dataNode, simNode) {
     : `<span class="dot"></span>`;
   return `<div class="row1">${dot}` +
          `<span class="name">${escapeHtml(dataNode.name)}</span>${pin}</div>` +
-         `<div class="chips">${kind}${role}${chips}</div>`;
+         `<div class="chips">${kind}${role}${chips}</div>` +
+         locationRow(dataNode.attachedTo);
+}
+
+// The attachment readout (attachment-topology) — where the session is surfaced RIGHT NOW, so you can
+// tell at a glance whether it's already open somewhere and map it onto your terminal. Mirrors `tx ls`'s
+// LOCATION semantics (primary pane + a `+N` overflow when multi-attached) but shows the host too —
+// `host · window:name · pane` — so two panes in different Views hosts never read alike. `attached_to`
+// is the server's live `attachment_map` stamp (compute-on-read), not the stale on-disk field; an empty
+// list means attached nowhere, which reads as a muted "detached".
+function locationRow(locations) {
+  if (!locations || !locations.length) {
+    return `<div class="loc detached"><span class="locmark">○</span>detached</div>`;
+  }
+  const primary = locations[0];
+  const where = `${escapeHtml(primary.host)} · ${escapeHtml(primary.window_index)}:${escapeHtml(primary.window_name)} · p${escapeHtml(primary.pane_index)}`;
+  const more = locations.length > 1 ? `<span class="locmore">+${locations.length - 1}</span>` : "";
+  return `<div class="loc"><span class="locmark">📍</span>${where}${more}</div>`;
 }
 
 function buildEdges() {
@@ -1558,7 +1589,10 @@ function renderFilterBar() {
   if (activeTab === "messages") { bar.innerHTML = kindSectionHtml(); return; }
   const pinHint = activeTab === "graph"
     ? `<span class="spacer"></span><span class="hint">drag a node to pin it · click for actions</span>` : "";
-  bar.innerHTML = `<span class="hint">states — click to show / hide:</span>${stateChipsHtml()}${tagSectionHtml()}${roleLegendHtml()}${pinHint}`;
+  // The attachment key decodes the per-node location readout, which only the graph draws (the table
+  // has no location column) — so it rides the graph tab alongside the role key, and the table omits it.
+  const attachKey = activeTab === "graph" ? attachmentLegendHtml() : "";
+  bar.innerHTML = `<span class="hint">states — click to show / hide:</span>${stateChipsHtml()}${tagSectionHtml()}${roleLegendHtml()}${attachKey}${pinHint}`;
 }
 
 // The role legend — a STATIC key (not a filter) decoding the per-role node colours (the left stripe +
@@ -1572,6 +1606,15 @@ function roleLegendHtml() {
     .join("");
   return `<span class="fsep"></span><span class="hint">type:</span>${swatches}` +
          `<span class="rolekey kindkey" title="a Views host — nests other sessions"><span class="dot"></span>view host</span>`;
+}
+
+// The attachment key — a STATIC key decoding the location readout under each node (locationRow): 📍 a
+// session surfaced in a tmux pane right now (host · window · pane), ○ one attached nowhere. Graph-tab
+// only (the table has no location column); non-interactive like the role key.
+function attachmentLegendHtml() {
+  return `<span class="fsep"></span><span class="hint">where:</span>` +
+         `<span class="rolekey lockey" title="surfaced in a tmux pane now — host · window · pane">📍 attached</span>` +
+         `<span class="rolekey lockey detached" title="attached nowhere">○ detached</span>`;
 }
 
 // The six state chips, reflecting hiddenStates with live per-state counts. data-state drives the

@@ -105,6 +105,15 @@ def build_feed() -> dict:
     sessions = sorted(
         SessionStore().all(), key=lambda session: session.last_activity or 0, reverse=True
     )
+    # Attachment is compute-on-read (attachment-topology §4): a record's on-disk `attached_to` is
+    # stamped only on an actual mutation (spawn / rename / state change), so it goes stale on a plain
+    # attach or detach. Re-stamp every session from ONE live `attachment_map` sweep — exactly as
+    # `SessionService.live_sessions` (and thus `tx ls` / the picker) does — so the graph's LOCATION
+    # readout reflects where each session is surfaced right now, never the stale persisted value. A
+    # terminal session isn't a key in the map, so it correctly resolves to [] (attached nowhere).
+    attachment = Tmux().attachment_map()
+    for session in sessions:
+        session.attached_to = attachment.get(_tmux_name(session), [])
     return {
         "generated_at": now,
         "home": str(sessions_dir()),
