@@ -1525,10 +1525,10 @@ function nodeInner(dataNode, simNode) {
 
 // The attachment readout (attachment-topology) — where the session is surfaced RIGHT NOW, scoped to the
 // View the user picked (see viewSelectorHtml). `attached_to` is the server's live `attachment_map` stamp
-// (compute-on-read), not the stale on-disk field. Under "all" (selectedView null) it shows the primary
-// pane as `host · window:name · pane` (+N overflow), host included so panes in different View hosts never
-// read alike. With one View picked, attachments in any OTHER host are ignored — collapsed to a muted
-// "detached" — and the host is dropped, leaving the simpler `window:name · pane` (+N within that view).
+// (compute-on-read), not the stale on-disk field. Always shows the primary pane as
+// `host · window:name · pane` with a `+N` overflow — the View (host) name is shown at all times, so you
+// can always read which View a node lives in, whether the picker is on "all" or a single host. With one
+// View picked, attachments in any OTHER host are ignored — collapsed to a muted "detached".
 function locationRow(locations) {
   let locs = locations || [];
   if (selectedView) locs = locs.filter((location) => location.host === selectedView);   // scope to the picked View; attached elsewhere ⇒ detached
@@ -1536,9 +1536,7 @@ function locationRow(locations) {
     return `<div class="loc detached"><span class="locmark">○</span>detached</div>`;
   }
   const primary = locs[0];
-  const cell = selectedView
-    ? `${escapeHtml(primary.window_index)}:${escapeHtml(primary.window_name)} · p${escapeHtml(primary.pane_index)}`
-    : `${escapeHtml(primary.host)} · ${escapeHtml(primary.window_index)}:${escapeHtml(primary.window_name)} · p${escapeHtml(primary.pane_index)}`;
+  const cell = `${escapeHtml(primary.host)} · ${escapeHtml(primary.window_index)}:${escapeHtml(primary.window_name)} · p${escapeHtml(primary.pane_index)}`;
   const more = locs.length > 1 ? `<span class="locmore">+${locs.length - 1}</span>` : "";
   return `<div class="loc"><span class="locmark">📍</span>${cell}${more}</div>`;
 }
