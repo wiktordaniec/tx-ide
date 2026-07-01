@@ -300,7 +300,7 @@ Every worker-spawn prompt reads `$TX_IDE_HOME/agents/<ROLE>.md` followed by both
 ## Requirements
 
 - macOS (the iTerm2 palette/key integration is macOS-only; the core CLI is portable).
-- `tmux`, `fzf`, and `python3.14` (the session store runs under 3.14; the package is stdlib-only).
+- `tmux`, `fzf` (≥ 0.63 — the picker uses the `footer` color element), and `python3.14` (the session store runs under 3.14; the package is stdlib-only).
 - Claude Code (the sessions tx spawns and whose hooks drive session state).
 
 ## License

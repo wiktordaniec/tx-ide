@@ -132,7 +132,7 @@ confirm "Proceed?" Y || {
 }
 
 # === 0: Dependencies ===
-# Hard requirements (auto-installed via brew): tmux, fzf, python@3.14.
+# Hard requirements (auto-installed via brew): tmux, fzf (≥ 0.63 for the picker), python@3.14.
 # Soft requirements (warn only): claude, gh.
 header "Dependencies"
 
@@ -154,6 +154,20 @@ for pkg in tmux fzf; do
     fi
   fi
 done
+
+# fzf ≥ 0.63 is required to RENDER the picker: `tx attach`'s fzf command uses the `footer` --color
+# element (added in fzf 0.63.0). Older fzf — e.g. Ubuntu apt's 0.44 — parses everything else but
+# rejects `footer` with "invalid color specification: footer:…", so the picker dies on launch.
+# Warn only (don't block): tx's session store + everything but the picker works on any fzf.
+FZF_MIN="0.63.0"
+fzf_version="$(fzf --version 2>/dev/null | awk '{print $1}')"
+if [[ -z "$fzf_version" ]]; then
+  warn "fzf version" "could not parse \`fzf --version\` — the picker needs ≥ $FZF_MIN"
+elif [[ "$(printf '%s\n%s\n' "$FZF_MIN" "$fzf_version" | sort -V | head -n1)" != "$FZF_MIN" ]]; then
+  warn "fzf $fzf_version" "too old for the picker (need ≥ $FZF_MIN) — run: brew install fzf"
+else
+  ok "fzf $fzf_version" "≥ $FZF_MIN (picker ok)"
+fi
 
 # Hard requirement: the tx package + the hook shims run under python3.14.
 if command -v python3.14 >/dev/null 2>&1; then
