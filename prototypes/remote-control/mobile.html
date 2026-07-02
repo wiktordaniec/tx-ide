@@ -81,6 +81,29 @@
   #listEmpty { padding: 48px 16px; color: var(--muted); text-align: center; }
   #listEmpty[hidden] { display: none; }
 
+  /* ---- multi-select → ask the tx-assistant ---------------------------------------------------- */
+  /* iOS-selection-style circle on each row's right edge; the wrap pads the tap target. Selecting
+     any row docks #askbar under the list — a composer whose recipient is ALWAYS the tx-assistant. */
+  .conv .pickwrap { flex: 0 0 auto; padding: 9px 0 9px 9px; margin: -9px 0; align-self: center; }
+  .conv .pick { display: flex; align-items: center; justify-content: center;
+                width: 24px; height: 24px; border-radius: 50%;
+                border: 1.5px solid #3a3a3f; color: transparent; font-size: 13px; font-weight: 700; }
+  .conv .pick.on { background: var(--sent); border-color: var(--sent); color: #fff; }
+  #askbar { flex: 0 0 auto; padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+            background: var(--panel); border-top: .5px solid var(--row-sep); }
+  #askbar[hidden], body.thread-open #askbar { display: none; }
+  #askbar .to { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+                padding: 0 4px 7px; font-size: 13px; color: var(--muted); }
+  #askbar .to b { color: var(--magenta); font-weight: 650; }
+  #askbar .to .about { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #askHint { display: none; margin-top: 5px; color: var(--muted); font-size: 11.5px; text-align: center; }
+  #askHint.show { display: block; }
+  #askHint.err { color: var(--red); }
+  /* the about-envelope prefix of a sent bubble, rendered as a small chip instead of raw XML */
+  .turn .aboutchip { display: inline-block; font-size: 11px; line-height: 16px; padding: 0 7px;
+                     margin-right: 4px; vertical-align: 1px; border-radius: 999px;
+                     border: 1px solid rgba(255,255,255,.4); }
+
   /* ---- thread -------------------------------------------------------------------------------- */
   #thread { flex: 1 1 auto; min-height: 0; display: none; flex-direction: column; }
   body.thread-open #list, body.thread-open #listHeader { display: none; }
@@ -170,20 +193,21 @@
   .turn .mdquote { color: var(--dim); }
 
   /* ---- composer (pill input + circular send, minimal) ----------------------------------------- */
+  /* The pill + send-circle styles are shared with #askbar's composer, so the two feel identical. */
   #composer { flex: 0 0 auto; padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); }
-  #composer .frow { display: flex; align-items: flex-end; gap: 8px; }
+  #composer .frow, #askbar .frow { display: flex; align-items: flex-end; gap: 8px; }
   /* Messenger-style growing composer: starts as a one-line pill, expands with the text up to
      ~5 lines, then scrolls internally. A textarea, so wrapping is native; height is set by the
      autogrow JS from scrollHeight. */
-  #input { flex: 1 1 auto; background: var(--bubble); border: none; color: var(--fg);
+  #input, #askInput { flex: 1 1 auto; background: var(--bubble); border: none; color: var(--fg);
            border-radius: 20px; padding: 9px 16px; font: inherit; font-size: 16px; min-width: 0;
            resize: none; max-height: 132px; overflow-y: hidden; line-height: 1.35; }
-  #input::placeholder { color: var(--muted); }
-  #input:focus { outline: none; }
-  #send { flex: 0 0 34px; width: 34px; height: 34px; border-radius: 50%; background: var(--sent);
+  #input::placeholder, #askInput::placeholder { color: var(--muted); }
+  #input:focus, #askInput:focus { outline: none; }
+  #send, #askSend { flex: 0 0 34px; width: 34px; height: 34px; border-radius: 50%; background: var(--sent);
           color: #fff; font-size: 19px; font-weight: 700; line-height: 1;
           display: flex; align-items: center; justify-content: center; }
-  #send:disabled { background: var(--bubble); color: var(--muted); }
+  #send:disabled, #askSend:disabled { background: var(--bubble); color: var(--muted); }
   #plus { flex: 0 0 34px; width: 34px; height: 34px; border-radius: 50%; background: var(--bubble);
           color: var(--blue); font-size: 22px; font-weight: 400; line-height: 1;
           display: flex; align-items: center; justify-content: center; }
@@ -248,6 +272,15 @@
   <div id="list"></div>
   <div id="listEmpty" hidden>loading…</div>
 
+  <div id="askbar" hidden>
+    <div class="to">To: <b>tx-assistant</b><span class="about" id="askAbout"></span></div>
+    <div class="frow">
+      <textarea id="askInput" rows="1" autocomplete="off" enterkeyhint="send" placeholder="Ask about the selected sessions"></textarea>
+      <button id="askSend" disabled>↑</button>
+    </div>
+    <span id="askHint"></span>
+  </div>
+
   <div id="thread">
     <div id="threadHead"></div>
     <div id="banner" hidden></div>
@@ -304,6 +337,7 @@ $("gateInput").addEventListener("keydown", (event) => {
 let feed = null;      // the /api/inbox payload
 let sel = null;       // open thread's session id
 let shownFor = null;  // which thread the turns pane last rendered (drives autoscroll on switch)
+const picked = new Set();   // sessions selected via the row circles — the ask-bar's "about" set
 // Earlier dialogue, paged in as the user scrolls up. Belongs to ONE thread (id); prepended before
 // the live feed's turns on render. `boundary` is the oldest ts the FEED covered when paging began
 // — pages fetch strictly before it, and the live window only slides forward, so no overlap.
@@ -344,6 +378,14 @@ function renderImages(html) {
   });
 }
 
+// A sent ask-assistant message starts with `<tx-about session='…' chat-id='…'/>` envelopes; in the
+// bubble they render as small session-name chips instead of raw XML. Runs on already-escaped HTML
+// (escapeHtml leaves single quotes alone, so the attribute quoting survives).
+function renderAboutTags(html) {
+  return html.replace(/&lt;tx-about session='([^']*)'(?: chat-id='[^']*')?\/&gt;\s*/g,
+    (_, name) => `<span class="aboutchip">${name}</span>`);
+}
+
 // ---- list ----------------------------------------------------------------------------------------
 function convHtml(item) {
   const chips = (item.tags || []).map((tag) => {
@@ -359,7 +401,9 @@ function convHtml(item) {
     `<span class="ctime">${escapeHtml(item.rel || "")}</span></span>` +
     `<div class="cprev">${item.reason === "working" ? typingHtml("mini") : escapeHtml(stripMarkdown(item.preview || "—"))}</div>` +
     (chips ? `<div class="chips">${chips}</div>` : "") +
-    `</span></button>`;
+    `</span>` +
+    `<span class="pickwrap"><span class="pick${picked.has(item.id) ? " on" : ""}">✓</span></span>` +
+    `</button>`;
 }
 
 // Fuzzy search over the conversation list: name prefix beats name substring beats an in-order
@@ -388,6 +432,9 @@ function render() {
     sel = null;                                     // the open session exited — fall back to the list
     document.body.classList.remove("thread-open");
   }
+  for (const id of [...picked]) {                   // a selected session exited — drop it
+    if (!feed.items.some((item) => item.id === id)) picked.delete(id);
+  }
   const q = $("search").value.trim().toLowerCase();
   let rows = feed.items;
   if (q) {
@@ -402,7 +449,56 @@ function render() {
   empty.textContent = feed.items.length === 0 ? "no live llm sessions" : "no matches";
   const needs = feed.items.filter((item) => item.reason === "blocked" || item.reason === "ready").length;
   document.title = needs ? `(${needs}) tx remote` : "tx remote";   // browser-tab badge only
+  renderAskbar();
   renderThread();
+}
+
+// ---- ask the tx-assistant about the selected sessions --------------------------------------------
+// The row circles pick the "about" set; the bar names its FIXED recipient (the tx-assistant) and
+// the picked sessions, so what you send and to whom is never ambiguous. The server prefixes the
+// message with one `<tx-about session chat-id/>` envelope per picked session.
+function renderAskbar() {
+  const names = feed ? feed.items.filter((item) => picked.has(item.id)).map((item) => item.name) : [];
+  $("askbar").hidden = names.length === 0;
+  $("askAbout").textContent = names.length ? `about ${names.join(", ")}` : "";
+  updateAskSend();
+}
+
+function updateAskSend() { $("askSend").disabled = !$("askInput").value.trim() || picked.size === 0; }
+
+async function sendAsk() {
+  const input = $("askInput"), hint = $("askHint");
+  const text = input.value.trim();
+  if (!text || picked.size === 0) return;
+  input.disabled = true;
+  try {
+    const response = await fetch(withToken("/api/ask-assistant"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [...picked], text }),
+    });
+    if (response.status === 401) { showGate(); return; }
+    const result = await response.json();
+    if (!result.ok) { hint.className = "show err"; hint.textContent = `send failed: ${result.error || "unknown"}`; return; }
+    input.value = "";
+    picked.clear();
+    hint.className = ""; hint.textContent = "";
+    autogrow(input);
+    // Follow the question to its answer: refetch (the assistant may have just been spawned and
+    // not yet pushed) and open its conversation so the reply lands in front of you.
+    await fetchOnce();
+    if (feed && feed.items.some((item) => item.id === result.assistant_id)) {
+      clearAttach();
+      resetOlder();
+      sel = result.assistant_id;
+      document.body.classList.add("thread-open");
+      renderThread();
+    }
+  } catch {
+    hint.className = "show err"; hint.textContent = "send failed: server unreachable";
+  } finally {
+    input.disabled = false;
+    updateAskSend();
+  }
 }
 
 // ---- thread --------------------------------------------------------------------------------------
@@ -448,7 +544,7 @@ function renderThread() {
     const samePrev = prev && prev.who === turn.who && !sep;
     const sameNext = next && next.who === turn.who && !(next.ts && turn.ts && next.ts - turn.ts > 600);
     const pos = samePrev && sameNext ? "mid" : samePrev ? "bot" : sameNext ? "top" : "solo";
-    const text = renderImages(turn.who === "agent" ? renderMarkdown(turn.text) : escapeHtml(turn.text));
+    const text = renderImages(turn.who === "agent" ? renderMarkdown(turn.text) : renderAboutTags(escapeHtml(turn.text)));
     return `${sep}<div class="turn ${turn.who} g-${pos}">${text}</div>`;
   }).join("") || `<div class="turn tools">no dialogue yet</div>`;
   // A WORKING session shows the classic typing bubble instead of any text hint.
@@ -664,6 +760,12 @@ async function sendReply() {
 $("list").addEventListener("click", (event) => {
   const conv = event.target.closest(".conv");
   if (!conv) return;
+  if (event.target.closest(".pickwrap")) {          // the circle toggles selection, never opens
+    if (picked.has(conv.dataset.id)) picked.delete(conv.dataset.id);
+    else picked.add(conv.dataset.id);
+    render();
+    return;
+  }
   if (conv.dataset.id !== sel) { clearAttach(); resetOlder(); }   // staged image + paged history belong to their thread
   sel = conv.dataset.id;
   document.body.classList.add("thread-open");
@@ -715,8 +817,8 @@ $("turns").addEventListener("click", async (event) => {
 $("send").addEventListener("click", sendReply);
 // The composer pill grows with its content, Messenger-style: height tracks scrollHeight up to
 // the CSS max, after which it scrolls internally. Re-run on every edit and after a send clears it.
-function autogrow() {
-  const input = $("input");
+// Shared by the thread composer (the default) and the ask-bar's.
+function autogrow(input = $("input")) {
   input.style.height = "auto";
   const capped = Math.min(input.scrollHeight, 132);
   input.style.height = capped + "px";
@@ -727,6 +829,11 @@ $("input").addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendReply(); }
 });
 $("input").addEventListener("input", () => { updateSend(); autogrow(); });
+$("askSend").addEventListener("click", sendAsk);
+$("askInput").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendAsk(); }
+});
+$("askInput").addEventListener("input", () => { updateAskSend(); autogrow($("askInput")); });
 $("plus").addEventListener("click", () => $("file").click());
 $("file").addEventListener("change", () => {
   stageImage($("file").files[0]);
