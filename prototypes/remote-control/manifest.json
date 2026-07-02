@@ -1,0 +1,14 @@
+{
+  "name": "tx remote",
+  "short_name": "tx remote",
+  "description": "Inbox over your live tx-ide agent sessions",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#0d0d10",
+  "icons": [
+    { "src": "/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
