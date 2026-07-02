@@ -907,6 +907,12 @@ let pins = {};                    // { id: {x, y} } — dragged nodes; loaded fr
 const $ = (id) => document.getElementById(id);
 const canvas = $("canvas"), graph = $("graph"), svg = $("edges");
 
+// The dashboard may sit behind a prefix-stripping path mount (e.g. `tailscale serve --set-path
+// /graph`), where absolute "/api/…" URLs would escape the mount and hit whatever owns the root.
+// Deriving the base from the page's own path keeps every call inside the mount — and collapses
+// to "" when the page is served at the root, so direct-port access is unchanged.
+const API_BASE = location.pathname.replace(/\/(index\.html)?$/, "");
+
 const rand = (lo, hi) => lo + Math.random() * (hi - lo);
 
 // ---- pin persistence (server-side) --------------------------------------------------------------
@@ -917,12 +923,12 @@ const rand = (lo, hi) => lo + Math.random() * (hi - lo);
 // writes the whole pin set back on each drag / unpin / shuffle, fire-and-forget like the focus poke.
 async function loadPins() {
   try {
-    const response = await fetch("/api/layout", { cache: "no-store" });
+    const response = await fetch(API_BASE + "/api/layout", { cache: "no-store" });
     return (await response.json()).pins || {};
   } catch { return {}; }
 }
 function savePins() {
-  fetch("/api/layout", {
+  fetch(API_BASE + "/api/layout", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ pins }),
@@ -941,7 +947,7 @@ function interacting() {
 async function fetchAndRender(userInitiated) {
   if (interacting() && !userInitiated) return;
   try {
-    const response = await fetch("/api/sessions", { cache: "no-store" });
+    const response = await fetch(API_BASE + "/api/sessions", { cache: "no-store" });
     ingestFeed(await response.json(), userInitiated);
   } catch (error) {
     $("summary").textContent = "server unreachable — is server.py running?";
@@ -1362,7 +1368,7 @@ let usageFeed = null;
 
 async function fetchUsage() {
   try {
-    const response = await fetch("/api/usage", { cache: "no-store" });
+    const response = await fetch(API_BASE + "/api/usage", { cache: "no-store" });
     usageFeed = await response.json();
   } catch { usageFeed = null; }
   renderUsage();
@@ -1567,7 +1573,7 @@ function refreshMessageDrawer() {
 // refresh. Live updates otherwise arrive on the `messages` SSE channel (see connectStream).
 async function fetchMessages() {
   try {
-    const response = await fetch("/api/messages", { cache: "no-store" });
+    const response = await fetch(API_BASE + "/api/messages", { cache: "no-store" });
     messagesFeed = await response.json();
     if (activeTab === "messages") renderMessages();
   } catch {
@@ -1724,7 +1730,7 @@ async function sendInboxReply() {
   if (!text || !inboxSel) return;
   input.disabled = true;
   try {
-    const response = await fetch("/api/inbox/reply", {
+    const response = await fetch(API_BASE + "/api/inbox/reply", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: inboxSel, text }),
     });
@@ -1755,7 +1761,7 @@ function updateInboxBadge() {
 // One-shot inbox fetch — first tab open before the SSE snapshot, and the manual refresh.
 async function fetchInbox() {
   try {
-    const response = await fetch("/api/inbox", { cache: "no-store" });
+    const response = await fetch(API_BASE + "/api/inbox", { cache: "no-store" });
     inboxFeed = await response.json();
     updateInboxBadge();
     if (activeTab === "inbox") renderInbox();
@@ -2321,7 +2327,7 @@ async function sendToAssistant() {
   if (!ids.length || !request) { closeComposer(); return; }
   closeComposer();
   try {
-    const response = await fetch("/api/message", {
+    const response = await fetch(API_BASE + "/api/message", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(ids.length > 1 ? { ids, request } : { id: ids[0], request }),
     });
@@ -2349,7 +2355,7 @@ $("cInput").addEventListener("keydown", (event) => {
 
 async function focusSession(id) {
   try {
-    const response = await fetch("/api/focus", {
+    const response = await fetch(API_BASE + "/api/focus", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id }),
@@ -2786,7 +2792,7 @@ function applyFocusClass() {
 let stream = null;
 function connectStream() {
   if (stream) return;
-  stream = new EventSource("/api/stream");
+  stream = new EventSource(API_BASE + "/api/stream");
   stream.onmessage = (event) => {
     let next;
     try { next = JSON.parse(event.data); } catch { return; }
