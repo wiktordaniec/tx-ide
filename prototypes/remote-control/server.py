@@ -53,7 +53,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "lib"))
 
 from tx import history                    # noqa: E402
-from tx.engines import claude             # noqa: E402
 from tx.palette import tag_cube           # noqa: E402
 from tx.render import reltime             # noqa: E402
 from tx.session import ChatRef, Kind, Role, Session, State  # noqa: E402
@@ -109,35 +108,27 @@ def _latest_chat(session: Session) -> ChatRef | None:
 
 
 def _transcript_of(session: Session) -> Path | None:
+    """The transcript of the session's recorded chat — and ONLY that. No guessing: a recorded id
+    that resolves to nothing is chat-id drift (a resume/rollover outside tx chat-ops that capture
+    never recorded), and surfacing that as an explicit error beats attributing the newest
+    transcript in a shared project dir to the wrong session, which is how one session's dialogue
+    showed up under another's thread. See `_drift_error`; repair the record to fix the thread."""
     chat = _latest_chat(session)
-    if chat is not None and chat.id is not None:
-        resolved = history.resolve_transcript(chat.id, chat.cwd, chat.engine)
-        if resolved is not None:
-            return resolved
-    return _drifted_transcript(session)
+    if chat is None or chat.id is None:
+        return None
+    return history.resolve_transcript(chat.id, chat.cwd, chat.engine)
 
 
-def _drifted_transcript(session: Session) -> Path | None:
-    """Chat-id drift fallback. A session that resumes/rolls over OUTSIDE tx chat-ops gets a new
-    Claude chat id that tx's capture never records (it no-ops once a record has its id); the stale
-    id's transcript eventually gets pruned and the recorded chat resolves to nothing — a live
-    session with an unreadable conversation (the tx-assistant case). Recover by taking the newest
-    transcript in the session's OWN project dir that no other record claims. Heuristic: two
-    unclaimed live sessions sharing one cwd could mis-attribute — acceptable until the capture
-    gap is fixed in lib/tx."""
-    try:
-        directory = claude.transcript_path("_", session.cwd).parent
-    except Exception:
+def _drift_error(session: Session, transcript: Path | None) -> str | None:
+    """The user-facing drift diagnosis: set exactly when a recorded chat id resolves to no
+    transcript on disk (a session with no recorded chat at all is just quiet, not broken)."""
+    if transcript is not None:
         return None
-    claimed = {
-        chat.id
-        for other in SessionStore().all() if other.id != session.id
-        for chat in other.chats if chat.id
-    }
-    candidates = [p for p in directory.glob("*.jsonl") if p.stem not in claimed]
-    if not candidates:
+    chat = _latest_chat(session)
+    if chat is None:
         return None
-    return max(candidates, key=lambda p: p.stat().st_mtime)
+    return (f"recorded chat {chat.id[:8]}… has no transcript on disk — the chat id drifted; "
+            f"repair this session's record to restore the thread")
 
 
 def _tail_entries(path: Path, max_bytes: int = INBOX_TAIL_BYTES) -> list[dict]:
@@ -406,6 +397,7 @@ def build_inbox_feed() -> dict:
             "last_ts": last_ts,
             "rel": reltime(last_ts, now) if last_ts else "",
             "context_pct": _context_pct(entries, session.cmd or ""),
+            "error": _drift_error(session, transcript),
         })
     items.sort(key=lambda item: item["last_ts"], reverse=True)
     return {"generated_at": now, "items": items}
