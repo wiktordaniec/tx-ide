@@ -230,16 +230,26 @@
   #composer.locked #input, #composer.locked #send { display: none; }
   #composer.locked #hint { display: block; color: var(--red); font-size: 13px; }
 
-  /* ---- session details sheet (tap the thread's avatar/name) ---------------------------------- */
-  #sheetWrap { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.55); display: none; }
+  /* ---- session details (click the thread's avatar/name) — Signal-style side panel ------------- */
+  /* Slides in over the right edge of the thread pane, full height, the way Signal Desktop shows
+     conversation details: no bottom-sheet chrome (the grab handle is hidden, an explicit ✕ shows),
+     no backdrop dim, and Escape or an outside click closes it. */
+  #sheetWrap { position: fixed; inset: 0; z-index: 30; background: transparent; display: none; }
   body.sheet-open #sheetWrap { display: block; }
-  #sheet { position: absolute; left: 0; right: 0; bottom: 0; max-height: 78%;
+  #sheet { position: absolute; right: 0; top: 0; bottom: 0; width: min(380px, 90vw);
            overflow-y: auto; overscroll-behavior: contain;
-           background: #131316; border-radius: 18px 18px 0 0;
-           padding: 8px 18px 16px;
-           max-width: 760px; margin: 0 auto; }
-  #sheet .grab { width: 38px; height: 5px; border-radius: 3px; background: #3a3a3f; margin: 4px auto 12px; }
-  #sheet .shead { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+           background: #131316; border-left: .5px solid var(--row-sep);
+           box-shadow: -18px 0 40px rgba(0,0,0,.45);
+           padding: 14px 18px 16px;
+           animation: sheetin .16s ease; }
+  @keyframes sheetin { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+  #sheet .grab { display: none; }
+  .sheetclose { position: absolute; top: 12px; right: 14px; width: 28px; height: 28px;
+                border-radius: 50%; background: var(--bubble); color: var(--dim);
+                font-size: 13px; line-height: 1;
+                display: flex; align-items: center; justify-content: center; }
+  .sheetclose:hover { color: var(--fg); }
+  #sheet .shead { display: flex; align-items: center; gap: 10px; margin: 2px 36px 10px 0; }
   #sheet .shead .avatar { flex: 0 0 40px; width: 40px; height: 40px; font-size: 16px; }
   #sheet .shead .sname { font-size: 18px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
   #sheet .row { display: flex; gap: 12px; padding: 9px 0; border-bottom: .5px solid var(--row-sep);

@@ -125,16 +125,20 @@ function sheetRow(key, value, mono) {
   return `<div class="row"><span class="k">${key}</span><span class="v${mono ? " mono" : ""}">${value}</span></div>`;
 }
 
+// The sheet's chrome carries BOTH faces' affordances; each face's CSS shows its own — mobile keeps
+// the grab handle (bottom sheet), desktop keeps the ✕ (Signal-style side panel).
+const sheetChrome = `<div class="grab"></div><button class="sheetclose" title="close">✕</button>`;
+
 async function openSheet(id) {
   document.body.classList.add("sheet-open");
-  $("sheet").innerHTML = `<div class="grab"></div><div id="sheetLoading">loading…</div>`;
+  $("sheet").innerHTML = `${sheetChrome}<div id="sheetLoading">loading…</div>`;
   let d;
   try {
     const response = await fetch(withToken(`/api/session?id=${encodeURIComponent(id)}`), { cache: "no-store" });
     if (response.status === 401) { showGate(); return; }
     d = await response.json();
   } catch { d = null; }
-  if (!d || !d.ok) { $("sheet").innerHTML = `<div class="grab"></div><div id="sheetLoading">failed to load details</div>`; return; }
+  if (!d || !d.ok) { $("sheet").innerHTML = `${sheetChrome}<div id="sheetLoading">failed to load details</div>`; return; }
 
   const pct = d.context_tokens && d.context_window ? Math.min(100, Math.round(d.context_tokens / d.context_window * 100)) : null;
   const barClass = pct === null ? "" : pct > 80 ? "hot" : pct > 55 ? "warn" : "";
@@ -147,7 +151,7 @@ async function openSheet(id) {
     return `<span class="chip" style="--chip:${color}">${escapeHtml(tag)}</span>`;
   }).join("");
 
-  $("sheet").innerHTML = `<div class="grab"></div>` +
+  $("sheet").innerHTML = sheetChrome +
     `<div class="shead s-${d.state}"><span class="avatar">${escapeHtml(initial(d.name))}</span>` +
     `<span class="sname">${escapeHtml(d.name)}</span></div>` +
     sheetRow("state", `${escapeHtml(d.state)}${d.activity_rel ? ` · active ${escapeHtml(d.activity_rel)} ago` : ""}`) +
@@ -165,7 +169,12 @@ async function openSheet(id) {
     sheetRow("launch prompt", d.cmd ? escapeHtml(d.cmd) : null, true);
 }
 $("sheetWrap").addEventListener("click", (event) => {
-  if (!event.target.closest("#sheet")) document.body.classList.remove("sheet-open");
+  if (event.target.closest(".sheetclose") || !event.target.closest("#sheet")) {
+    document.body.classList.remove("sheet-open");
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") document.body.classList.remove("sheet-open");
 });
 
 // Page in earlier dialogue when the reader nears the top. The boundary is fixed on first page
