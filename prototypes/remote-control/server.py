@@ -814,6 +814,9 @@ class RemoteHandler(BaseHTTPRequestHandler):
         if path in ("/desktop", "/desktop.html"):
             self._respond(200, DESKTOP_PAGE.read_bytes(), "text/html; charset=utf-8")
             return
+        if path == "/shared.js":
+            self._respond(200, (HERE / "shared.js").read_bytes(), "text/javascript; charset=utf-8")
+            return
         if path == "/manifest.json":
             self._respond(200, (HERE / "manifest.json").read_bytes(), "application/manifest+json")
             return
