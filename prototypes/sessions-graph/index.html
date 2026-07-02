@@ -482,6 +482,8 @@
   body:not(.tab-graph) .graph-only, body:not(.tab-graph) #canvas { display: none; }
   body:not(.tab-table) #table { display: none; }
   body:not(.tab-messages) #messages { display: none; }
+  body:not(.tab-inbox) #inbox { display: none; }
+  .tab .tabn { color: var(--warn); font-size: 10px; margin-left: 5px; font-weight: 700; }
   /* The whole #filterbar (time · states/tags/kind · usage) collapses under a body class, same pure-CSS
      idiom as the tabs — the header's "filters" chevron toggles it (see the filter-bar collapse JS). */
   body.filterbar-collapsed #filterbar { display: none; }
@@ -582,6 +584,116 @@
   #json.wrap { white-space: pre-wrap; word-break: break-word; color: var(--fg); font: 13px/1.6 inherit; }
   #drawer.msg-agent { --state: var(--accent); }
   #drawer.msg-you { --state: var(--warn); }
+
+  /* ---- inbox view (two-pane chat: conversation list + thread) ------------------------------ */
+  /* Signal-model over live llm sessions: the list is ordered by newest activity ONLY (state is
+     shown per row — the dot + reason chip — but never reorders), the thread is the dialogue
+     reconstructed from the session's transcript, the composer types into its pane. An item IS the
+     session, so answering it anywhere (here, tmux, another agent) resolves it via the next SSE push. */
+  #inbox { flex: 1 1 auto; display: flex; min-height: 0; background: var(--bg); }
+  #convlist { flex: 0 0 340px; overflow-y: auto; border-right: 1px solid var(--border); background: var(--panel); }
+  .conv { padding: 10px 14px 9px; border-bottom: 1px solid var(--surface-hi); cursor: pointer; }
+  .conv:hover { background: var(--surface); }
+  .conv.sel { background: var(--surface-hi); box-shadow: inset 3px 0 0 var(--accent); }
+  .conv.focused { box-shadow: inset 3px 0 0 var(--cyan); }          /* session in the terminal's active pane */
+  .conv.sel.focused { box-shadow: inset 3px 0 0 var(--accent), inset -3px 0 0 var(--cyan); }
+  .conv.dimmed { opacity: .6; }                                      /* working / idle — no action needed */
+  .crow1 { display: flex; align-items: center; gap: 8px; }
+  .crow1 .dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--state); }
+  .crow1 .cname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                  color: var(--fg); font-weight: 600; }
+  .crow1 .ctime { flex: 0 0 auto; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .crow2 { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+  .creason { flex: 0 0 auto; font-size: 10px; padding: 1px 7px; border-radius: 999px; border: 1px solid; }
+  .creason.blocked { color: var(--red); border-color: var(--red); }
+  .creason.ready   { color: var(--warn); border-color: var(--warn); }
+  .creason.working { color: var(--green); border-color: transparent; }
+  .creason.idle    { color: var(--muted); border-color: transparent; }
+  .crow2 .cprev { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                  color: var(--dim); font-size: 12px; }
+  .conv .chips { margin-top: 4px; display: flex; gap: 4px; flex-wrap: wrap; }
+  #convEmpty { padding: 28px 14px; color: var(--muted); text-align: center; }
+  #convEmpty[hidden] { display: none; }
+
+  #thread { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+  #threadHead {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  #threadHead .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--state); }
+  #threadHead .tname2 { color: var(--fg); font-weight: 700; }
+  #threadHead .tcwd { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; max-width: 34ch; }
+  #threadBanner {
+    flex: 0 0 auto; padding: 7px 16px; font-size: 12px; border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--surface) 60%, transparent); color: var(--dim);
+  }
+  #threadBanner.blocked { color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); }
+  #threadBanner b { font-weight: 600; }
+  #threadBanner[hidden] { display: none; }
+  #threadBody { flex: 1 1 auto; overflow-y: auto; padding: 14px 18px; display: flex; flex-direction: column; }
+  .turn { max-width: 74%; margin: 5px 0; padding: 8px 12px; border-radius: 10px;
+          white-space: pre-wrap; word-break: break-word; font-size: 12.5px; line-height: 1.5; }
+  .turn.agent { align-self: flex-start; background: var(--surface); color: var(--fg); border-bottom-left-radius: 3px; }
+  .turn.you { align-self: flex-end; background: color-mix(in srgb, var(--warn) 16%, var(--surface));
+              color: var(--fg); border-bottom-right-radius: 3px; }
+  .turn.tools { align-self: center; background: none; color: var(--muted); font-size: 11px; padding: 2px 0; }
+  .turn .tts { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; text-align: right; }
+  /* Markdown inside agent bubbles — styled to read like Claude Code's terminal rendering of the
+     same text: bold stays bold, inline code gets the accent-on-dark treatment, fenced blocks a
+     panel, headers bold+tinted. The bubble keeps pre-wrap, so lists/linebreaks lay out exactly as
+     the terminal wraps them. */
+  .turn b { font-weight: 700; }
+  .turn i { font-style: italic; color: var(--dim); }
+  .turn a { color: var(--accent); }
+  .turn .mdcode { background: var(--bg-deep); border: 1px solid var(--surface-hi); border-radius: 4px;
+                  padding: 0 4px; color: var(--cyan); font-size: 12px; }
+  .turn .mdblock { display: block; background: var(--bg-deep); border: 1px solid var(--surface-hi);
+                   border-radius: 6px; padding: 8px 10px; margin: 6px 0; overflow-x: auto;
+                   white-space: pre; font-size: 12px; color: var(--dim); }
+  .turn .mdhead { font-weight: 700; color: var(--magenta); }
+  .turn .mdquote { color: var(--muted); }
+  #threadEmpty { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+  #threadEmpty[hidden] { display: none; }
+  #threadFoot { flex: 0 0 auto; padding: 10px 16px; border-top: 1px solid var(--border); background: var(--panel); }
+  #threadFoot .frow { display: flex; gap: 8px; }
+  #ibInput { flex: 1 1 auto; background: var(--bg-deep); border: 1px solid var(--border); color: var(--fg);
+             border-radius: 8px; padding: 8px 11px; font: inherit; }
+  #ibInput:focus { outline: none; border-color: var(--accent); }
+  #ibHint { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
+  #ibHint.queued { color: var(--green); }
+  #threadFoot.locked #ibInput, #threadFoot.locked #ibSend { display: none; }
+  #ibJump { border-color: var(--red); color: var(--red); }
+  #ibJump[hidden] { display: none; }
+  #threadFoot[hidden] { display: none; }
+  #threadBack { display: none; }                    /* mobile-only — see the media query below */
+
+  /* ---- mobile (phone) layout ---------------------------------------------------------------- */
+  /* The inbox is the phone use case, so it gets the Signal mobile pattern: the conversation list
+     fills the screen; tapping one slides to the thread (body.thread-open), with a ← back button.
+     The graph-centric chrome (canvas buttons, filter bar, summary) is hidden — the header keeps
+     just the tabs and the search box. 100dvh tracks the browser chrome; the 16px composer font
+     stops iOS zooming the page on focus. */
+  @media (max-width: 700px) {
+    html, body { height: 100dvh; }
+    header { gap: 8px; padding: 8px 10px; }
+    .brand, .meta, #filterbarToggle, #fit, #shuffle, #refresh, .toggle { display: none; }
+    #filterbar { display: none; }
+    .control input[type="search"] { width: 110px; }
+    .tab { padding: 6px 10px; }
+    #convlist { flex: 1 1 100%; border-right: none; }
+    #thread { display: none; }
+    body.thread-open #convlist { display: none; }
+    body.thread-open #thread { display: flex; flex: 1 1 100%; }
+    .conv { padding: 14px; }                        /* comfortable touch targets */
+    .crow1 .cname { font-size: 14px; }
+    .crow2 .cprev { font-size: 13px; }
+    .turn { max-width: 88%; font-size: 14px; }
+    #threadHead { padding: 10px 12px; }
+    #threadHead .tcwd { display: none; }            /* too long for a phone header */
+    #threadBack { display: inline-block; padding: 6px 12px; }
+    #ibInput { font-size: 16px; }
+    #ibSend, #ibJump { padding: 8px 14px; }
+  }
 </style>
 </head>
 <body class="tab-graph">
@@ -591,6 +703,7 @@
       <button class="tab active" data-tab="graph">graph</button>
       <button class="tab" data-tab="table">table</button>
       <button class="tab" data-tab="messages">messages</button>
+      <button class="tab" data-tab="inbox" id="inboxTab">inbox</button>
     </span>
     <span class="meta" id="summary">loading…</span>
     <span class="spacer"></span>
@@ -652,6 +765,28 @@
       <tbody id="msgBody"></tbody>
     </table>
     <div id="msgEmpty" hidden></div>
+  </div>
+
+  <!-- Inbox: conversation list (Signal-ordered — newest activity first, state shown per row) +
+       thread with composer. #threadFoot is STATIC (never rebuilt) so an SSE repaint mid-typing
+       can't clobber the input's value or focus; renders only show/hide + relabel it. -->
+  <div id="inbox">
+    <div id="convlist"></div>
+    <div id="convEmpty" hidden></div>
+    <div id="thread">
+      <div id="threadHead" hidden></div>
+      <div id="threadBanner" hidden></div>
+      <div id="threadBody"></div>
+      <div id="threadEmpty">select a conversation</div>
+      <div id="threadFoot" hidden>
+        <div class="frow">
+          <input id="ibInput" type="text" autocomplete="off" placeholder="reply — typed into the session's pane…" />
+          <button id="ibSend">send</button>
+          <button id="ibJump" hidden title="this needs the terminal — focus the session's pane">→ jump to pane</button>
+        </div>
+        <span id="ibHint"></span>
+      </div>
+    </div>
   </div>
 
   <aside id="drawer">
@@ -756,6 +891,8 @@ let messageKind = "all";          // messages: kind filter — "all" | "agent" |
 let messageScope = null;          // messages: a session name clicked to narrow to its conversation (null ⇒ all)
 let selectedView = (() => { try { return localStorage.getItem("tx-graph-view-v1") || null; } catch { return null; } })();   // graph: which View host the location readout is scoped to (null ⇒ all views, host shown); persists per browser
 let selectedMessage = null;       // messages: uuid of the message whose full body is open in the drawer
+let inboxFeed = null;             // inbox: the /api/inbox payload ({ items:[…] }) — SSE `inbox` channel or one-shot fetch
+let inboxSel = null;              // inbox: session id of the open thread (persists across SSE repaints)
 
 // Physics state lives apart from the feed: id → sim node, persisted across refreshes so a reload of
 // the records never yanks a settled graph around. `links` is rebuilt from the visible forest.
@@ -1289,6 +1426,7 @@ function renderUsage() {
 function paintActive() {
   if (activeTab === "table") renderTable();
   else if (activeTab === "messages") renderMessages();
+  else if (activeTab === "inbox") renderInbox();
   else render();
 }
 
@@ -1298,12 +1436,14 @@ function setTab(tab) {
   document.body.classList.toggle("tab-graph", tab === "graph");
   document.body.classList.toggle("tab-table", tab === "table");
   document.body.classList.toggle("tab-messages", tab === "messages");
+  document.body.classList.toggle("tab-inbox", tab === "inbox");
   for (const button of document.querySelectorAll(".tab")) button.classList.toggle("active", button.dataset.tab === tab);
   // The drawer is shared across views — drop whichever selection doesn't belong to the one we enter,
   // and close it so it never shows a stale session/message after a switch.
   if (tab === "messages") selectedId = null; else selectedMessage = null;
   $("drawer").classList.remove("open");
   if (tab === "messages" && !messagesFeed) fetchMessages();   // first open before the SSE snapshot lands
+  if (tab === "inbox" && !inboxFeed) fetchInbox();
   paintActive();
 }
 
@@ -1432,6 +1572,195 @@ async function fetchMessages() {
     if (activeTab === "messages") renderMessages();
   } catch {
     if (activeTab === "messages") { $("msgEmpty").hidden = false; $("msgEmpty").textContent = "server unreachable — is server.py running?"; }
+  }
+}
+
+// ---- inbox view ---------------------------------------------------------------------------------
+// A two-pane chat over the /api/inbox feed (SSE `inbox` channel): live llm sessions as
+// conversations, Signal-ordered (the server sorts newest-activity-first; state is shown per row but
+// never reorders). The thread is the dialogue reconstructed from the session's transcript; the
+// composer POSTs /api/inbox/reply, which types into the session's pane. An item IS the session —
+// state changes arrive on the next push and re-sort/re-label everything, so nothing here is stored.
+const REASON_LABEL = { blocked: "⏸ blocked", ready: "✓ ready", working: "… working", idle: "idle" };
+
+// Render an agent turn's markdown the way the terminal does: inline transforms over escaped text
+// (bold / italic / inline code / links / headers / blockquote markers) plus fenced code blocks.
+// The bubble's white-space: pre-wrap keeps the original line layout, so lists and paragraph
+// breaks land exactly where the terminal wraps them — no block-level markdown machinery needed.
+function renderMarkdown(text) {
+  let s = escapeHtml(text);
+  s = s.replace(/```[^\n`]*\n([\s\S]*?)```\n?/g, (_, body) => `<span class="mdblock">${body.replace(/\n$/, "")}</span>`);
+  s = s.replace(/^(#{1,4})\s+(.+)$/gm, (_, _hashes, title) => `<span class="mdhead">${title}</span>`);
+  s = s.replace(/^&gt;\s?(.*)$/gm, '<span class="mdquote">▎$1</span>');
+  s = s.replace(/`([^`\n]+)`/g, '<code class="mdcode">$1</code>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  s = s.replace(/(^|[^*\w])\*([^\s*][^*\n]*?[^\s*]|[^\s*])\*(?!\*)/g, "$1<i>$2</i>");
+  s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  return s;
+}
+
+// The conversation-row preview shows markdown SOURCE otherwise — strip the markers so it reads
+// like the rendered first line (the thread shows the real rendering).
+function stripMarkdown(text) {
+  return String(text)
+    .replace(/```[^\n`]*/g, "").replace(/[`*]+/g, "").replace(/^#{1,4}\s+/g, "")
+    .replace(/\[([^\]]+)\]\((?:https?:[^)\s]+)\)/g, "$1");
+}
+
+function inboxMatches(item, query) {
+  if (!query) return true;
+  return `${item.name} ${item.tags.join(" ")} ${item.preview}`.toLowerCase().includes(query);
+}
+
+function convHtml(item) {
+  const chips = (item.tags || []).map((tag) => {
+    const color = (item.tag_colors && item.tag_colors[tag]) || "var(--dim)";
+    return `<span class="chip" style="--chip:${color}">${escapeHtml(tag)}</span>`;
+  }).join("");
+  const dimmed = item.reason === "working" || item.reason === "idle" ? " dimmed" : "";
+  const sel = item.id === inboxSel ? " sel" : "";
+  const focused = item.id === focusedId ? " focused" : "";
+  return `<div class="conv s-${item.state}${dimmed}${sel}${focused}" data-id="${escapeHtml(item.id)}"` +
+         ` title="click to open · double-click to focus its pane">` +
+         `<div class="crow1"><span class="dot"></span><span class="cname">${escapeHtml(item.name)}</span>` +
+         `<span class="ctime">${escapeHtml(item.rel || "")}</span></div>` +
+         `<div class="crow2"><span class="creason ${item.reason}">${REASON_LABEL[item.reason] || item.reason}</span>` +
+         `<span class="cprev">${escapeHtml(stripMarkdown(item.preview || "—"))}</span></div>` +
+         (chips ? `<div class="chips">${chips}</div>` : "") +
+         `</div>`;
+}
+
+function renderInbox() {
+  renderFilterBar();
+  const empty = $("convEmpty");
+  if (!inboxFeed) {
+    empty.hidden = false; empty.textContent = "loading inbox…";
+    $("summary").textContent = "loading…";
+    return;
+  }
+  if (inboxSel && !inboxFeed.items.some((item) => item.id === inboxSel)) inboxSel = null;
+  const query = $("filter").value.trim().toLowerCase();
+  const items = inboxFeed.items.filter((item) => inboxMatches(item, query));
+  $("convlist").innerHTML = items.map(convHtml).join("");
+  empty.hidden = items.length > 0;
+  empty.textContent = inboxFeed.items.length === 0 ? "no live llm sessions" : "nothing matches the filter";
+  const blocked = inboxFeed.items.filter((item) => item.reason === "blocked").length;
+  const ready = inboxFeed.items.filter((item) => item.reason === "ready").length;
+  $("summary").innerHTML = `<b>${inboxFeed.items.length}</b> conversations · <b>${blocked}</b> blocked · <b>${ready}</b> ready`;
+  renderThread();
+  pendingRender = false;
+}
+
+// The thread pane. #threadFoot (the composer) is a static element — only shown/hidden/relabeled —
+// so a live SSE repaint never clobbers what you are typing. The body autoscrolls on a thread
+// switch and when you were already reading the bottom; a scrolled-up reader is left in place.
+let threadShownFor = null;
+function renderThread() {
+  const item = inboxFeed && inboxFeed.items.find((candidate) => candidate.id === inboxSel);
+  const head = $("threadHead"), banner = $("threadBanner"), body = $("threadBody");
+  const foot = $("threadFoot"), noThread = $("threadEmpty");
+  if (!item) {
+    head.hidden = true; banner.hidden = true; foot.hidden = true;
+    body.innerHTML = ""; noThread.hidden = false;
+    threadShownFor = null;
+    document.body.classList.remove("thread-open");   // phone: a vanished thread falls back to the list
+    return;
+  }
+  noThread.hidden = true;
+  document.body.classList.add("thread-open");        // phone: an open thread covers the list
+
+  head.hidden = false;
+  head.className = `s-${item.state}`;
+  const chips = (item.tags || []).map((tag) => {
+    const color = (item.tag_colors && item.tag_colors[tag]) || "var(--dim)";
+    return `<span class="chip" style="--chip:${color}">${escapeHtml(tag)}</span>`;
+  }).join("");
+  head.innerHTML = `<button id="threadBack" title="back to the conversation list">←</button>` +
+    `<span class="dot"></span><span class="tname2">${escapeHtml(item.name)}</span>` +
+    `<span class="creason ${item.reason}">${REASON_LABEL[item.reason] || item.reason}</span>${chips}` +
+    `<span class="tcwd" title="${escapeHtml(item.cwd)}">${escapeHtml(item.cwd)}</span>` +
+    `<span class="spacer"></span><button id="threadFocus" title="focus this session's tmux pane">→ pane</button>`;
+
+  if (item.reason === "blocked" && item.blocked) {
+    banner.hidden = false; banner.className = "blocked";
+    banner.innerHTML = `⏸ blocked on <b>${escapeHtml(item.blocked.tool)}</b> ${escapeHtml(item.blocked.input || "")} — answer it in the terminal`;
+  } else if (item.reason === "ready") {
+    banner.hidden = false; banner.className = "";
+    banner.innerHTML = `✓ turn done ${escapeHtml(item.rel || "")} — the session is waiting on you`;
+  } else {
+    banner.hidden = true;
+  }
+
+  const wasAtBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 48;
+  body.innerHTML = item.turns.map((turn) => {
+    if (turn.who === "tools") return `<div class="turn tools">· ${turn.count} tool call${turn.count === 1 ? "" : "s"} ·</div>`;
+    const when = turn.ts ? new Date(turn.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+    // Agent turns are markdown — render them as the terminal does; your typed lines stay plain.
+    const text = turn.who === "agent" ? renderMarkdown(turn.text) : escapeHtml(turn.text);
+    return `<div class="turn ${turn.who}">${text}<span class="tts">${when}</span></div>`;
+  }).join("") || `<div class="turn tools">no dialogue reconstructed yet</div>`;
+  if (threadShownFor !== item.id || wasAtBottom) body.scrollTop = body.scrollHeight;
+  threadShownFor = item.id;
+
+  foot.hidden = false;
+  const hint = $("ibHint");
+  foot.classList.toggle("locked", item.reason === "blocked");
+  $("ibJump").hidden = item.reason !== "blocked";
+  if (item.reason === "blocked") {
+    hint.className = "";
+    hint.textContent = "a permission/question dialog is up — text can't answer it; jump to the pane";
+  } else if (item.reason === "working") {
+    hint.className = "queued";
+    hint.textContent = "session is working — your reply will queue as a steering message";
+  } else {
+    hint.className = "";
+    hint.textContent = "Enter to send · delivered as typed input into the session's pane (collapsed to one line)";
+  }
+}
+
+async function sendInboxReply() {
+  const input = $("ibInput");
+  const text = input.value.trim();
+  if (!text || !inboxSel) return;
+  input.disabled = true;
+  try {
+    const response = await fetch("/api/inbox/reply", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: inboxSel, text }),
+    });
+    const result = await response.json();
+    if (!result.ok) { $("ibHint").textContent = `send failed: ${result.error || "unknown"}`; return; }
+    input.value = "";
+    // Optimistic bubble — the real turn arrives on the next `inbox` SSE push and replaces the feed.
+    const item = inboxFeed && inboxFeed.items.find((candidate) => candidate.id === inboxSel);
+    if (item) { item.turns.push({ who: "you", text, ts: Date.now() / 1000 }); renderThread(); }
+  } catch {
+    $("ibHint").textContent = "send failed: server unreachable";
+  } finally {
+    input.disabled = false;
+    input.focus();
+  }
+}
+
+// The needs-you count (blocked + ready) rides the tab label and the document title, so a
+// backgrounded browser tab still shows standing at a glance. Updated on every inbox push,
+// whichever view is active.
+function updateInboxBadge() {
+  const needs = inboxFeed
+    ? inboxFeed.items.filter((item) => item.reason === "blocked" || item.reason === "ready").length : 0;
+  $("inboxTab").innerHTML = needs ? `inbox<span class="tabn">${needs}</span>` : "inbox";
+  document.title = needs ? `(${needs}) tx-ide · session graph` : "tx-ide · session graph";
+}
+
+// One-shot inbox fetch — first tab open before the SSE snapshot, and the manual refresh.
+async function fetchInbox() {
+  try {
+    const response = await fetch("/api/inbox", { cache: "no-store" });
+    inboxFeed = await response.json();
+    updateInboxBadge();
+    if (activeTab === "inbox") renderInbox();
+  } catch {
+    if (activeTab === "inbox") { $("convEmpty").hidden = false; $("convEmpty").textContent = "server unreachable — is server.py running?"; }
   }
 }
 
@@ -1600,6 +1929,10 @@ function centerView() {
 function renderFilterBar() {
   const bar = $("filterchips");   // the dynamic half — the time control is a stable sibling we never clobber
   if (activeTab === "messages") { bar.innerHTML = kindSectionHtml(); return; }
+  if (activeTab === "inbox") {
+    bar.innerHTML = `<span class="hint">newest first — state never reorders · ⏸ blocked needs a decision · ✓ ready reported back · dimmed = no action needed</span>`;
+    return;
+  }
   const pinHint = activeTab === "graph"
     ? `<span class="spacer"></span><span class="hint">drag a node to pin it · click for actions</span>` : "";
   // The view selector + attachment key both decode the per-node location readout, which only the graph
@@ -2132,7 +2465,7 @@ $("copy").addEventListener("click", async () => {
 });
 
 // ---- toolbar ------------------------------------------------------------------------------------
-$("refresh").addEventListener("click", () => { fetchAndRender(true); fetchMessages(); fetchUsage(); });
+$("refresh").addEventListener("click", () => { fetchAndRender(true); fetchMessages(); fetchUsage(); fetchInbox(); });
 $("filter").addEventListener("input", paintActive);
 
 // ---- filter-bar collapse ------------------------------------------------------------------------
@@ -2238,6 +2571,30 @@ $("msgBody").addEventListener("click", (event) => {
 $("msgBody").addEventListener("dblclick", (event) => {
   const row = event.target.closest("tr");
   if (row && row.dataset.recipient) focusSession(row.dataset.recipient);
+});
+// Inbox — open a conversation, double-click to focus its pane, send a reply (button / Enter),
+// jump from the head or the blocked composer. Bound once via delegation on the stable containers.
+$("convlist").addEventListener("click", (event) => {
+  const conv = event.target.closest(".conv");
+  if (conv && conv.dataset.id !== inboxSel) { inboxSel = conv.dataset.id; renderInbox(); }
+});
+$("convlist").addEventListener("dblclick", (event) => {
+  const conv = event.target.closest(".conv");
+  if (conv) focusSession(conv.dataset.id);
+});
+$("threadHead").addEventListener("click", (event) => {
+  if (event.target.closest("#threadFocus") && inboxSel) focusSession(inboxSel);
+  if (event.target.closest("#threadBack")) {          // phone: ← returns to the conversation list
+    inboxSel = null;
+    document.body.classList.remove("thread-open");
+    renderInbox();
+  }
+});
+$("ibSend").addEventListener("click", sendInboxReply);
+$("ibJump").addEventListener("click", () => { if (inboxSel) focusSession(inboxSel); });
+$("ibInput").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); sendInboxReply(); }
+  event.stopPropagation();               // typing must never trip the global table/graph key handlers
 });
 
 // Wheel = the infinite-canvas camera (Figma/Excalidraw input model). The browser reports a pinch or
@@ -2420,6 +2777,10 @@ function applyFocusClass() {
   for (const row of document.querySelectorAll("#msgBody tr")) {
     row.classList.toggle("focused", row.dataset.recipient === focusedId);
   }
+  // And the inbox conversation rows — same live, direct-DOM toggle (renderInbox re-applies it).
+  for (const conv of document.querySelectorAll("#convlist .conv")) {
+    conv.classList.toggle("focused", conv.dataset.id === focusedId);
+  }
 }
 
 let stream = null;
@@ -2459,6 +2820,16 @@ function connectStream() {
     usageFeed = data;
     renderUsage();
   });
+  // Named `inbox` events ride the same connection: a snapshot on connect, then a push whenever a
+  // live llm session changes state or its transcript grows. The needs-you badge updates from every
+  // push regardless of the active view; the panes repaint only when the inbox is up.
+  stream.addEventListener("inbox", (event) => {
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    inboxFeed = data;
+    updateInboxBadge();
+    if (activeTab === "inbox") renderInbox();
+  });
 }
 function disconnectStream() {
   if (!stream) return;
@@ -2496,6 +2867,8 @@ $("timeRange").value = "all"; applyTimeRangeUI();   // force a known initial win
 // server-side persistence. loadPins() is a quick localhost round-trip; the feed fetch and the live
 // stream wait on it so neither can render a frame before the pins are in hand.
 (async () => {
+  // A phone is here for the inbox — land on it directly (the graph is a desktop view).
+  if (window.matchMedia("(max-width: 700px)").matches) setTab("inbox");
   pins = await loadPins();
   fetchAndRender(true);
   fetchUsage();             // pull both providers' rate-limit usage for the header readout

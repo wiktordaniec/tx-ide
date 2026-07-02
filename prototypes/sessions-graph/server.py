@@ -36,10 +36,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "lib"))
 
+from tx import history                   # noqa: E402
 from tx.messages import collect_messages, source_signature  # noqa: E402
 from tx.palette import tag_cube          # noqa: E402  — path is set on the line above
 from tx.render import reltime            # noqa: E402
-from tx.session import Kind, Session     # noqa: E402
+from tx.session import ChatRef, Kind, Role, Session, State  # noqa: E402
 from tx.storage import sessions_dir, tx_ide_home   # noqa: E402
 from tx.store import SessionStore        # noqa: E402
 from tx.tmux import Tmux                 # noqa: E402
@@ -133,6 +134,242 @@ def build_messages_feed() -> dict:
             for message in collect_messages()
         ],
     }
+
+
+# ----- inbox (the chat/inbox tab) -----------------------------------------------------------------
+# The inbox is a DERIVED view, never a store: an item is a live llm session + why it's waiting +
+# the dialogue reconstructed from its transcript tail. Because the item is the session, answering
+# it anywhere (this inbox, tmux directly, another agent) resolves it — nothing to mark read,
+# nothing to go stale. Signal-style ordering: newest activity first, state shown but never sorted.
+
+INBOX_TAIL_BYTES = 512 * 1024   # transcript tail window — plenty for the recent dialogue
+THREAD_TURNS = 40               # dialogue turns shipped per thread
+
+def _latest_chat(session: Session) -> ChatRef | None:
+    """The session's live conversation: the last ChatRef carrying a real id, preferring one still
+    open (mirrors cli._latest_chat — forks/rollovers append in order, so the last is the thread)."""
+    candidates = [chat for chat in session.chats if chat.id is not None]
+    if not candidates:
+        return None
+    open_chats = [chat for chat in candidates if chat.ended_at is None]
+    return (open_chats or candidates)[-1]
+
+
+def _transcript_of(session: Session) -> Path | None:
+    chat = _latest_chat(session)
+    if chat is None or chat.id is None:
+        return None
+    return history.resolve_transcript(chat.id, chat.cwd, chat.engine)
+
+
+def _tail_entries(path: Path) -> list[dict]:
+    """The parsed main-chain entries of a transcript's tail. Reads only the last INBOX_TAIL_BYTES
+    (a long session's transcript can be tens of MB), drops the first line when the window started
+    mid-line, parses tolerantly (a partial trailing line during a live turn is skipped, not fatal),
+    and filters sub-agent sidechains — their turns are not this conversation."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > INBOX_TAIL_BYTES:
+                handle.seek(size - INBOX_TAIL_BYTES)
+            raw = handle.read().decode(errors="replace")
+    except OSError:
+        return []
+    lines = raw.splitlines()
+    if size > INBOX_TAIL_BYTES and lines:
+        lines = lines[1:]
+    entries = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and not obj.get("isSidechain"):
+            entries.append(obj)
+    return entries
+
+
+def _entry_ts(entry: dict) -> float:
+    timestamp = entry.get("timestamp")
+    if not isinstance(timestamp, str) or not timestamp:
+        return 0.0
+    try:
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _text_of(content: object) -> str:
+    """The visible text of a message's content — a plain string, or the joined `text` blocks
+    (thinking / tool_use / tool_result blocks are not dialogue text)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ).strip()
+    return ""
+
+
+def _dialogue_turns(entries: list[dict], launch_cmd: str = "") -> list[dict]:
+    """The transcript tail as chat turns: your typed lines, the agent's text replies, and runs of
+    tool activity collapsed to one `{who: "tools", count: N}` separator (the thread shows
+    `· N tool calls ·`, never the calls themselves). Harness-injected user lines (tool_result
+    contents, isMeta scaffolding) are not turns, and neither is the spawn priming — a user line
+    whose text is embedded verbatim in the session's launch command (the messages.py rule)."""
+    turns: list[dict] = []
+    pending_tools = 0
+
+    def flush_tools() -> None:
+        nonlocal pending_tools
+        if pending_tools:
+            turns.append({"who": "tools", "count": pending_tools, "text": "", "ts": 0.0})
+            pending_tools = 0
+
+    for entry in entries:
+        message = entry.get("message")
+        if not isinstance(message, dict):
+            continue
+        kind, ts = entry.get("type"), _entry_ts(entry)
+        if kind == "assistant":
+            content = message.get("content")
+            text = _text_of(content)
+            if isinstance(content, list):
+                pending_tools += sum(
+                    1 for block in content
+                    if isinstance(block, dict) and block.get("type") == "tool_use"
+                )
+            if text:
+                flush_tools()
+                turns.append({"who": "agent", "text": text, "ts": ts})
+        elif kind == "user" and not entry.get("isMeta"):
+            text = _text_of(message.get("content"))
+            if (
+                text
+                and not any(text.lstrip().startswith(p) for p in ("<task-notification", "<local-command", "<command-", "[Request interrupted"))
+                and not (launch_cmd and text.strip() in launch_cmd)
+            ):
+                flush_tools()
+                turns.append({"who": "you", "text": text, "ts": ts})
+    flush_tools()
+    return turns[-THREAD_TURNS:]
+
+
+def _blocked_on(entries: list[dict]) -> dict | None:
+    """What a WAITING session is stalled on, or None when its last turn simply ended. Heuristic:
+    the last assistant entry's `tool_use` blocks with no later matching `tool_result` mean the
+    engine is holding a dialog — a permission prompt or an AskUserQuestion — for exactly that
+    call. Returns {tool, input} with a short input preview."""
+    last_uses: list[dict] = []
+    answered: set[str] = set()
+    for entry in entries:
+        message = entry.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if entry.get("type") == "assistant" and isinstance(content, list):
+            uses = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
+            if uses:
+                last_uses = uses
+        elif entry.get("type") == "user" and isinstance(content, list):
+            answered.update(
+                b.get("tool_use_id") for b in content
+                if isinstance(b, dict) and b.get("type") == "tool_result"
+            )
+    for use in last_uses:
+        if use.get("id") not in answered:
+            raw_input = json.dumps(use.get("input", {}), ensure_ascii=False)
+            return {
+                "tool": use.get("name", "?"),
+                "input": raw_input[:200] + ("…" if len(raw_input) > 200 else ""),
+            }
+    return None
+
+
+def build_inbox_feed() -> dict:
+    """The inbox tab's feed: one item per live llm session — its record basics, why it needs you
+    (`blocked` / `ready`) or what it's doing (`working` / `idle`), the agent's last words as the
+    row preview, and the recent dialogue as the thread. Signal-ordered: newest last-event first."""
+    now = time.time()
+    items = []
+    for session in SessionStore().all():
+        if session.role != Role.LLM or not session.is_alive():
+            continue
+        transcript = _transcript_of(session)
+        entries = _tail_entries(transcript) if transcript else []
+        turns = _dialogue_turns(entries, session.cmd or "")
+        blocked = _blocked_on(entries) if session.state == State.WAITING else None
+        if session.state == State.WAITING:
+            reason = "blocked" if blocked else "ready"
+        else:
+            reason = session.state.value  # working | idle
+        agent_turns = [turn for turn in turns if turn["who"] == "agent"]
+        preview = agent_turns[-1]["text"].split("\n", 1)[0] if agent_turns else ""
+        turn_ts = max((turn["ts"] for turn in turns), default=0.0)
+        last_ts = max(turn_ts, session.last_activity or 0.0, session.created_at or 0.0)
+        items.append({
+            "id": session.id,
+            "name": session.name,
+            "tags": session.tags,
+            "tag_colors": {tag: cube_to_hex(tag_cube(tag)) for tag in session.tags},
+            "cwd": session.cwd,
+            "state": session.state.value,
+            "reason": reason,
+            "blocked": blocked,
+            "preview": preview[:160],
+            "turns": turns,
+            "last_ts": last_ts,
+            "rel": reltime(last_ts, now) if last_ts else "",
+        })
+    items.sort(key=lambda item: item["last_ts"], reverse=True)
+    return {"generated_at": now, "items": items}
+
+
+def inbox_signature() -> str:
+    """Stat-only change detector for the inbox channel: each live llm session's id + state + its
+    transcript's size/mtime. Changes exactly when a session changes state or its conversation
+    grows — the poll loop rebuilds the (transcript-reading) feed only then, the same
+    idle-pushes-nothing discipline as messages/usage."""
+    parts = []
+    for session in SessionStore().all():
+        if session.role != Role.LLM or not session.is_alive():
+            continue
+        part = f"{session.id}:{session.state.value}"
+        transcript = _transcript_of(session)
+        if transcript is not None:
+            try:
+                stat = transcript.stat()
+                part += f":{stat.st_size}:{stat.st_mtime_ns}"
+            except OSError:
+                pass
+        parts.append(part)
+    return hashlib.sha1("|".join(sorted(parts)).encode()).hexdigest()
+
+
+def inbox_reply(session_id: str, text: str) -> tuple[int, dict]:
+    """Deliver an inbox reply as typed input into the session's pane — exactly what attaching and
+    typing would do, via the proven send-keys + 0.3s + Enter sequence (the input box drops an Enter
+    that arrives too fast). Collapsed to one line (send-keys is one line); a request boundary, so
+    shape is validated here."""
+    text = " ".join((text or "").split())
+    if not text:
+        return 400, {"ok": False, "error": "empty reply"}
+    session = next((s for s in SessionStore().all() if s.id == session_id), None)
+    if session is None:
+        return 404, {"ok": False, "error": "no such session"}
+    tmux = Tmux()
+    target = _tmux_name(session)
+    if not tmux.has_session(target):
+        return 200, {"ok": False, "error": "session is not live"}
+    tmux.send_keys(target, text, literal=True)
+    time.sleep(0.3)
+    tmux.send_keys(target, "Enter")
+    return 200, {"ok": True, "name": session.name}
 
 
 # ----- provider usage (rate limits) --------------------------------------------------------------
@@ -329,6 +566,7 @@ class FeedHub:
         self._last_focused_id: str | None = None
         self._last_messages_sig: str | None = None
         self._last_usage_sig: str | None = None
+        self._last_inbox_sig: str | None = None
 
     def start(self) -> None:
         threading.Thread(target=self._poll_loop, name="feed-poll", daemon=True).start()
@@ -359,6 +597,7 @@ class FeedHub:
                     client.put(("feed", payload))
             self._push_messages_if_changed()
             self._push_usage_if_changed()
+            self._push_inbox_if_changed()
             time.sleep(self._interval)
 
     def _push_messages_if_changed(self) -> None:
@@ -388,6 +627,20 @@ class FeedHub:
             clients = list(self._clients)
         for client in clients:
             client.put(("usage", payload))
+
+    def _push_inbox_if_changed(self) -> None:
+        """Rebuild + fan out the inbox feed only when a live llm session changed state or its
+        transcript grew — gated on the stat-only `inbox_signature`, the same idle-pushes-nothing
+        discipline as messages/usage (the rebuild reads transcript tails, too heavy for every tick)."""
+        signature = inbox_signature()
+        if signature == self._last_inbox_sig:
+            return
+        self._last_inbox_sig = signature
+        payload = json.dumps(build_inbox_feed())
+        with self._condition:
+            clients = list(self._clients)
+        for client in clients:
+            client.put(("inbox", payload))
 
     def push_focus(self) -> None:
         """Recompute the terminal's focused session and fan it out as a named `focus` frame — but
@@ -630,6 +883,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._sse_send("focus", json.dumps({"focused_id": compute_focused_id()}))
             self._sse_send("messages", json.dumps(build_messages_feed()))
             self._sse_send("usage", json.dumps(build_usage_feed()))
+            self._sse_send("inbox", json.dumps(build_inbox_feed()))
             while True:
                 try:
                     event, payload = client.get(timeout=15)
@@ -661,6 +915,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._respond(200, json.dumps(build_messages_feed()).encode(), "application/json")
         elif self.path.startswith("/api/usage"):
             self._respond(200, json.dumps(build_usage_feed()).encode(), "application/json")
+        elif self.path.startswith("/api/inbox"):
+            self._respond(200, json.dumps(build_inbox_feed()).encode(), "application/json")
         elif self.path.startswith("/api/layout"):
             self._respond(200, json.dumps({"pins": read_layout()}).encode(), "application/json")
         elif self.path in ("/", "/index.html"):
@@ -684,6 +940,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             status, payload = 200, {"ok": True}
         elif self.path.startswith("/api/focus"):
             status, payload = focus_session(str(body.get("id", "")))
+        elif self.path.startswith("/api/inbox/reply"):
+            status, payload = inbox_reply(str(body.get("id", "")), str(body.get("text", "")))
         elif self.path.startswith("/api/message"):
             # `ids` (multi-select group) is preferred; `id` stays for the single-node path. This is a
             # request boundary, so the shape is validated here rather than trusted downstream.
@@ -706,12 +964,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     port = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_PORT
-    server = ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
+    # Default stays loopback-only. Pass a HOST as the second arg (e.g. 0.0.0.0, or a Tailscale IP)
+    # to reach the dashboard from a phone — an explicit opt-in, because this server can TYPE INTO
+    # your tmux sessions (/api/inbox/reply, /api/message): bind to a trusted network only.
+    host = sys.argv[2] if len(sys.argv) > 2 else "127.0.0.1"
+    server = ThreadingHTTPServer((host, port), DashboardHandler)
     hub.start()
     ENDPOINT_FILE.parent.mkdir(parents=True, exist_ok=True)
     ENDPOINT_FILE.write_text(str(port))           # advertise the port so the tmux focus hook can poke
-    url = f"http://127.0.0.1:{port}/"
+    url = f"http://{host}:{port}/"
     print(f"tx-ide session graph  →  {url}")
+    if host != "127.0.0.1":
+        print(f"NOTE: bound to {host} — anyone who can reach this address can read AND message your sessions.")
     print(f"reading records from  {sessions_dir()}")
     print(f"focus-hook endpoint   {ENDPOINT_FILE}")
     print("Ctrl-C to stop.")
