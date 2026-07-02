@@ -53,6 +53,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "lib"))
 
 from tx import history                    # noqa: E402
+from tx.engines import claude             # noqa: E402
 from tx.palette import tag_cube           # noqa: E402
 from tx.render import reltime             # noqa: E402
 from tx.session import ChatRef, Kind, Role, Session, State  # noqa: E402
@@ -106,9 +107,34 @@ def _latest_chat(session: Session) -> ChatRef | None:
 
 def _transcript_of(session: Session) -> Path | None:
     chat = _latest_chat(session)
-    if chat is None or chat.id is None:
+    if chat is not None and chat.id is not None:
+        resolved = history.resolve_transcript(chat.id, chat.cwd, chat.engine)
+        if resolved is not None:
+            return resolved
+    return _drifted_transcript(session)
+
+
+def _drifted_transcript(session: Session) -> Path | None:
+    """Chat-id drift fallback. A session that resumes/rolls over OUTSIDE tx chat-ops gets a new
+    Claude chat id that tx's capture never records (it no-ops once a record has its id); the stale
+    id's transcript eventually gets pruned and the recorded chat resolves to nothing — a live
+    session with an unreadable conversation (the tx-assistant case). Recover by taking the newest
+    transcript in the session's OWN project dir that no other record claims. Heuristic: two
+    unclaimed live sessions sharing one cwd could mis-attribute — acceptable until the capture
+    gap is fixed in lib/tx."""
+    try:
+        directory = claude.transcript_path("_", session.cwd).parent
+    except Exception:
         return None
-    return history.resolve_transcript(chat.id, chat.cwd, chat.engine)
+    claimed = {
+        chat.id
+        for other in SessionStore().all() if other.id != session.id
+        for chat in other.chats if chat.id
+    }
+    candidates = [p for p in directory.glob("*.jsonl") if p.stem not in claimed]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def _tail_entries(path: Path, max_bytes: int = INBOX_TAIL_BYTES) -> list[dict]:

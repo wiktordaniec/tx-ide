@@ -37,6 +37,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "lib"))
 
 from tx import history                   # noqa: E402
+from tx.engines import claude as claude_engine  # noqa: E402
 from tx.messages import collect_messages, source_signature  # noqa: E402
 from tx.palette import tag_cube          # noqa: E402  — path is set on the line above
 from tx.render import reltime            # noqa: E402
@@ -157,9 +158,30 @@ def _latest_chat(session: Session) -> ChatRef | None:
 
 def _transcript_of(session: Session) -> Path | None:
     chat = _latest_chat(session)
-    if chat is None or chat.id is None:
+    if chat is not None and chat.id is not None:
+        resolved = history.resolve_transcript(chat.id, chat.cwd, chat.engine)
+        if resolved is not None:
+            return resolved
+    return _drifted_transcript(session)
+
+
+def _drifted_transcript(session: Session) -> Path | None:
+    """Chat-id drift fallback (see remote-control/server.py): a session resumed/rolled over
+    outside tx chat-ops carries a chat id whose transcript no longer exists — recover with the
+    newest unclaimed transcript in the session's own project dir."""
+    try:
+        directory = claude_engine.transcript_path("_", session.cwd).parent
+    except Exception:
         return None
-    return history.resolve_transcript(chat.id, chat.cwd, chat.engine)
+    claimed = {
+        chat.id
+        for other in SessionStore().all() if other.id != session.id
+        for chat in other.chats if chat.id
+    }
+    candidates = [p for p in directory.glob("*.jsonl") if p.stem not in claimed]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 def _tail_entries(path: Path) -> list[dict]:
