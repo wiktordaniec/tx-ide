@@ -130,6 +130,18 @@
   .turn.g-bot, .turn.g-solo { margin-bottom: 2px; }
   .turn.tools { align-self: center; background: none; color: var(--muted); font-size: 11px;
                 padding: 3px 0; margin: 0; }
+  /* a live AskUserQuestion rendered as tappable options — the chat-native answer to a dialog */
+  .qcard { align-self: stretch; margin: 10px 0 4px; padding: 12px 14px;
+           background: #131316; border: 1px solid var(--row-sep); border-radius: 14px; }
+  .qcard .qtext { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+  .qopt { display: block; width: 100%; text-align: left; margin: 6px 0; padding: 10px 13px;
+          background: var(--bubble); border: 1px solid transparent; border-radius: 11px;
+          font: inherit; color: var(--fg); }
+  .qopt:active { border-color: var(--blue); }
+  .qopt .qlabel { display: block; font-size: 15px; font-weight: 600; color: var(--blue); }
+  .qopt .qdesc { display: block; font-size: 12.5px; color: var(--dim); margin-top: 2px; }
+  .qcard .qhint { display: block; margin-top: 8px; color: var(--muted); font-size: 11.5px; }
+
   /* the typing bubble — shown while the session is WORKING, instead of any text hint */
   .typing { align-self: flex-start; background: var(--bubble); border-radius: 18px;
             padding: 13px 15px; margin: 8px 0 2px; display: flex; gap: 4px; }
@@ -418,7 +430,8 @@ function renderThread() {
     `<span class="tname">${escapeHtml(item.name)}</span>${pctChip}`;
 
   const banner = $("banner");
-  if (item.reason === "blocked" && item.blocked) {
+  const answerable = item.reason === "blocked" && item.blocked && item.blocked.questions;
+  if (item.reason === "blocked" && item.blocked && !answerable) {
     banner.hidden = false;
     banner.innerHTML = `⏸ blocked on <b>${escapeHtml(item.blocked.tool)}</b> ${escapeHtml(item.blocked.input || "")} — answer it in the terminal`;
   } else {
@@ -440,6 +453,18 @@ function renderThread() {
   }).join("") || `<div class="turn tools">no dialogue yet</div>`;
   // A WORKING session shows the classic typing bubble instead of any text hint.
   if (item.reason === "working") turns.insertAdjacentHTML("beforeend", typingHtml(""));
+  // An answerable AskUserQuestion renders as an in-thread option card — tap to answer the dialog.
+  if (answerable) {
+    const q = item.blocked.questions[0];
+    turns.insertAdjacentHTML("beforeend",
+      `<div class="qcard" data-tuid="${escapeHtml(item.blocked.tool_use_id || "")}">` +
+      `<div class="qtext">${escapeHtml(q.question)}</div>` +
+      q.options.map((o, i) =>
+        `<button class="qopt" data-opt="${i + 1}"><span class="qlabel">${escapeHtml(o.label)}</span>` +
+        (o.description ? `<span class="qdesc">${escapeHtml(o.description)}</span>` : "") + `</button>`
+      ).join("") +
+      `<span class="qhint">tapping answers the dialog in the session</span></div>`);
+  }
   if (older.id === item.id && !older.more) {
     turns.insertAdjacentHTML("afterbegin", `<div class="turn tools">· beginning of loaded history ·</div>`);
   }
@@ -450,7 +475,9 @@ function renderThread() {
   composer.classList.toggle("locked", item.reason === "blocked");
   if (item.reason === "blocked") {
     hint.className = "show";
-    hint.textContent = "a dialog is up in the terminal — text can't answer it";
+    hint.textContent = answerable
+      ? "answer by tapping an option above"
+      : "a dialog is up in the terminal — text can't answer it";
   } else {
     hint.className = "";                            // hidden: the common case carries no chrome
     hint.textContent = "";
@@ -656,6 +683,34 @@ $("threadHead").addEventListener("click", (event) => {
 });
 $("turns").addEventListener("scroll", () => {
   if ($("turns").scrollTop < 80) loadOlder();
+});
+// Tap an option → answer the live dialog. The server re-verifies the dialog is still up and
+// still the same tool_use before any key is sent; a stale tap becomes a harmless error hint.
+$("turns").addEventListener("click", async (event) => {
+  const optionButton = event.target.closest(".qopt");
+  if (!optionButton || !sel) return;
+  const card = optionButton.closest(".qcard");
+  const item = feed && feed.items.find((candidate) => candidate.id === sel);
+  optionButton.disabled = true;
+  try {
+    const response = await fetch(withToken("/api/answer"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: sel, tool_use_id: card.dataset.tuid, option: Number(optionButton.dataset.opt) }),
+    });
+    if (response.status === 401) { showGate(); return; }
+    const result = await response.json();
+    if (!result.ok) {
+      $("hint").className = "show err";
+      $("hint").textContent = result.error || "answer failed";
+      return;
+    }
+    // Optimistic: show the chosen option as your turn; the real state flips on the next push.
+    const label = optionButton.querySelector(".qlabel").textContent;
+    if (item) { item.turns.push({ who: "you", text: label, ts: Date.now() / 1000 }); item.blocked = null; item.reason = "working"; renderThread(); }
+  } catch {
+    $("hint").className = "show err";
+    $("hint").textContent = "answer failed: server unreachable";
+  }
 });
 $("send").addEventListener("click", sendReply);
 // The composer pill grows with its content, Messenger-style: height tracks scrollHeight up to

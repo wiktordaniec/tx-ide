@@ -258,10 +258,30 @@ def _blocked_on(entries: list[dict]) -> dict | None:
     for use in last_uses:
         if use.get("id") not in answered:
             raw_input = json.dumps(use.get("input", {}), ensure_ascii=False)
-            return {
+            blocked = {
                 "tool": use.get("name", "?"),
+                "tool_use_id": use.get("id"),
                 "input": raw_input[:200] + ("…" if len(raw_input) > 200 else ""),
+                "questions": None,
             }
+            # AskUserQuestion carries its options structurally — the app renders them as tappable
+            # buttons and answers via /api/answer. Only the single-question, single-select shape
+            # is answerable remotely (multi-question dialogs tab between questions — terminal-only).
+            if blocked["tool"] == "AskUserQuestion":
+                questions = (use.get("input") or {}).get("questions")
+                if (
+                    isinstance(questions, list) and len(questions) == 1
+                    and isinstance(questions[0], dict) and not questions[0].get("multiSelect")
+                    and isinstance(questions[0].get("options"), list)
+                ):
+                    blocked["questions"] = [{
+                        "question": str(questions[0].get("question", "")),
+                        "options": [
+                            {"label": str(o.get("label", "")), "description": str(o.get("description", ""))}
+                            for o in questions[0]["options"] if isinstance(o, dict)
+                        ],
+                    }]
+            return blocked
     return None
 
 
@@ -278,12 +298,80 @@ def _context_pct(entries: list[dict], cmd: str) -> int | None:
     return min(100, round(tokens / window * 100))
 
 
+# A live dialog (AskUserQuestion / permission prompt / plan approval) is NOT in the transcript —
+# Claude Code flushes the tool_use line only when the dialog resolves. The dialog IS on the pane,
+# though: a numbered option list with a ❯ cursor. Parse it from `tmux capture-pane`; the answer
+# endpoint re-captures and compares the content hash, so a stale tap sends nothing.
+_DIALOG_OPTION = re.compile(r"^\s*(?:❯\s*)?(\d+)\.\s+(.+?)\s*$")
+_DIALOG_NOISE = re.compile(r"^[\s─╌═╭╮╰╯│┃▔▁]*$")
+
+
+def _pane_dialog(tmux: Tmux, target: str) -> dict | None:
+    """The numbered-option dialog currently rendered in the pane, or None. Signals required to
+    avoid matching a numbered list in ordinary output: options are contiguous, start at 1, at
+    least two of them, one carries the ❯ selection cursor, and the block sits in the bottom
+    half of the pane."""
+    try:
+        out = subprocess.run(
+            ["tmux", "capture-pane", "-p", "-t", target],
+            capture_output=True, text=True, timeout=3,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    lines = out.splitlines()
+    blocks: list[tuple[int, list[tuple[int, str, bool]]]] = []
+    current: list[tuple[int, str, bool]] = []
+    start = 0
+    for index, line in enumerate(lines):
+        match = _DIALOG_OPTION.match(line)
+        number = int(match.group(1)) if match else None
+        if match and number == len(current) + 1:
+            if not current:
+                start = index
+            current.append((number, match.group(2), "❯" in line))
+        else:
+            # tolerate a wrapped option's continuation line inside the block
+            if current and line.strip() and not match:
+                continue
+            if len(current) >= 2:
+                blocks.append((start, current))
+            current = []
+    if len(current) >= 2:
+        blocks.append((start, current))
+    for start, options in reversed(blocks):
+        if start < len(lines) // 2 or not any(sel for _n, _t, sel in options):
+            continue
+        # the question: nearest non-noise lines above the block (up to 3)
+        question_lines: list[str] = []
+        for line in reversed(lines[:start]):
+            if _DIALOG_NOISE.match(line):
+                if question_lines:
+                    break
+                continue
+            question_lines.insert(0, line.strip())
+            if len(question_lines) >= 3:
+                break
+        question = " ".join(question_lines).strip()
+        content = question + "|" + "|".join(text for _n, text, _s in options)
+        return {
+            "tool": "dialog",
+            "tool_use_id": "pane:" + hashlib.sha1(content.encode()).hexdigest()[:16],
+            "input": "",
+            "questions": [{
+                "question": question or "The session is showing a dialog:",
+                "options": [{"label": text, "description": ""} for _n, text, _s in options],
+            }],
+        }
+    return None
+
+
 def build_inbox_feed() -> dict:
     """One item per live llm session — record basics, why it needs you (`blocked` / `ready`) or
     what it's doing (`working` / `idle`), the agent's last words as the row preview, the recent
     dialogue as the thread. Signal-ordered: newest last-event first."""
     now = time.time()
     items = []
+    tmux = Tmux()
     for session in SessionStore().all():
         if session.role != Role.LLM or not session.is_alive():
             continue
@@ -291,6 +379,8 @@ def build_inbox_feed() -> dict:
         entries = _tail_entries(transcript) if transcript else []
         turns = _dialogue_turns(entries, session.cmd or "")[-THREAD_TURNS:]
         blocked = _blocked_on(entries) if session.state == State.WAITING else None
+        if session.state == State.WAITING and blocked is None:
+            blocked = _pane_dialog(tmux, _tmux_name(session))
         if session.state == State.WAITING:
             reason = "blocked" if blocked else "ready"
         else:
@@ -323,6 +413,7 @@ def inbox_signature() -> str:
     Changes exactly when a session changes state or its conversation grows, so the poll loop
     rebuilds the (transcript-reading) feed only then — idle pushes nothing."""
     parts = []
+    tmux = Tmux()
     for session in SessionStore().all():
         if session.role != Role.LLM or not session.is_alive():
             continue
@@ -334,8 +425,45 @@ def inbox_signature() -> str:
                 part += f":{stat.st_size}:{stat.st_mtime_ns}"
             except OSError:
                 pass
+        # A dialog appears/disappears WITHOUT the transcript changing (it only flushes on
+        # resolution) — its pane hash must ride the signature or the qcard never pushes.
+        if session.state == State.WAITING:
+            dialog = _pane_dialog(tmux, _tmux_name(session))
+            part += f":{dialog['tool_use_id'] if dialog else '-'}"
         parts.append(part)
     return hashlib.sha1("|".join(sorted(parts)).encode()).hexdigest()
+
+
+def answer_question(session_id: str, tool_use_id: str, option: int) -> tuple[int, dict]:
+    """Answer the dialog currently on a session's pane by relaying its option digit. Guarded
+    against staleness: the session must still be WAITING and the pane must still show the SAME
+    dialog (content hash) the client rendered — if it resolved (timeout, terminal answer) between
+    render and tap, nothing is sent. After the digit, the pane is re-checked: if the dialog is
+    still up (a dialog where digits only select), Enter submits; if it's gone, no Enter — never
+    a stray keystroke into a live prompt box."""
+    session = next((s for s in SessionStore().all() if s.id == session_id), None)
+    if session is None:
+        return 404, {"ok": False, "error": "no such session"}
+    if session.state != State.WAITING:
+        return 200, {"ok": False, "error": "the dialog is gone — the session moved on"}
+    tmux = Tmux()
+    target = _tmux_name(session)
+    if not tmux.has_session(target):
+        return 200, {"ok": False, "error": "session is not live"}
+    transcript = _transcript_of(session)
+    entries = _tail_entries(transcript) if transcript else []
+    blocked = _blocked_on(entries) or _pane_dialog(tmux, target)
+    if not blocked or blocked.get("tool_use_id") != tool_use_id:
+        return 200, {"ok": False, "error": "the dialog changed — reopen the thread"}
+    count = len((blocked.get("questions") or [{}])[0].get("options") or [])
+    if not blocked.get("questions") or not (1 <= option <= count):
+        return 400, {"ok": False, "error": "not an answerable question"}
+    tmux.send_keys(target, str(option), literal=True)
+    time.sleep(0.6)
+    still_up = _pane_dialog(tmux, target)
+    if still_up is not None and still_up.get("tool_use_id") == tool_use_id:
+        tmux.send_keys(target, "Enter")
+    return 200, {"ok": True, "name": session.name, "option": option}
 
 
 def inbox_reply(session_id: str, text: str) -> tuple[int, dict]:
@@ -656,6 +784,14 @@ class RemoteHandler(BaseHTTPRequestHandler):
             body = {}
         if path == "/api/reply":
             status, payload = inbox_reply(str(body.get("id", "")), str(body.get("text", "")))
+        elif path == "/api/answer":
+            try:
+                option = int(body.get("option", 0))
+            except (TypeError, ValueError):
+                option = 0
+            status, payload = answer_question(
+                str(body.get("id", "")), str(body.get("tool_use_id", "")), option
+            )
         elif path == "/api/upload":
             status, payload = save_upload(str(body.get("name", "")), str(body.get("data", "")))
         else:
