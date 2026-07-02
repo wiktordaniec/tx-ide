@@ -1,0 +1,234 @@
+#!/usr/bin/env python3.14
+"""tx-msg — prototype mailbox+doorbell inter-session messaging (alternative to `tx send-message`).
+
+The current channel types the WHOLE message into the recipient's input box via tmux send-keys.
+That makes the payload path the fragile part: special chars / newlines / long bodies crash tmux
+input (COMMON.md warns about exactly this for priming), concurrent sends interleave keystrokes,
+a message typed while the user is mid-composition corrupts both, and nothing is durable — a
+message to a dead session is gone, and the sender never learns whether it was read.
+
+This prototype splits payload from wake-up:
+
+  payload   $TX_IDE_HOME/messages/<recipient-id>/inbox.jsonl — one JSON object per message
+            (arbitrary body: multi-line, quotes, any length — JSON encoding makes it inert).
+  doorbell  ONE fixed-shape line typed into the pane: `<tx-msg-ping from="X" n="N"/> …read cmd…`
+            Constant format, self-describing (tells an unprimed agent the exact read command),
+            never carries user content — so none of the send-keys hazards apply to it.
+
+Delivery states the sender can observe (`tx-msg sent`): queued → pinged → read. Messages to a
+busy (WORKING) or dead session queue durably; `--no-ping` skips the doorbell entirely (the
+natural integration point is the existing tx hook pipeline: a UserPromptSubmit/Stop shim that
+reports unread counts as context, making pings unnecessary — see README).
+
+Commands (self = session resolved from $TX_SESSION_ID):
+  tx-msg send <target> <body...>   body from args, or from stdin with `-`
+  tx-msg read                      print + mark-read my unread messages
+  tx-msg peek                      print my unread messages without marking
+  tx-msg sent                      my sent messages with delivery/read receipts
+"""
+
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import sys
+import time
+import uuid
+from pathlib import Path
+
+_REPO = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(_REPO / "lib"))
+
+from tx.session import Role, State  # noqa: E402
+from tx.storage import tx_ide_home  # noqa: E402
+from tx.store import SessionStore  # noqa: E402
+from tx.tmux import Tmux  # noqa: E402
+
+
+def messages_dir() -> Path:
+    return tx_ide_home() / "messages"
+
+
+def inbox_path(session_id: str) -> Path:
+    return messages_dir() / session_id / "inbox.jsonl"
+
+
+def _locked_rw(path: Path, mutate):
+    """Read all message lines under an exclusive lock, pass them to `mutate(list[dict])`, and if it
+    returns a list, rewrite the file with it (in-place truncate+write while still holding the lock).
+    Appends and the read/mark-read rewrite both go through here, so concurrent senders never
+    interleave and a mark-read never races an append."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        handle.seek(0)
+        lines = [json.loads(line) for line in handle if line.strip()]
+        replacement = mutate(lines)
+        if replacement is not None:
+            handle.seek(0)
+            handle.truncate()
+            for obj in replacement:
+                handle.write(json.dumps(obj) + "\n")
+        return lines
+
+
+def _self_session(store: SessionStore):
+    session_id = os.environ.get("TX_SESSION_ID")
+    if not session_id:
+        sys.exit("tx-msg: $TX_SESSION_ID is not set — run inside a tx-spawned session")
+    session = store.load(session_id)
+    if session is None:
+        sys.exit(f"tx-msg: no session record for {session_id}")
+    return session
+
+
+def _resolve_target(store: SessionStore, tmux: Tmux, token: str):
+    """Same resolution order as SessionService._resolve: id, live @tx_id, then name preferring the
+    live record (names are reusable)."""
+    session = store.load(token)
+    if session is not None:
+        return session
+    live_id = tmux.get_tx_id(token)
+    if live_id is not None:
+        session = store.load(live_id)
+        if session is not None:
+            return session
+    matches = [s for s in store.all() if s.name == token]
+    if not matches:
+        return None
+    live = [s for s in matches if tmux.has_session(s.tmux_name)]
+    return max(live or matches, key=lambda s: s.created_at or 0.0)
+
+
+def cmd_send(argv: list[str]) -> None:
+    no_ping = "--no-ping" in argv
+    argv = [a for a in argv if a != "--no-ping"]
+    if len(argv) < 2:
+        sys.exit("usage: tx-msg send [--no-ping] <target> <body...|->")
+    target_token, *body_parts = argv
+    body = sys.stdin.read() if body_parts == ["-"] else " ".join(body_parts)
+    if not body.strip():
+        sys.exit("tx-msg: empty body")
+
+    store, tmux = SessionStore(), Tmux()
+    sender = _self_session(store)
+    target = _resolve_target(store, tmux, target_token)
+    if target is None:
+        sys.exit(f"tx-msg: target session '{target_token}' not found")
+
+    message = {
+        "id": uuid.uuid4().hex[:12],
+        "ts": time.time(),
+        "from_id": sender.id,
+        "from": sender.name,
+        "to_id": target.id,
+        "to": target.name,
+        "body": body,
+        "read_ts": None,
+        "pinged": False,
+    }
+
+    alive = tmux.has_session(target.tmux_name)
+    # Ping only an alive llm session that is not mid-turn: a WORKING session hits the message at
+    # its next turn boundary anyway (or via the hook integration), and pinging it would steer the
+    # in-flight turn. Anything else just queues durably.
+    ping = (
+        not no_ping
+        and alive
+        and target.role == Role.LLM
+        and target.state != State.WORKING
+    )
+    # Append BEFORE the doorbell — a recipient that reads the instant the ping lands must find
+    # the message already there. `pinged` is stamped optimistically; a failed send-keys leaves a
+    # queued-but-flagged message, which is the harmless direction to be wrong in.
+    message["pinged"] = ping
+    unread_now = 0
+
+    def mutate(lines: list[dict]):
+        nonlocal unread_now
+        lines.append(message)
+        unread_now = sum(1 for obj in lines if obj["read_ts"] is None)
+        return lines
+
+    _locked_rw(inbox_path(target.id), mutate)
+    if ping:
+        doorbell = (
+            f'<tx-msg-ping from="{sender.name}" n="{unread_now}"/> '
+            f"{unread_now} unread tx message(s) — run '{Path(__file__).resolve()} read' to read them"
+        )
+        tmux.send_keys(target.tmux_name, doorbell, literal=True)
+        time.sleep(0.3)
+        tmux.send_keys(target.tmux_name, "Enter")
+    status = "pinged" if message["pinged"] else ("queued (busy)" if alive else "queued (not live)")
+    print(f"sent {message['id']} → {target.name} [{status}]")
+
+
+def _print_message(message: dict) -> None:
+    when = time.strftime("%H:%M:%S", time.localtime(message["ts"]))
+    print(f"--- {message['id']} from {message['from']} at {when} ---")
+    print(message["body"])
+
+
+def cmd_read(mark: bool) -> None:
+    store = SessionStore()
+    me = _self_session(store)
+    now = time.time()
+    unread: list[dict] = []
+
+    def mutate(lines: list[dict]):
+        for obj in lines:
+            if obj["read_ts"] is None:
+                unread.append(dict(obj))
+                if mark:
+                    obj["read_ts"] = now
+        return lines if mark else None
+
+    _locked_rw(inbox_path(me.id), mutate)
+    if not unread:
+        print("no unread messages")
+        return
+    for message in unread:
+        _print_message(message)
+    if mark:
+        print(f"({len(unread)} message(s) marked read)")
+
+
+def cmd_sent() -> None:
+    store = SessionStore()
+    me = _self_session(store)
+    rows: list[dict] = []
+    for inbox in sorted(messages_dir().glob("*/inbox.jsonl")):
+        for obj in _locked_rw(inbox, lambda lines: None):
+            if obj["from_id"] == me.id:
+                rows.append(obj)
+    if not rows:
+        print("no sent messages")
+        return
+    rows.sort(key=lambda o: o["ts"])
+    for obj in rows:
+        state = "read" if obj["read_ts"] else ("pinged" if obj["pinged"] else "queued")
+        when = time.strftime("%H:%M:%S", time.localtime(obj["ts"]))
+        preview = obj["body"].replace("\n", "\\n")
+        preview = preview[:60] + ("…" if len(preview) > 60 else "")
+        print(f"{when}  {obj['id']}  → {obj['to']:<24} [{state:>6}]  {preview}")
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        sys.exit(__doc__.strip())
+    command, argv = sys.argv[1], sys.argv[2:]
+    if command == "send":
+        cmd_send(argv)
+    elif command == "read":
+        cmd_read(mark=True)
+    elif command == "peek":
+        cmd_read(mark=False)
+    elif command == "sent":
+        cmd_sent()
+    else:
+        sys.exit(f"tx-msg: unknown command '{command}'")
+
+
+if __name__ == "__main__":
+    main()
