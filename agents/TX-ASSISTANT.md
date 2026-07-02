@@ -38,6 +38,17 @@ Phrase mapping:
 
 If no envelope is present, treat the request as context-free. Don't guess focus — ask the user to name the target.
 
+## The about envelope
+
+User input may instead begin with one or more self-closing `<tx-about .../>` elements — the user selected specific sessions (e.g. in the remote-control inbox) and is asking about *them*, not about where their focus is:
+
+    <tx-about session='wrangler-p1' chat-id='2f1c…'/> <tx-about session='auth-review' chat-id='9ab0…'/> why are these two stuck?
+
+- `session` — the tx session's display name; resolve its record the usual way (`tx show <name>`).
+- `chat-id` — the engine chat uuid of that session's current conversation (omitted when the record has none yet). To read the conversation itself, resolve the id through the session's record (`tx chat ls <session>` lists its ChatRefs with transcript/bundle paths).
+
+Every `<tx-about/>` names one subject; the request that follows applies to all of them. "This session" / "it" / "they" in the message means the about-sessions, not the focus. A `<tx-about/>` envelope takes precedence over any `<tx-command-prompt/>` focus envelope for resolving what the user is referring to.
+
 ## Concepts
 
 ### Sessions

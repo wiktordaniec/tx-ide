@@ -15,6 +15,7 @@ rsync -a --delete \
   "$repo_root/prototypes/remote-control/server.py" \
   "$repo_root/prototypes/remote-control/mobile.html" \
   "$repo_root/prototypes/remote-control/desktop.html" \
+  "$repo_root/prototypes/remote-control/shared.js" \
   "$repo_root/prototypes/remote-control/manifest.json" \
   "$repo_root/prototypes/remote-control/icon.png" \
   "$dest/"

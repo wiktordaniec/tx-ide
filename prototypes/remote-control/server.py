@@ -481,6 +481,63 @@ def inbox_reply(session_id: str, text: str) -> tuple[int, dict]:
     return 200, {"ok": True, "name": session.name}
 
 
+# ---- ask the assistant about selected sessions ---------------------------------------------------
+# The phone-side sibling of the terminal's prefix+/ flow: the message goes to the tx-assistant,
+# prefixed with one `<tx-about session='…' chat-id='…'/>` per selected session (the durable keys —
+# the assistant resolves everything else itself; agents/TX-ASSISTANT.md documents the element).
+ASSISTANT_NAME = "tx-assistant"
+WARM_TIMEOUT_SECONDS = 30   # bin/tx-assistant --warm may spawn + wait for claude's input box (~10s)
+
+
+def _attr_escape(raw: str) -> str:
+    return (raw.replace("&", "&amp;").replace("'", "&apos;")
+               .replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _about_envelope(session: Session) -> str:
+    chat = _latest_chat(session)
+    chat_attr = f" chat-id='{_attr_escape(chat.id)}'" if chat is not None else ""
+    return f"<tx-about session='{_attr_escape(session.name)}'{chat_attr}/>"
+
+
+def ask_assistant(session_ids: list[str], text: str) -> tuple[int, dict]:
+    """Send `text` to the tx-assistant, prefixed with an about-envelope per selected session.
+    `bin/tx-assistant --warm` owns existence + priming (spawn through the real tx, priming prompt,
+    input-box readiness wait) — this endpoint never re-implements that; it only resolves the warm
+    assistant's pane and types into it with the proven send-keys sequence."""
+    text = " ".join((text or "").split())
+    if not text:
+        return 400, {"ok": False, "error": "empty message"}
+    sessions = [s for s in SessionStore().all() if s.id in set(session_ids) and s.is_alive()]
+    if not sessions:
+        return 404, {"ok": False, "error": "no live selected sessions"}
+    try:
+        subprocess.run(
+            [str(REPO_ROOT / "bin" / "tx-assistant"), "--warm"],
+            capture_output=True, timeout=WARM_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return 200, {"ok": False, "error": "could not warm the tx-assistant session"}
+    assistant = next(
+        (s for s in SessionStore().all() if s.name == ASSISTANT_NAME and s.is_alive()), None
+    )
+    if assistant is None:
+        return 200, {"ok": False, "error": "tx-assistant session did not come up"}
+    tmux = Tmux()
+    target = _tmux_name(assistant)
+    if not tmux.has_session(target):
+        return 200, {"ok": False, "error": "tx-assistant session is not live"}
+    envelopes = " ".join(_about_envelope(session) for session in sessions)
+    tmux.send_keys(target, f"{envelopes} {text}", literal=True)
+    time.sleep(0.3)
+    tmux.send_keys(target, "Enter")
+    return 200, {
+        "ok": True,
+        "assistant_id": assistant.id,
+        "about": [session.name for session in sessions],
+    }
+
+
 # History paging: the live feed carries only the last THREAD_TURNS per session (it rides every
 # SSE push); older turns are fetched on demand as the user scrolls up. A page is index-sliced
 # from the turns before `before` (the oldest timestamp the client already shows), parsed from a
@@ -687,7 +744,8 @@ hub = FeedHub()
 class RemoteHandler(BaseHTTPRequestHandler):
     """Routes: `/` (mobile or desktop page by User-Agent; `/mobile` + `/desktop` override),
     `/api/inbox` (one-shot feed), `/api/stream` (SSE: an `inbox` frame on connect, then one
-    per change), `POST /api/reply` (type a reply into a session).
+    per change), `POST /api/reply` (type a reply into a session), `POST /api/ask-assistant`
+    (message the tx-assistant about selected sessions).
     With `TX_REMOTE_TOKEN` set, every route requires `?token=<secret>` — the page asks once and
     remembers it; EventSource can't set headers, hence the query param."""
 
@@ -748,6 +806,9 @@ class RemoteHandler(BaseHTTPRequestHandler):
         if path in ("/desktop", "/desktop.html"):
             self._respond(200, DESKTOP_PAGE.read_bytes(), "text/html; charset=utf-8")
             return
+        if path == "/shared.js":
+            self._respond(200, (HERE / "shared.js").read_bytes(), "text/javascript; charset=utf-8")
+            return
         if path == "/manifest.json":
             self._respond(200, (HERE / "manifest.json").read_bytes(), "application/manifest+json")
             return
@@ -791,6 +852,10 @@ class RemoteHandler(BaseHTTPRequestHandler):
             body = {}
         if path == "/api/reply":
             status, payload = inbox_reply(str(body.get("id", "")), str(body.get("text", "")))
+        elif path == "/api/ask-assistant":
+            ids = body.get("ids")
+            ids = [str(i) for i in ids] if isinstance(ids, list) else []
+            status, payload = ask_assistant(ids, str(body.get("text", "")))
         elif path == "/api/answer":
             try:
                 option = int(body.get("option", 0))
