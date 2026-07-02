@@ -62,7 +62,10 @@ from tx.store import SessionStore         # noqa: E402
 from tx.tmux import Tmux                  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
-PAGE = HERE / "index.html"
+# Two faces of the same app: the phone-first inbox (installed as the PWA) and the split-pane
+# desktop view. `/` picks by User-Agent; /mobile and /desktop are the explicit overrides.
+MOBILE_PAGE = HERE / "mobile.html"
+DESKTOP_PAGE = HERE / "desktop.html"
 DEFAULT_PORT = 8790
 POLL_INTERVAL_SECONDS = 1.0
 INBOX_TAIL_BYTES = 512 * 1024   # transcript tail window — plenty for the recent dialogue
@@ -690,8 +693,9 @@ hub = FeedHub()
 
 
 class RemoteHandler(BaseHTTPRequestHandler):
-    """Routes: `/` (the page), `/api/inbox` (one-shot feed), `/api/stream` (SSE: an `inbox`
-    frame on connect, then one per change), `POST /api/reply` (type a reply into a session).
+    """Routes: `/` (mobile or desktop page by User-Agent; `/mobile` + `/desktop` override),
+    `/api/inbox` (one-shot feed), `/api/stream` (SSE: an `inbox` frame on connect, then one
+    per change), `POST /api/reply` (type a reply into a session).
     With `TX_REMOTE_TOKEN` set, every route requires `?token=<secret>` — the page asks once and
     remembers it; EventSource can't set headers, hence the query param."""
 
@@ -734,12 +738,23 @@ class RemoteHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"event: inbox\ndata: " + payload.encode() + b"\n\n")
         self.wfile.flush()
 
+    def _page_for_client(self) -> Path:
+        # The installed PWA (and any phone browser) sends "Mobi" in its User-Agent; desktop
+        # browsers don't. Guessed wrong? /mobile and /desktop serve either face explicitly.
+        return MOBILE_PAGE if "Mobi" in self.headers.get("User-Agent", "") else DESKTOP_PAGE
+
     def do_GET(self) -> None:
         path = urlparse(self.path).path
-        # The page + the PWA shell files are served without the token so the phone can install
+        # The pages + the PWA shell files are served without the token so the phone can install
         # the app and ASK for one; every data/action route is gated.
         if path in ("/", "/index.html"):
-            self._respond(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+            self._respond(200, self._page_for_client().read_bytes(), "text/html; charset=utf-8")
+            return
+        if path in ("/mobile", "/mobile.html"):
+            self._respond(200, MOBILE_PAGE.read_bytes(), "text/html; charset=utf-8")
+            return
+        if path in ("/desktop", "/desktop.html"):
+            self._respond(200, DESKTOP_PAGE.read_bytes(), "text/html; charset=utf-8")
             return
         if path == "/manifest.json":
             self._respond(200, (HERE / "manifest.json").read_bytes(), "application/manifest+json")
