@@ -76,6 +76,7 @@
                  color: var(--dim); font-size: 14px; margin-top: 1px; }
   .conv.needs .cprev { color: var(--fg); }
   .conv.dimmed .cname, .conv.dimmed .cprev { color: var(--muted); }
+  .conv .cprev.err { color: var(--red); }   /* transcript-drift diagnosis outranks dimming */
   .chips { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 3px; }
   .chip { font-size: 10px; padding: 0 7px; border-radius: 999px; line-height: 16px;
           color: var(--chip, var(--dim)); border: 1px solid color-mix(in srgb, var(--chip, var(--dim)) 55%, transparent); }
@@ -358,7 +359,7 @@ function convHtml(item) {
     `<span class="avatar">${escapeHtml(initial(item.name))}</span>` +
     `<span class="mid"><span class="nrow"><span class="cname">${escapeHtml(item.name)}</span>` +
     `<span class="ctime">${escapeHtml(item.rel || "")}</span></span>` +
-    `<div class="cprev">${item.reason === "working" ? typingHtml("mini") : escapeHtml(stripMarkdown(item.preview || "—"))}</div>` +
+    `<div class="cprev${item.error ? " err" : ""}">${item.error ? "⚠ transcript missing — chat id drifted" : item.reason === "working" ? typingHtml("mini") : escapeHtml(stripMarkdown(item.preview || "—"))}</div>` +
     (chips ? `<div class="chips">${chips}</div>` : "") +
     `</span></button>`;
 }
@@ -432,7 +433,10 @@ function renderThread() {
 
   const banner = $("banner");
   const answerable = item.reason === "blocked" && item.blocked && item.blocked.questions;
-  if (item.reason === "blocked" && item.blocked && !answerable) {
+  if (item.error) {
+    banner.hidden = false;
+    banner.innerHTML = `⚠ ${escapeHtml(item.error)}`;
+  } else if (item.reason === "blocked" && item.blocked && !answerable) {
     banner.hidden = false;
     banner.innerHTML = `⏸ blocked on <b>${escapeHtml(item.blocked.tool)}</b> ${escapeHtml(item.blocked.input || "")} — answer it in the terminal`;
   } else {
