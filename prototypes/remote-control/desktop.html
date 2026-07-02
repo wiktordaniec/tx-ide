@@ -1,0 +1,771 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#000000" />
+<title>tx remote</title>
+<style>
+  /* The DESKTOP face of tx remote (the phone face is mobile.html): same dark messenger idiom —
+     black canvas, grey received bubbles, blue sent bubbles — but laid out as a persistent
+     split-pane: conversation list left, thread right, both always visible. Hover instead of
+     press states, a selected-row highlight, no back button. Only code spans/blocks stay
+     monospace. Tag chips keep the terminal picker's per-tag colors; session state its dot. */
+  :root {
+    --bg: #000; --panel: #0d0d10; --row-sep: #1c1c1f;
+    --bubble: #26262b; --sent: #0a84ff;
+    --fg: #fff; --dim: #98989f; --muted: #6c6c72;
+    --blue: #0a84ff; --green: #30d158; --red: #ff453a; --amber: #ffd60a; --cyan: #64d2ff; --magenta: #bf5af2;
+    --code-bg: #151519;
+  }
+  .s-working { --state: var(--green); }
+  .s-waiting { --state: var(--blue); }
+  .s-idle    { --state: var(--muted); }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100dvh; margin: 0; color-scheme: dark; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.35 -apple-system, "SF Pro Text", system-ui, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  /* Split-pane grid: list column (header + rows) left, the thread filling the right. */
+  #app { flex: 1 1 auto; min-height: 0; display: grid;
+         grid-template-columns: 340px minmax(0, 1fr);
+         grid-template-rows: auto minmax(0, 1fr);
+         width: 100%; max-width: 1400px; margin: 0 auto; }
+  button { font: inherit; background: none; border: none; color: inherit; cursor: pointer; padding: 0; }
+
+  /* ---- list header: just a search pill + the live dot (no big title) ------------------------- */
+  #listHeader { grid-column: 1; grid-row: 1; display: flex; align-items: center; gap: 10px;
+                padding: 10px 14px 8px; border-right: .5px solid var(--row-sep); }
+  #search { flex: 1 1 auto; min-width: 0; background: var(--bubble); border: none; color: var(--fg);
+            border-radius: 18px; padding: 8px 15px; font: inherit; font-size: 16px;
+            -webkit-appearance: none; appearance: none; }
+  #search::placeholder { color: var(--muted); }
+  #search:focus { outline: none; }
+  #listHeader .live { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  #listHeader .live.on { background: var(--green); }
+
+  /* ---- conversation list --------------------------------------------------------------------- */
+  #list { grid-column: 1; grid-row: 2; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+          border-right: .5px solid var(--row-sep); }
+  .conv { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+          padding: 9px 16px; }
+  .conv:hover { background: var(--panel); }
+  .conv.selected, .conv.selected:hover { background: var(--bubble); }
+  .conv .need { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; }   /* the unread dot */
+  .conv .need.blocked { background: var(--red); }
+  .conv .need.ready { background: var(--blue); }
+  .avatar { flex: 0 0 44px; width: 44px; height: 44px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            background: #2c2c31; color: var(--fg); font-weight: 600; font-size: 18px;
+            position: relative; text-transform: uppercase; }
+  .avatar::after {   /* state as a tiny status badge on the avatar, like presence */
+    content: ""; position: absolute; right: -1px; bottom: -1px; width: 13px; height: 13px;
+    border-radius: 50%; background: var(--state); border: 2.5px solid var(--bg);
+  }
+  .conv .mid { flex: 1 1 auto; min-width: 0; }
+  .conv .nrow { display: flex; align-items: baseline; gap: 8px; }
+  .conv .cname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+                 white-space: nowrap; font-size: 17px; font-weight: 400; }
+  .conv.needs .cname { font-weight: 600; }
+  .conv .ctime { flex: 0 0 auto; color: var(--muted); font-size: 13px; }
+  .conv .cprev { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                 color: var(--dim); font-size: 14px; margin-top: 1px; }
+  .conv.needs .cprev { color: var(--fg); }
+  .conv.dimmed .cname, .conv.dimmed .cprev { color: var(--muted); }
+  .chips { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 3px; }
+  .chip { font-size: 10px; padding: 0 7px; border-radius: 999px; line-height: 16px;
+          color: var(--chip, var(--dim)); border: 1px solid color-mix(in srgb, var(--chip, var(--dim)) 55%, transparent); }
+  .conv + .conv .mid, .conv + .conv .ctime { border-top: none; }
+  .conv:not(:last-child) { border-bottom: .5px solid var(--row-sep); }
+  #listEmpty { padding: 48px 16px; color: var(--muted); text-align: center; }
+  #listEmpty[hidden] { display: none; }
+
+  /* ---- thread (always visible; an empty-state placeholder before any selection) --------------- */
+  #thread { grid-column: 2; grid-row: 1 / 3; min-height: 0; min-width: 0;
+            display: flex; flex-direction: column; }
+  #threadEmpty { display: none; }
+  #thread.empty #threadEmpty { flex: 1 1 auto; display: flex; align-items: center;
+                               justify-content: center; color: var(--muted); }
+  #thread.empty #threadHead, #thread.empty #banner, #thread.empty #turns,
+  #thread.empty #composer { display: none; }
+  #threadHead { flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+                padding: 8px 16px; background: var(--panel);
+                border-bottom: .5px solid var(--row-sep); }
+  #threadHead .avatar { flex: 0 0 32px; width: 32px; height: 32px; font-size: 14px; }
+  #threadHead .avatar::after { width: 10px; height: 10px; border: 2px solid var(--panel); }
+  #threadHead .tname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+                       white-space: nowrap; font-weight: 600; font-size: 16px; }
+  /* context-used readout, top right — green → amber (>55) → red (>80); taps open the sheet */
+  #threadHead .ctxpct { flex: 0 0 auto; font-size: 13px; font-weight: 600;
+                        font-variant-numeric: tabular-nums; color: var(--green); padding: 4px 2px; }
+  #threadHead .ctxpct.warn { color: var(--amber); }
+  #threadHead .ctxpct.hot { color: var(--red); }
+
+  #banner { flex: 0 0 auto; padding: 6px 14px; font-size: 12.5px; color: var(--red);
+            background: color-mix(in srgb, var(--red) 12%, transparent);
+            border-bottom: .5px solid var(--row-sep); }
+  #banner b { font-weight: 600; }
+  #banner[hidden] { display: none; }
+
+  #turns { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain;
+           padding: 10px 12px 6px; display: flex; flex-direction: column; }
+  .tsep { align-self: center; color: var(--muted); font-size: 11px; font-weight: 600;
+          margin: 12px 0 4px; }
+  .turn { max-width: min(78%, 620px); padding: 7px 13px; border-radius: 18px; margin: 1px 0;
+          white-space: pre-wrap; word-break: break-word; font-size: 16px; line-height: 1.35; }
+  .turn.agent { align-self: flex-start; background: var(--bubble); }
+  .turn.you   { align-self: flex-end; background: var(--sent); color: #fff; }
+  /* grouped corners, Messenger-style: consecutive same-sender bubbles flatten their facing corners */
+  .turn.agent.g-top { border-bottom-left-radius: 5px; }
+  .turn.agent.g-mid { border-top-left-radius: 5px; border-bottom-left-radius: 5px; }
+  .turn.agent.g-bot { border-top-left-radius: 5px; }
+  .turn.you.g-top { border-bottom-right-radius: 5px; }
+  .turn.you.g-mid { border-top-right-radius: 5px; border-bottom-right-radius: 5px; }
+  .turn.you.g-bot { border-top-right-radius: 5px; }
+  .turn.g-top, .turn.g-solo { margin-top: 8px; }
+  .turn.g-bot, .turn.g-solo { margin-bottom: 2px; }
+  .turn.tools { align-self: center; background: none; color: var(--muted); font-size: 11px;
+                padding: 3px 0; margin: 0; }
+  /* a live AskUserQuestion rendered as tappable options — the chat-native answer to a dialog */
+  .qcard { align-self: stretch; margin: 10px 0 4px; padding: 12px 14px;
+           background: #131316; border: 1px solid var(--row-sep); border-radius: 14px; }
+  .qcard .qtext { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+  .qopt { display: block; width: 100%; text-align: left; margin: 6px 0; padding: 10px 13px;
+          background: var(--bubble); border: 1px solid transparent; border-radius: 11px;
+          font: inherit; color: var(--fg); }
+  .qopt:hover { border-color: var(--blue); }
+  .qopt .qlabel { display: block; font-size: 15px; font-weight: 600; color: var(--blue); }
+  .qopt .qdesc { display: block; font-size: 12.5px; color: var(--dim); margin-top: 2px; }
+  .qcard .qhint { display: block; margin-top: 8px; color: var(--muted); font-size: 11.5px; }
+
+  /* the typing bubble — shown while the session is WORKING, instead of any text hint */
+  .typing { align-self: flex-start; background: var(--bubble); border-radius: 18px;
+            padding: 13px 15px; margin: 8px 0 2px; display: flex; gap: 4px; }
+  .typing span { width: 7px; height: 7px; border-radius: 50%; background: var(--dim);
+                 animation: tblink 1.3s infinite ease-in-out; }
+  .typing span:nth-child(2) { animation-delay: .18s; }
+  .typing span:nth-child(3) { animation-delay: .36s; }
+  @keyframes tblink {
+    0%, 60%, 100% { opacity: .3; transform: translateY(0); }
+    30% { opacity: 1; transform: translateY(-3px); }
+  }
+  /* its miniature, riding the conversation row's preview line */
+  .typing.mini { background: none; padding: 2px 0 0; margin: 0; }
+  .typing.mini span { width: 5px; height: 5px; }
+  /* markdown, kept readable inside the chat idiom; code stays monospace */
+  .turn b { font-weight: 650; }
+  .turn i { font-style: italic; }
+  .turn a { color: inherit; text-decoration: underline; }
+  .turn.agent a { color: var(--cyan); text-decoration: none; }
+  .mdcode, .mdblock { font: 13.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .turn.agent .mdcode { background: var(--code-bg); border-radius: 4px; padding: 0 4px; color: var(--cyan); }
+  .turn.you .mdcode { background: rgba(255,255,255,.18); border-radius: 4px; padding: 0 4px; }
+  .mdblock { display: block; background: var(--code-bg); border-radius: 8px;
+             padding: 8px 10px; margin: 6px 0; overflow-x: auto; white-space: pre; color: var(--dim); }
+  .turn .mdhead { font-weight: 700; }
+  .turn .mdquote { color: var(--dim); }
+
+  /* ---- composer (pill input + circular send, minimal) ----------------------------------------- */
+  #composer { flex: 0 0 auto; padding: 8px 12px 12px; }
+  #composer .frow { display: flex; align-items: flex-end; gap: 8px; }
+  /* Messenger-style growing composer: starts as a one-line pill, expands with the text up to
+     ~5 lines, then scrolls internally. A textarea, so wrapping is native; height is set by the
+     autogrow JS from scrollHeight. */
+  #input { flex: 1 1 auto; background: var(--bubble); border: none; color: var(--fg);
+           border-radius: 20px; padding: 9px 16px; font: inherit; font-size: 16px; min-width: 0;
+           resize: none; max-height: 132px; overflow-y: hidden; line-height: 1.35; }
+  #input::placeholder { color: var(--muted); }
+  #input:focus { outline: none; }
+  #send { flex: 0 0 34px; width: 34px; height: 34px; border-radius: 50%; background: var(--sent);
+          color: #fff; font-size: 19px; font-weight: 700; line-height: 1;
+          display: flex; align-items: center; justify-content: center; }
+  #send:disabled { background: var(--bubble); color: var(--muted); }
+  #plus { flex: 0 0 34px; width: 34px; height: 34px; border-radius: 50%; background: var(--bubble);
+          color: var(--blue); font-size: 22px; font-weight: 400; line-height: 1;
+          display: flex; align-items: center; justify-content: center; }
+  #file { display: none; }
+  .imgmsg { display: block; max-width: min(240px, 62vw); border-radius: 12px; margin: 2px 0; }
+  /* a picked image stages here (thumbnail + remove) and sends WITH the message, not on pick */
+  #attach { display: flex; align-items: flex-start; gap: 6px; padding: 0 4px 8px; }
+  #attach[hidden] { display: none; }
+  #attach .thumbwrap { position: relative; }
+  #attachImg { display: block; width: 64px; height: 64px; object-fit: cover; border-radius: 10px; }
+  #attachX { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px;
+             border-radius: 50%; background: #3a3a3f; color: var(--fg); font-size: 11px;
+             line-height: 1; display: flex; align-items: center; justify-content: center; }
+  #hint { display: none; margin-top: 5px; color: var(--muted); font-size: 11.5px; text-align: center; }
+  #hint.show { display: block; }
+  #hint.err { color: var(--red); }
+  #composer.locked #input, #composer.locked #send { display: none; }
+  #composer.locked #hint { display: block; color: var(--red); font-size: 13px; }
+
+  /* ---- session details sheet (tap the thread's avatar/name) ---------------------------------- */
+  #sheetWrap { position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.55); display: none; }
+  body.sheet-open #sheetWrap { display: block; }
+  #sheet { position: absolute; left: 0; right: 0; bottom: 0; max-height: 78%;
+           overflow-y: auto; overscroll-behavior: contain;
+           background: #131316; border-radius: 18px 18px 0 0;
+           padding: 8px 18px 16px;
+           max-width: 760px; margin: 0 auto; }
+  #sheet .grab { width: 38px; height: 5px; border-radius: 3px; background: #3a3a3f; margin: 4px auto 12px; }
+  #sheet .shead { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  #sheet .shead .avatar { flex: 0 0 40px; width: 40px; height: 40px; font-size: 16px; }
+  #sheet .shead .sname { font-size: 18px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
+  #sheet .row { display: flex; gap: 12px; padding: 9px 0; border-bottom: .5px solid var(--row-sep);
+                font-size: 14.5px; align-items: baseline; }
+  #sheet .row:last-child { border-bottom: none; }
+  #sheet .k { flex: 0 0 118px; color: var(--muted); }
+  #sheet .v { flex: 1 1 auto; min-width: 0; word-break: break-word; }
+  #sheet .v.mono { font: 12.5px/1.5 ui-monospace, Menlo, monospace; color: var(--dim); }
+  #sheet .ctxbar { height: 6px; border-radius: 3px; background: #2c2c31; margin-top: 6px; overflow: hidden; }
+  #sheet .ctxbar i { display: block; height: 100%; border-radius: 3px; background: var(--green); }
+  #sheet .ctxbar i.warn { background: var(--amber); }
+  #sheet .ctxbar i.hot { background: var(--red); }
+  #sheet .chips { margin-top: 2px; }
+  #sheetLoading { padding: 24px 0; color: var(--muted); text-align: center; }
+
+  /* ---- token gate ------------------------------------------------------------------------------ */
+  #gate { position: fixed; inset: 0; background: var(--bg); display: none;
+          flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; }
+  body.gated #gate { display: flex; }
+  #gate .title { font-size: 22px; font-weight: 700; }
+  #gate input { width: min(320px, 80vw); background: var(--bubble); border: none;
+                color: var(--fg); border-radius: 12px; padding: 11px 14px; font: inherit; font-size: 16px; }
+  #gate .msg { color: var(--muted); text-align: center; font-size: 14px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="listHeader">
+    <input id="search" type="search" placeholder="Search" autocomplete="off" />
+    <span class="live" id="liveDot" title="live stream"></span>
+  </header>
+
+  <div id="list"></div>
+  <div id="listEmpty" hidden>loading…</div>
+
+  <div id="thread" class="empty">
+    <div id="threadEmpty">select a conversation</div>
+    <div id="threadHead"></div>
+    <div id="banner" hidden></div>
+    <div id="turns"></div>
+    <div id="composer">
+      <div id="attach" hidden>
+        <span class="thumbwrap"><img id="attachImg" alt="attachment" /><button id="attachX" title="remove">✕</button></span>
+      </div>
+      <div class="frow">
+        <button id="plus" title="attach an image">+</button>
+        <input id="file" type="file" accept="image/*" />
+        <textarea id="input" rows="1" autocomplete="off" enterkeyhint="send" placeholder="Message"></textarea>
+        <button id="send" disabled>↑</button>
+      </div>
+      <span id="hint"></span>
+    </div>
+  </div>
+</div>
+
+<div id="sheetWrap">
+  <div id="sheet"></div>
+</div>
+
+<div id="gate">
+  <span class="title">tx remote</span>
+  <span class="msg">this server requires an access token<br />(TX_REMOTE_TOKEN on the host)</span>
+  <input id="gateInput" type="password" placeholder="token" autocomplete="off" />
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+// ---- token (only enforced when the server has TX_REMOTE_TOKEN set) ------------------------------
+// Remembered per browser; a 401 clears to the gate. EventSource can't set headers, so the token
+// rides a query param on every request.
+let token = "";
+try { token = localStorage.getItem("tx-remote-token") || ""; } catch { /* private mode */ }
+const withToken = (url) => token ? `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}` : url;
+function showGate() {
+  document.body.classList.add("gated");
+  disconnectStream();
+  $("gateInput").focus();
+}
+$("gateInput").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  token = $("gateInput").value.trim();
+  try { localStorage.setItem("tx-remote-token", token); } catch { /* private mode */ }
+  document.body.classList.remove("gated");
+  boot();
+});
+
+// ---- state ---------------------------------------------------------------------------------------
+let feed = null;      // the /api/inbox payload
+let sel = null;       // open thread's session id
+let shownFor = null;  // which thread the turns pane last rendered (drives autoscroll on switch)
+// Earlier dialogue, paged in as the user scrolls up. Belongs to ONE thread (id); prepended before
+// the live feed's turns on render. `boundary` is the oldest ts the FEED covered when paging began
+// — pages fetch strictly before it, and the live window only slides forward, so no overlap.
+let older = { id: null, turns: [], more: true, loading: false, boundary: 0 };
+function resetOlder() { older = { id: null, turns: [], more: true, loading: false, boundary: 0 }; }
+
+
+function escapeHtml(text) {
+  return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// Agent markdown, rendered inline (the bubble keeps pre-wrap, so line layout survives).
+function renderMarkdown(text) {
+  let s = escapeHtml(text);
+  s = s.replace(/```[^\n`]*\n([\s\S]*?)```\n?/g, (_, body) => `<span class="mdblock">${body.replace(/\n$/, "")}</span>`);
+  s = s.replace(/^(#{1,4})\s+(.+)$/gm, (_, _h, title) => `<span class="mdhead">${title}</span>`);
+  s = s.replace(/^&gt;\s?(.*)$/gm, '<span class="mdquote">▎$1</span>');
+  s = s.replace(/`([^`\n]+)`/g, '<code class="mdcode">$1</code>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  s = s.replace(/(^|[^*\w])\*([^\s*][^*\n]*?[^\s*]|[^\s*])\*(?!\*)/g, "$1<i>$2</i>");
+  s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  return s;
+}
+function stripMarkdown(text) {
+  return String(text)
+    .replace(/```[^\n`]*/g, "").replace(/[`*]+/g, "").replace(/^#{1,4}\s+/g, "")
+    .replace(/\[([^\]]+)\]\((?:https?:[^)\s]+)\)/g, "$1");
+}
+const initial = (name) => (name || "?").replace(/[^a-zA-Z0-9]/g, "").slice(0, 2) || "?";
+const typingHtml = (extra) => `<span class="typing${extra ? " " + extra : ""}"><span></span><span></span><span></span></span>`;
+
+// `[img:<abs path>]` in a turn (the attach protocol — the agent Reads the path) renders as the
+// actual image, served back by basename from the uploads dir. Runs on already-escaped HTML.
+function renderImages(html) {
+  return html.replace(/\[img:([^\]]+)\]/g, (_, path) => {
+    const name = path.split("/").pop();
+    return `<img class="imgmsg" src="/uploads/${encodeURIComponent(name)}" alt="attached image" />`;
+  });
+}
+
+// ---- list ----------------------------------------------------------------------------------------
+function convHtml(item) {
+  const chips = (item.tags || []).map((tag) => {
+    const color = (item.tag_colors && item.tag_colors[tag]) || "var(--dim)";
+    return `<span class="chip" style="--chip:${color}">${escapeHtml(tag)}</span>`;
+  }).join("");
+  const needs = item.reason === "blocked" || item.reason === "ready";
+  const classes = `conv s-${item.state}${needs ? " needs" : ""}${item.id === sel ? " selected" : ""}${item.reason === "working" || item.reason === "idle" ? " dimmed" : ""}`;
+  return `<button class="${classes}" data-id="${escapeHtml(item.id)}">` +
+    `<span class="need ${needs ? item.reason : ""}"></span>` +
+    `<span class="avatar">${escapeHtml(initial(item.name))}</span>` +
+    `<span class="mid"><span class="nrow"><span class="cname">${escapeHtml(item.name)}</span>` +
+    `<span class="ctime">${escapeHtml(item.rel || "")}</span></span>` +
+    `<div class="cprev">${item.reason === "working" ? typingHtml("mini") : escapeHtml(stripMarkdown(item.preview || "—"))}</div>` +
+    (chips ? `<div class="chips">${chips}</div>` : "") +
+    `</span></button>`;
+}
+
+// Fuzzy search over the conversation list: name prefix beats name substring beats an in-order
+// character subsequence of the name, then the same over tags+preview. Score 0 hides the row;
+// ties keep the Signal recency order.
+function fuzzyScore(item, q) {
+  const name = item.name.toLowerCase();
+  const hay = `${name} ${(item.tags || []).join(" ").toLowerCase()} ${(item.preview || "").toLowerCase()}`;
+  const subsequence = (text) => {
+    let i = 0;
+    for (const ch of text) if (ch === q[i]) i++;
+    return i === q.length;
+  };
+  if (name.startsWith(q)) return 100;
+  if (name.includes(q)) return 80;
+  if (subsequence(name)) return 60;
+  if (hay.includes(q)) return 40;
+  if (subsequence(hay)) return 20;
+  return 0;
+}
+
+function render() {
+  const empty = $("listEmpty");
+  if (!feed) { empty.hidden = false; empty.textContent = "loading…"; return; }
+  if (sel && !feed.items.some((item) => item.id === sel)) {
+    sel = null;                                     // the open session exited — back to the empty state
+  }
+  const q = $("search").value.trim().toLowerCase();
+  let rows = feed.items;
+  if (q) {
+    rows = rows
+      .map((item) => ({ item, score: fuzzyScore(item, q) }))
+      .filter((entry) => entry.score > 0)
+      .sort((a, b) => b.score - a.score || b.item.last_ts - a.item.last_ts)
+      .map((entry) => entry.item);
+  }
+  $("list").innerHTML = rows.map(convHtml).join("");
+  empty.hidden = rows.length > 0;
+  empty.textContent = feed.items.length === 0 ? "no live llm sessions" : "no matches";
+  const needs = feed.items.filter((item) => item.reason === "blocked" || item.reason === "ready").length;
+  document.title = needs ? `(${needs}) tx remote` : "tx remote";   // browser-tab badge only
+  renderThread();
+}
+
+// ---- thread --------------------------------------------------------------------------------------
+// Messenger layout: consecutive same-sender bubbles group (facing corners flatten, 1px apart);
+// a centred time separator marks a >10 min gap instead of per-bubble stamps. #composer is static —
+// only shown/hidden/relabeled — so a live repaint never clobbers typing.
+function timeSep(ts) {
+  const d = new Date(ts * 1000), now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const label = sameDay ? time : `${d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })} ${time}`;
+  return `<div class="tsep">${label}</div>`;
+}
+
+function renderThread() {
+  const item = feed && feed.items.find((candidate) => candidate.id === sel);
+  $("thread").classList.toggle("empty", !item);
+  if (!item) { shownFor = null; return; }
+
+  $("threadHead").className = `s-${item.state}`;
+  const pct = item.context_pct;
+  const pctChip = pct == null ? "" :
+    `<span class="ctxpct${pct > 80 ? " hot" : pct > 55 ? " warn" : ""}" title="context used">${pct}%</span>`;
+  $("threadHead").innerHTML =
+    `<span class="avatar">${escapeHtml(initial(item.name))}</span>` +
+    `<span class="tname">${escapeHtml(item.name)}</span>${pctChip}`;
+
+  const banner = $("banner");
+  const answerable = item.reason === "blocked" && item.blocked && item.blocked.questions;
+  if (item.reason === "blocked" && item.blocked && !answerable) {
+    banner.hidden = false;
+    banner.innerHTML = `⏸ blocked on <b>${escapeHtml(item.blocked.tool)}</b> ${escapeHtml(item.blocked.input || "")} — answer it in the terminal`;
+  } else {
+    banner.hidden = true;
+  }
+
+  const turns = $("turns");
+  const wasAtBottom = turns.scrollHeight - turns.scrollTop - turns.clientHeight < 60;
+  const msgs = (older.id === item.id ? older.turns : []).concat(item.turns);
+  turns.innerHTML = msgs.map((turn, index) => {
+    if (turn.who === "tools") return `<div class="turn tools">· ${turn.count} tool call${turn.count === 1 ? "" : "s"} ·</div>`;
+    const prev = msgs[index - 1], next = msgs[index + 1];
+    const sep = turn.ts && (!prev || !prev.ts || turn.ts - prev.ts > 600) ? timeSep(turn.ts) : "";
+    const samePrev = prev && prev.who === turn.who && !sep;
+    const sameNext = next && next.who === turn.who && !(next.ts && turn.ts && next.ts - turn.ts > 600);
+    const pos = samePrev && sameNext ? "mid" : samePrev ? "bot" : sameNext ? "top" : "solo";
+    const text = renderImages(turn.who === "agent" ? renderMarkdown(turn.text) : escapeHtml(turn.text));
+    return `${sep}<div class="turn ${turn.who} g-${pos}">${text}</div>`;
+  }).join("") || `<div class="turn tools">no dialogue yet</div>`;
+  // A WORKING session shows the classic typing bubble instead of any text hint.
+  if (item.reason === "working") turns.insertAdjacentHTML("beforeend", typingHtml(""));
+  // An answerable AskUserQuestion renders as an in-thread option card — tap to answer the dialog.
+  if (answerable) {
+    const q = item.blocked.questions[0];
+    turns.insertAdjacentHTML("beforeend",
+      `<div class="qcard" data-tuid="${escapeHtml(item.blocked.tool_use_id || "")}">` +
+      `<div class="qtext">${escapeHtml(q.question)}</div>` +
+      q.options.map((o, i) =>
+        `<button class="qopt" data-opt="${i + 1}"><span class="qlabel">${escapeHtml(o.label)}</span>` +
+        (o.description ? `<span class="qdesc">${escapeHtml(o.description)}</span>` : "") + `</button>`
+      ).join("") +
+      `<span class="qhint">clicking answers the dialog in the session</span></div>`);
+  }
+  if (older.id === item.id && !older.more) {
+    turns.insertAdjacentHTML("afterbegin", `<div class="turn tools">· beginning of loaded history ·</div>`);
+  }
+  if (shownFor !== item.id || wasAtBottom) turns.scrollTop = turns.scrollHeight;
+  shownFor = item.id;
+
+  const composer = $("composer"), hint = $("hint");
+  composer.classList.toggle("locked", item.reason === "blocked");
+  if (item.reason === "blocked") {
+    hint.className = "show";
+    hint.textContent = answerable
+      ? "answer by clicking an option above"
+      : "a dialog is up in the terminal — text can't answer it";
+  } else {
+    hint.className = "";                            // hidden: the common case carries no chrome
+    hint.textContent = "";
+  }
+}
+
+// ---- session details sheet -------------------------------------------------------------------
+// Tap the thread's avatar or name → a bottom sheet with the session's vitals, fetched fresh from
+// /api/session: model + context usage (with a fill bar against the window), state/age, cwd +
+// git branch, tags, lineage, chats, transcript size, and the launch prompt.
+const fmtTokens = (n) => n >= 1000 ? `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}k` : String(n ?? "—");
+
+function sheetRow(key, value, mono) {
+  if (value === null || value === undefined || value === "") return "";
+  return `<div class="row"><span class="k">${key}</span><span class="v${mono ? " mono" : ""}">${value}</span></div>`;
+}
+
+async function openSheet(id) {
+  document.body.classList.add("sheet-open");
+  $("sheet").innerHTML = `<div class="grab"></div><div id="sheetLoading">loading…</div>`;
+  let d;
+  try {
+    const response = await fetch(withToken(`/api/session?id=${encodeURIComponent(id)}`), { cache: "no-store" });
+    if (response.status === 401) { showGate(); return; }
+    d = await response.json();
+  } catch { d = null; }
+  if (!d || !d.ok) { $("sheet").innerHTML = `<div class="grab"></div><div id="sheetLoading">failed to load details</div>`; return; }
+
+  const pct = d.context_tokens && d.context_window ? Math.min(100, Math.round(d.context_tokens / d.context_window * 100)) : null;
+  const barClass = pct === null ? "" : pct > 80 ? "hot" : pct > 55 ? "warn" : "";
+  const context = d.context_tokens
+    ? `${fmtTokens(d.context_tokens)} / ${fmtTokens(d.context_window)} (${pct}%)` +
+      `<div class="ctxbar"><i class="${barClass}" style="width:${pct}%"></i></div>`
+    : null;
+  const chips = (d.tags || []).map((tag) => {
+    const color = (d.tag_colors && d.tag_colors[tag]) || "var(--dim)";
+    return `<span class="chip" style="--chip:${color}">${escapeHtml(tag)}</span>`;
+  }).join("");
+
+  $("sheet").innerHTML = `<div class="grab"></div>` +
+    `<div class="shead s-${d.state}"><span class="avatar">${escapeHtml(initial(d.name))}</span>` +
+    `<span class="sname">${escapeHtml(d.name)}</span></div>` +
+    sheetRow("state", `${escapeHtml(d.state)}${d.activity_rel ? ` · active ${escapeHtml(d.activity_rel)} ago` : ""}`) +
+    sheetRow("model", d.model ? escapeHtml(d.model) : null, true) +
+    sheetRow("context", context) +
+    sheetRow("last turn out", d.last_output_tokens ? `${fmtTokens(d.last_output_tokens)} tokens` : null) +
+    sheetRow("tags", chips ? `<span class="chips">${chips}</span>` : null) +
+    sheetRow("cwd", escapeHtml(d.cwd || ""), true) +
+    sheetRow("branch", d.branch ? escapeHtml(d.branch) : null, true) +
+    sheetRow("parent", d.parent ? escapeHtml(d.parent) : null) +
+    sheetRow("attached", (d.attached || []).map(escapeHtml).join("<br>") || "detached") +
+    sheetRow("chats", d.chats > 1 ? `${d.chats} (rollovers/forks)` : String(d.chats)) +
+    sheetRow("started", d.created_rel ? `${escapeHtml(d.created_rel)} ago` : null) +
+    sheetRow("engine", d.version ? `${escapeHtml(d.engine || "claude")} · Claude Code ${escapeHtml(d.version)}` : escapeHtml(d.engine || "")) +
+    sheetRow("launch prompt", d.cmd ? escapeHtml(d.cmd) : null, true);
+}
+$("sheetWrap").addEventListener("click", (event) => {
+  if (!event.target.closest("#sheet")) document.body.classList.remove("sheet-open");
+});
+
+// Page in earlier dialogue when the reader nears the top. The boundary is fixed on first page
+// (the feed's oldest timestamp at that moment); each page fetches strictly before what we hold,
+// and the scroll position is re-anchored so the content doesn't jump under the reader.
+async function loadOlder() {
+  const item = feed && feed.items.find((candidate) => candidate.id === sel);
+  if (!item || older.loading) return;
+  if (older.id === item.id && !older.more) return;
+  if (older.id !== item.id) {
+    resetOlder();
+    older.id = item.id;
+    older.boundary = (item.turns.find((turn) => turn.ts) || {}).ts || 0;
+    if (!older.boundary) { older.more = false; return; }
+  }
+  const before = (older.turns.find((turn) => turn.ts) || {}).ts || older.boundary;
+  older.loading = true;
+  try {
+    const response = await fetch(withToken(`/api/history?id=${encodeURIComponent(sel)}&before=${before}`), { cache: "no-store" });
+    if (response.status === 401) { showGate(); return; }
+    const result = await response.json();
+    if (!result.ok) { older.more = false; return; }
+    older.turns = result.turns.concat(older.turns);
+    older.more = result.more && result.turns.length > 0;
+    const turns = $("turns");
+    const prevHeight = turns.scrollHeight, prevTop = turns.scrollTop;
+    renderThread();
+    turns.scrollTop = prevTop + (turns.scrollHeight - prevHeight);
+  } catch {
+    /* transient — the next scroll-to-top retries */
+  } finally {
+    older.loading = false;
+  }
+}
+
+// POST one reply into the open session; on success clear the composer and append the optimistic
+// bubble (the real turn arrives on the next SSE push). Shared by plain text and image sends.
+async function postReply(text) {
+  try {
+    const response = await fetch(withToken("/api/reply"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: sel, text }),
+    });
+    if (response.status === 401) { showGate(); return false; }
+    const result = await response.json();
+    if (!result.ok) { $("hint").className = "show err"; $("hint").textContent = `send failed: ${result.error || "unknown"}`; return false; }
+    $("input").value = "";
+    $("send").disabled = true;
+    autogrow();                       // collapse the grown pill back to one line
+    const item = feed && feed.items.find((candidate) => candidate.id === sel);
+    if (item) { item.turns.push({ who: "you", text, ts: Date.now() / 1000 }); renderThread(); }
+    return true;
+  } catch {
+    $("hint").className = "show err"; $("hint").textContent = "send failed: server unreachable";
+    return false;
+  }
+}
+
+// A picked image stages in the composer (thumbnail + ✕) and goes out WITH the message: on send
+// it uploads to the Mac, then the reply is `[caption] [img:<abs path>]` — the thread shows the
+// picture; the agent opens the path with its Read tool.
+let pendingImage = null;   // { name, dataUrl } staged in the composer
+
+function updateSend() { $("send").disabled = !$("input").value.trim() && !pendingImage; }
+
+function stageImage(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    pendingImage = { name: file.name, dataUrl: reader.result };
+    $("attachImg").src = pendingImage.dataUrl;
+    $("attach").hidden = false;
+    updateSend();
+  };
+  reader.readAsDataURL(file);
+}
+
+function clearAttach() {
+  pendingImage = null;
+  $("attachImg").src = "";
+  $("attach").hidden = true;
+  updateSend();
+}
+
+async function uploadPending() {
+  const response = await fetch(withToken("/api/upload"), {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: pendingImage.name, data: pendingImage.dataUrl }),
+  });
+  if (response.status === 401) { showGate(); return null; }
+  const result = await response.json();
+  if (!result.ok) {
+    $("hint").className = "show err";
+    $("hint").textContent = `upload failed: ${result.error || "unknown"}`;
+    return null;
+  }
+  return result.path;
+}
+
+async function sendReply() {
+  const input = $("input");
+  const caption = input.value.trim();
+  if ((!caption && !pendingImage) || !sel) return;
+  input.disabled = true;
+  try {
+    let text = caption;
+    if (pendingImage) {
+      $("hint").className = "show"; $("hint").textContent = "uploading image…";
+      const path = await uploadPending();
+      if (path === null) return;
+      text = `${caption ? caption + " " : ""}[img:${path}]`;
+    }
+    if (await postReply(text)) {
+      clearAttach();
+      $("hint").className = ""; $("hint").textContent = "";
+    }
+  } catch {
+    $("hint").className = "show err"; $("hint").textContent = "send failed: server unreachable";
+  } finally {
+    input.disabled = false;
+    updateSend();
+  }
+}
+
+// ---- events --------------------------------------------------------------------------------------
+$("list").addEventListener("click", (event) => {
+  const conv = event.target.closest(".conv");
+  if (!conv) return;
+  if (conv.dataset.id !== sel) { clearAttach(); resetOlder(); }   // staged image + paged history belong to their thread
+  sel = conv.dataset.id;
+  render();                       // full render: the list repaints its selected-row highlight too
+});
+$("threadHead").addEventListener("click", (event) => {
+  // The avatar, the name, or the context chip opens the session-details sheet.
+  if (sel && (event.target.closest(".avatar") || event.target.closest(".tname") || event.target.closest(".ctxpct"))) openSheet(sel);
+});
+$("turns").addEventListener("scroll", () => {
+  if ($("turns").scrollTop < 80) loadOlder();
+});
+// Tap an option → answer the live dialog. The server re-verifies the dialog is still up and
+// still the same tool_use before any key is sent; a stale tap becomes a harmless error hint.
+$("turns").addEventListener("click", async (event) => {
+  const optionButton = event.target.closest(".qopt");
+  if (!optionButton || !sel) return;
+  const card = optionButton.closest(".qcard");
+  const item = feed && feed.items.find((candidate) => candidate.id === sel);
+  optionButton.disabled = true;
+  try {
+    const response = await fetch(withToken("/api/answer"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: sel, tool_use_id: card.dataset.tuid, option: Number(optionButton.dataset.opt) }),
+    });
+    if (response.status === 401) { showGate(); return; }
+    const result = await response.json();
+    if (!result.ok) {
+      $("hint").className = "show err";
+      $("hint").textContent = result.error || "answer failed";
+      return;
+    }
+    // Optimistic: show the chosen option as your turn; the real state flips on the next push.
+    const label = optionButton.querySelector(".qlabel").textContent;
+    if (item) { item.turns.push({ who: "you", text: label, ts: Date.now() / 1000 }); item.blocked = null; item.reason = "working"; renderThread(); }
+  } catch {
+    $("hint").className = "show err";
+    $("hint").textContent = "answer failed: server unreachable";
+  }
+});
+$("send").addEventListener("click", sendReply);
+// The composer pill grows with its content, Messenger-style: height tracks scrollHeight up to
+// the CSS max, after which it scrolls internally. Re-run on every edit and after a send clears it.
+function autogrow() {
+  const input = $("input");
+  input.style.height = "auto";
+  const capped = Math.min(input.scrollHeight, 132);
+  input.style.height = capped + "px";
+  input.style.overflowY = input.scrollHeight > 132 ? "auto" : "hidden";
+}
+$("input").addEventListener("keydown", (event) => {
+  // Enter sends; Shift+Enter inserts a newline.
+  if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendReply(); }
+});
+$("input").addEventListener("input", () => { updateSend(); autogrow(); });
+$("plus").addEventListener("click", () => $("file").click());
+$("file").addEventListener("change", () => {
+  stageImage($("file").files[0]);
+  $("file").value = "";                 // re-picking the same photo must fire change again
+});
+$("attachX").addEventListener("click", clearAttach);
+$("search").addEventListener("input", render);
+
+// ---- live stream ----------------------------------------------------------------------------------
+let stream = null;
+function connectStream() {
+  if (stream) return;
+  stream = new EventSource(withToken("/api/stream"));
+  stream.onopen = () => $("liveDot").classList.add("on");
+  stream.onerror = () => $("liveDot").classList.remove("on");   // EventSource auto-reconnects
+  stream.addEventListener("inbox", (event) => {
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    feed = data;
+    render();
+  });
+}
+function disconnectStream() {
+  if (!stream) return;
+  stream.close();
+  stream = null;
+  $("liveDot").classList.remove("on");
+}
+
+async function fetchOnce() {
+  try {
+    const response = await fetch(withToken("/api/inbox"), { cache: "no-store" });
+    if (response.status === 401) { showGate(); return; }
+    feed = await response.json();
+    render();
+  } catch {
+    $("listEmpty").hidden = false;
+    $("listEmpty").textContent = "server unreachable";
+  }
+}
+
+// Browsers throttle or freeze background tabs — resync on every return to visibility.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") { connectStream(); fetchOnce(); }
+});
+
+function boot() { fetchOnce(); connectStream(); }
+boot();
+</script>
+</body>
+</html>
