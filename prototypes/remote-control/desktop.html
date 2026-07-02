@@ -29,11 +29,12 @@
     font: 16px/1.35 -apple-system, "SF Pro Text", system-ui, "Segoe UI", Roboto, sans-serif;
     display: flex; flex-direction: column; overflow: hidden;
   }
-  /* Split-pane grid: list column (header + rows) left, the thread filling the right. */
+  /* Split-pane grid filling the whole window: list column (header + rows) left, thread right.
+     No width cap — a desktop client owns its window; the bubble max-width keeps text readable. */
   #app { flex: 1 1 auto; min-height: 0; display: grid;
          grid-template-columns: 340px minmax(0, 1fr);
          grid-template-rows: auto minmax(0, 1fr);
-         width: 100%; max-width: 1400px; margin: 0 auto; }
+         width: 100%; }
   button { font: inherit; background: none; border: none; color: inherit; cursor: pointer; padding: 0; }
 
   /* ---- list header: just a search pill + the live dot (no big title) ------------------------- */
