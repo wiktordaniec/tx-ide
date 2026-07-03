@@ -99,6 +99,8 @@ I will:
   - add ~/.local/bin to your shell PATH (zsh/bash; marker-tracked)
   - create the $TX_IDE_DIR skeleton (sessions/, history/, user-agents/, config)
       and symlink agents/ → repo (orchestration role files)
+  - symlink each repo skill into ~/.agents/skills/ (Codex, Gemini) and
+      ~/.claude/skills/ (Claude Code) — the Agent Skills standard
   - write $TX_IDE_DIR/tmux.conf (a one-line file I own)
   - install the tx-ide default ~/.tmux.conf if you have none; if you
       already have one, add a source-file block (or, with a [y/N]
@@ -250,6 +252,20 @@ else
   exit 1
 fi
 link_dir "$REPO/agents" "$TX_IDE_DIR/agents"
+
+# === 2b: agent skills ===
+# Ship each repo skill (skills/<name>/SKILL.md, the open Agent Skills standard) into every
+# engine's native discovery path: Codex and Gemini both read the cross-vendor ~/.agents/skills/;
+# Claude Code reads ~/.claude/skills/. Per-skill symlinks, never the whole directory — user-
+# authored skills living alongside ours are untouched, and uninstall removes exactly these links.
+header "Agent skills"
+CLAUDE_SKILLS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
+mkdir -p "$HOME/.agents/skills" "$CLAUDE_SKILLS_DIR"
+for skill in "$REPO"/skills/*/; do
+  skill="${skill%/}"
+  link_dir "$skill" "$HOME/.agents/skills/$(basename "$skill")"
+  link_dir "$skill" "$CLAUDE_SKILLS_DIR/$(basename "$skill")"
+done
 
 # === 3: ~/.tx-ide/tmux.conf shim ===
 header "Tmux config shim"

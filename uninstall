@@ -164,6 +164,17 @@ elif [[ -L "$agents_link" ]]; then
 elif [[ -e "$agents_link" ]]; then
   skip "$agents_link" "not a symlink, left alone"
 fi
+# Per-skill symlinks installed into the engines' skill directories — remove only links that
+# point into this repo's skills/; user-authored skills alongside them are left alone.
+for skills_dir in "$HOME/.agents/skills" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"; do
+  [[ -d "$skills_dir" ]] || continue
+  for link in "$skills_dir"/*; do
+    if [[ -L "$link" ]] && [[ "$(readlink "$link")" == "$REPO/skills/"* ]]; then
+      rm "$link"
+      ok "$link"
+    fi
+  done
+done
 for leftover in tmux.conf config.json log.jsonl; do
   if [[ -e "$TX_IDE_DIR/$leftover" ]]; then
     rm -f "$TX_IDE_DIR/$leftover"

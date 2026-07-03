@@ -19,6 +19,9 @@ Covers the artifacts acceptance checklist:
   5. `ArtifactsCommand._companion_spec` builds `--open`-shaped nvim specs for file artifacts
      (live path, then snapshot) and `--diff`-shaped specs for diff artifacts, and returns None
      (not a spec) when the deliverable is truly gone.
+  6. skills/artifacts/SKILL.md stays a valid Agent Skills definition (agentskills.io): the
+     frontmatter `name` matches its directory, `description` exists and fits the 1024-char cap,
+     and the body respects the ~500-line guidance — all three engines discover it by this contract.
 
 Hermetic: a temp `$TX_IDE_HOME` (records + log) + a fake Tmux (no live server).
 """
@@ -235,5 +238,19 @@ with contextlib.redirect_stderr(io.StringIO()):
 missing_repo_diff = register(store, type=ArtifactType.DIFF, title="d", repo="/nonexistent-dir", tags=[], diff_base="main")
 with contextlib.redirect_stderr(io.StringIO()):
     check("gone repo yields no diff spec", picker._companion_spec(missing_repo_diff, "art-view") is None)
+
+# ----- 6. the shipped skill definition stays spec-compliant -----------------------------------
+
+for skill_file in sorted((Path(__file__).resolve().parents[1] / "skills").glob("*/SKILL.md")):
+    text = skill_file.read_text()
+    check(f"{skill_file.parent.name}: frontmatter fenced", text.startswith("---\n") and "\n---\n" in text[4:])
+    frontmatter = text[4 : text.index("\n---\n", 4)]
+    fields = dict(
+        line.split(":", 1) for line in frontmatter.splitlines() if ":" in line and not line.startswith(" ")
+    )
+    check(f"{skill_file.parent.name}: name matches directory", fields["name"].strip() == skill_file.parent.name)
+    description = fields["description"].strip()
+    check(f"{skill_file.parent.name}: description within spec", 0 < len(description) <= 1024)
+    check(f"{skill_file.parent.name}: body within the ~500-line guidance", len(text.splitlines()) < 500)
 
 print(f"OK — {PASSED} checks passed")
