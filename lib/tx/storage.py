@@ -68,6 +68,12 @@ def config_path() -> Path:
     return tx_ide_home() / "config.json"
 
 
+def artifacts_dir() -> Path:
+    """`$TX_IDE_HOME/artifacts/` — deliverable records `<uuid>.json` + snapshot dirs `<uuid>/`
+    (`ArtifactStore`)."""
+    return tx_ide_home() / "artifacts"
+
+
 def agents_dir() -> Path:
     """`$TX_IDE_HOME/agents` — symlink to the repo's shipped role files (created by the installer)."""
     return tx_ide_home() / "agents"
@@ -92,7 +98,7 @@ def ensure_home() -> Path:
     exposes it so the installer need not duplicate the layout.
     """
     home = tx_ide_home()
-    for directory in (home, sessions_dir(), history_dir(), user_agents_dir()):
+    for directory in (home, sessions_dir(), history_dir(), user_agents_dir(), artifacts_dir()):
         directory.mkdir(parents=True, exist_ok=True)
     return home
 

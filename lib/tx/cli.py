@@ -28,15 +28,22 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import artifact as artifacts_module
 from . import chat, engines, history, hooks, palette, sync
+from .artifact import Artifact, ArtifactStore, ArtifactType, open_path
 from .chat import ChatOps
 from .engines import claude
 from .events import EventLog
 from .render import (
+    ARTIFACT_FROM_W,
+    ARTIFACT_TITLE_W,
+    ARTIFACT_TYPE_W,
     LOCATION_W,
     ROLE_W,
+    artifact_picker_rows,
     picker_display_rows,
     picker_namew,
+    render_artifacts,
     render_chats,
     render_history,
     render_ls,
@@ -99,6 +106,16 @@ def detect_term_cols() -> int:
             return os.get_terminal_size(tty.fileno()).columns
     except OSError:
         return shutil.get_terminal_size(fallback=(80, 24)).columns
+
+
+def _picker_color() -> str:
+    """The shared fzf `--color` spec — one look for every tx picker (`attach`, `artifacts`)."""
+    return (
+        f"fg:{palette.DIM_FG_HEX},pointer:{palette.ACCENT_HEX},fg+:{palette.DIM_FG_HEX}:regular,"
+        f"bg+:{palette.SELECTION_BG}:regular,hl:{palette.ACCENT_HEX},hl+:{palette.ACCENT_HEX},"
+        f"header:{palette.DIM_FG_HEX},footer:{palette.DIM_FG_HEX},prompt:{palette.DIM_FG_HEX},"
+        f"query:{palette.FG_HEX}"
+    )
 
 
 def _env_namew() -> int:
@@ -774,6 +791,101 @@ class StartCommand(Command):
 # ----- interactive picker (S1b) ------------------------------------------------------------
 
 
+class SessionJoiner:
+    """Post-selection attach mechanics shared by the pickers (`tx attach`, `tx artifacts`): given
+    a chosen session, nest-attach it into the launching Views pane when applicable, else
+    switch-client / foreground attach — or `--jump` to the pane already hosting it. Extracted
+    verbatim from `AttachCommand` (the bash `cmd_pick` loop body) when `tx artifacts` grew the
+    same open-the-selection need."""
+
+    def __init__(self, service: SessionService):
+        self.service = service
+
+    def tmux_target(self, name: str) -> str:
+        """Fallback name→tmux-target resolver (the picker rows carry the target — §D7 — so this is
+        only hit for a row the feed produced without one). A PROCESS is tmux-named by its id, so the
+        human name is not a tmux target; resolve it through the store, falling back to the name
+        itself for an untracked / coexistence session (no record)."""
+        record = self.service.get(name)
+        return record.tmux_name if record is not None else name
+
+    def nest_attach(self, name: str, target: str) -> bool:
+        """Attach the chosen LOCAL session (cmd_pick's loop body): nest-attach into the launching
+        Views pane when applicable, else switch-client / foreground attach. `name` is the picker's
+        display name (for messages); `target` is the resolved tmux target carried on the row (a
+        process is named by its id). False = the session vanished (re-loop)."""
+        if not self.service.tmux.has_session(target):
+            print(f"tx: session '{name}' does not exist", file=sys.stderr)
+            return False
+        if self._respawn_into_view_pane(target):
+            return True
+        return self._switch_or_attach(target)
+
+    def jump_to(self, name: str, target: str) -> bool:
+        """`--jump`: focus the existing pane already hosting `name` instead of nest-attaching here
+        (port of `jump_to_session`). Falls back to nest-attach-into-view, then switch-client. `target`
+        is the resolved tmux target carried on the row (a process is named by its id)."""
+        tmux = self.service.tmux
+        if not tmux.has_session(target):
+            print(f"tx: session '{name}' does not exist", file=sys.stderr)
+            return False
+        current_session = tmux.current_session_name() or ""
+        if current_session == target:
+            return True
+        pane = tmux.pane_for_session(target, current_session)
+        if pane and pane.split(":")[0] == current_session:
+            return tmux.select_window(pane) and tmux.select_pane(pane)
+        if self._respawn_into_view_pane(target):
+            return True
+        try:
+            tmux.switch_client(target)
+            return True
+        except TmuxError:
+            return False
+
+    def _respawn_into_view_pane(self, target: str) -> bool:
+        """If the picker was launched from a shell pane inside a Views home, nest-attach `target` (a
+        tmux session target) INTO that pane via `respawn-pane -k` (the `TMUX= tmux attach …; exec
+        $SHELL` keeps the pane alive after the inner session detaches). True when it did, else fall
+        through."""
+        tmux = self.service.tmux
+        if not os.environ.get("TMUX"):
+            return False
+        origin_pane = tmux.current_pane_id()
+        current_session = tmux.current_session_name() or ""
+        if not origin_pane or not self._is_view_session(current_session):
+            return False
+        origin_cmd = tmux.display_message("#{pane_current_command}", target=origin_pane)
+        if origin_cmd not in SHELL_COMMANDS:
+            return False
+        quoted = shlex.quote(target)
+        tmux.respawn_pane(
+            origin_pane, f"TMUX= tmux attach -t {quoted}; exec ${{SHELL:-zsh}}"
+        )
+        return True
+
+    def _switch_or_attach(self, target: str) -> bool:
+        """Switch the calling client to `target` (inside tmux) or foreground-attach (outside). A
+        failed switch-client (the client may be gone) is tolerated — cmd_pick ignores its status."""
+        tmux = self.service.tmux
+        if os.environ.get("TMUX"):
+            try:
+                tmux.switch_client(target)
+            except TmuxError:
+                pass
+        else:
+            tmux.attach_session(target)
+        return True
+
+    def _is_view_session(self, name: str) -> bool:
+        """Whether `name` is recorded with kind=view — gates the nest-attach (only a Views pane
+        hosts nested sessions). Port of `is_view_session`, resolved through the service."""
+        if not name:
+            return False
+        session = self.service.get(name)
+        return session is not None and session.kind == Kind.VIEW
+
+
 class AttachCommand(Command):
     """`tx attach` — the interactive fzf picker (a faithful port of the old bash `cmd_pick`).
 
@@ -918,12 +1030,6 @@ class AttachCommand(Command):
             f"printf '{palette.WARN_ANSI}{bold} ⚠  Kill \"%s\"? [y/N]{reset}\\n%s' "
             f"{{1}} '{header_cols}'"
         )
-        color = (
-            f"fg:{palette.DIM_FG_HEX},pointer:{palette.ACCENT_HEX},fg+:{palette.DIM_FG_HEX}:regular,"
-            f"bg+:{palette.SELECTION_BG}:regular,hl:{palette.ACCENT_HEX},hl+:{palette.ACCENT_HEX},"
-            f"header:{palette.DIM_FG_HEX},footer:{palette.DIM_FG_HEX},prompt:{palette.DIM_FG_HEX},"
-            f"query:{palette.FG_HEX}"
-        )
         return [
             "fzf",
             "--exact",
@@ -935,7 +1041,7 @@ class AttachCommand(Command):
             "--with-nth=5..",
             "--listen",
             "--track",
-            f"--color={color}",
+            f"--color={_picker_color()}",
             f"--header={header_cols}",
             f"--query={query}",
             # Refresh loop (reconcile-on-read) + unbind y/n on start so they fall through to query
@@ -964,6 +1070,7 @@ class AttachCommand(Command):
     def _loop(self, jump: bool, opts: list[str], namew: int) -> int:
         """Re-render the feed, run fzf, act on the selection — looping only on a recoverable miss
         (a vanished session / a failed jump), exactly like the bash `while :` loop."""
+        joiner = SessionJoiner(self.service)
         while True:
             result = subprocess.run(
                 opts, input=self._render_feed(namew), stdout=subprocess.PIPE, text=True
@@ -976,10 +1083,10 @@ class AttachCommand(Command):
             # THAT, so a stale same-name husk in the store can't redirect us onto a dead session (D7).
             # Fall back to name resolution for any row the feed produced without the field.
             target = (
-                fields[3] if len(fields) > 3 and fields[3] else self._tmux_target(name)
+                fields[3] if len(fields) > 3 and fields[3] else joiner.tmux_target(name)
             )
             if jump:
-                if self._jump_to_session(name, target):
+                if joiner.jump_to(name, target):
                     return 0
                 print(
                     f"tx: could not jump to or switch to session {name}",
@@ -987,98 +1094,12 @@ class AttachCommand(Command):
                 )
                 time.sleep(1.2)
                 continue
-            if self._nest_attach(name, target):
+            if joiner.nest_attach(name, target):
                 return 0
             time.sleep(1.2)
 
     def _render_feed(self, namew: int) -> str:
         return picker_display_rows(self.service.live_sessions(), namew)
-
-    # ----- post-selection action -----------------------------------------------------------
-
-    def _tmux_target(self, name: str) -> str:
-        """Fallback name→tmux-target resolver (the picker now carries the target on the row — §D7 —
-        so this is only hit for a row the feed produced without one). A PROCESS is tmux-named by its
-        id, so the human name is not a tmux target; resolve it through the store, falling back to the
-        name itself for an untracked / coexistence session (no record)."""
-        record = self.service.get(name)
-        return record.tmux_name if record is not None else name
-
-    def _nest_attach(self, name: str, target: str) -> bool:
-        """Attach the chosen LOCAL session (cmd_pick's loop body): nest-attach into the launching
-        Views pane when applicable, else switch-client / foreground attach. `name` is the picker's
-        display name (for messages); `target` is the resolved tmux target carried on the row (a
-        process is named by its id). False = the session vanished (re-loop)."""
-        if not self.service.tmux.has_session(target):
-            print(f"tx: session '{name}' does not exist", file=sys.stderr)
-            return False
-        if self._respawn_into_view_pane(target):
-            return True
-        return self._switch_or_attach(target)
-
-    def _jump_to_session(self, name: str, target: str) -> bool:
-        """`--jump`: focus the existing pane already hosting `name` instead of nest-attaching here
-        (port of `jump_to_session`). Falls back to nest-attach-into-view, then switch-client. `target`
-        is the resolved tmux target carried on the row (a process is named by its id)."""
-        tmux = self.service.tmux
-        if not tmux.has_session(target):
-            print(f"tx: session '{name}' does not exist", file=sys.stderr)
-            return False
-        current_session = tmux.current_session_name() or ""
-        if current_session == target:
-            return True
-        pane = tmux.pane_for_session(target, current_session)
-        if pane and pane.split(":")[0] == current_session:
-            return tmux.select_window(pane) and tmux.select_pane(pane)
-        if self._respawn_into_view_pane(target):
-            return True
-        try:
-            tmux.switch_client(target)
-            return True
-        except TmuxError:
-            return False
-
-    def _respawn_into_view_pane(self, target: str) -> bool:
-        """If the picker was launched from a shell pane inside a Views home, nest-attach `target` (a
-        tmux session target) INTO that pane via `respawn-pane -k` (the `TMUX= tmux attach …; exec
-        $SHELL` keeps the pane alive after the inner session detaches). True when it did, else fall
-        through."""
-        tmux = self.service.tmux
-        if not os.environ.get("TMUX"):
-            return False
-        origin_pane = tmux.current_pane_id()
-        current_session = tmux.current_session_name() or ""
-        if not origin_pane or not self._is_view_session(current_session):
-            return False
-        origin_cmd = tmux.display_message("#{pane_current_command}", target=origin_pane)
-        if origin_cmd not in SHELL_COMMANDS:
-            return False
-        quoted = shlex.quote(target)
-        tmux.respawn_pane(
-            origin_pane, f"TMUX= tmux attach -t {quoted}; exec ${{SHELL:-zsh}}"
-        )
-        return True
-
-    def _switch_or_attach(self, target: str) -> bool:
-        """Switch the calling client to `target` (inside tmux) or foreground-attach (outside). A
-        failed switch-client (the client may be gone) is tolerated — cmd_pick ignores its status."""
-        tmux = self.service.tmux
-        if os.environ.get("TMUX"):
-            try:
-                tmux.switch_client(target)
-            except TmuxError:
-                pass
-        else:
-            tmux.attach_session(target)
-        return True
-
-    def _is_view_session(self, name: str) -> bool:
-        """Whether `name` is recorded with kind=view — gates the nest-attach (only a Views pane
-        hosts nested sessions). Port of `is_view_session`, resolved through the service."""
-        if not name:
-            return False
-        session = self.service.get(name)
-        return session is not None and session.kind == Kind.VIEW
 
 
 def _prompt_with_default(prompt: str, default: str) -> str | None:
@@ -1702,10 +1723,283 @@ class ChatOpWatchCommand(Command):
         return 0
 
 
+# ----- artifacts -----------------------------------------------------------------------------
+# The durable record of what agents deliver (agents/ARTIFACTS.md): `tx artifact add|ls|rm` manages
+# records, `tx artifacts` is the browsable picker whose Enter opens the deliverable in an nvim
+# companion. Record + snapshot semantics live in lib/tx/artifact.py.
+
+
+class ArtifactCommand(Command):
+    name = "artifact"
+    summary = "Register / list / remove deliverable records (browse with `tx artifacts`)."
+
+    def run(self, argv: list[str]) -> int:
+        subcommands = {"add": self._add, "ls": self._ls, "rm": self._rm}
+        if not argv or argv[0] not in subcommands:
+            print(
+                "usage: tx artifact add --type TYPE [--title T] [--tag TAGS] PATH\n"
+                "       tx artifact add --type diff [--base BASE] [--title T] [--tag TAGS]\n"
+                "       tx artifact ls [--type TYPE] [--tag TAG]\n"
+                "       tx artifact rm <id>",
+                file=sys.stderr,
+            )
+            return 2
+        return subcommands[argv[0]](argv[1:])
+
+    def _sub_parser(self, subcommand: str) -> argparse.ArgumentParser:
+        return argparse.ArgumentParser(prog=f"tx artifact {subcommand}")
+
+    def _add(self, argv: list[str]) -> int:
+        parser = self._sub_parser("add")
+        parser.add_argument("path", nargs="?", help="the deliverable file (not for --type diff)")
+        parser.add_argument(
+            "--type",
+            required=True,
+            choices=[member.value for member in ArtifactType],
+            help="what kind of deliverable this is",
+        )
+        parser.add_argument("--title", help="display title (default: the file name / 'diff vs BASE')")
+        parser.add_argument(
+            "--tag", help="comma-separated scope tags (default: the producer session's tags)"
+        )
+        parser.add_argument("--base", help="diff artifacts: the git base to diff against (default main)")
+        parser.add_argument(
+            "--repo", help="the project root the artifact belongs to (default: the current cwd)"
+        )
+        args = parser.parse_args(argv)
+        type = ArtifactType(args.type)
+
+        if type == ArtifactType.DIFF:
+            if args.path is not None:
+                parser.error("a diff artifact records --base, not a file path")
+            source_path, diff_base = None, args.base or "main"
+        else:
+            if args.path is None:
+                parser.error(f"a {type.value} artifact needs a file path")
+            if args.base is not None:
+                parser.error("--base only applies to --type diff")
+            source = Path(args.path).expanduser().resolve()
+            if not source.is_file():
+                parser.error(f"'{args.path}' is not a file")
+            source_path, diff_base = str(source), None
+
+        producer = self._producer()
+        tags = _split_tags(args.tag) if args.tag else (producer.tags if producer else [])
+        title = args.title or (
+            os.path.basename(source_path) if source_path else f"diff vs {diff_base}"
+        )
+        registered = artifacts_module.register(
+            ArtifactStore(),
+            type=type,
+            title=title,
+            repo=args.repo or self._default_cwd(),
+            tags=tags,
+            session_id=producer.id if producer else None,
+            session_name=producer.name if producer else None,
+            source_path=source_path,
+            diff_base=diff_base,
+            log=self.service.log,
+        )
+        print(f"Registered {type.value} '{title}' ({registered.id[:8]})")
+        return 0
+
+    def _producer(self) -> Session | None:
+        """The session registering the artifact: `$TX_SESSION_ID` (exported into every tx spawn),
+        falling back to the surrounding tmux session for a hand-run `tx artifact add`. None outside
+        tmux / for an untracked session — the artifact is then producer-less, which is fine."""
+        session_id = os.environ.get("TX_SESSION_ID")
+        if session_id:
+            record = self.service.get(session_id)
+            if record is not None:
+                return record
+        current = self.service.tmux.current_session_name()
+        return self.service.get(current) if current else None
+
+    def _ls(self, argv: list[str]) -> int:
+        parser = self._sub_parser("ls")
+        parser.add_argument(
+            "--type", choices=[member.value for member in ArtifactType], help="only this kind"
+        )
+        parser.add_argument("--tag", help="only artifacts carrying this tag")
+        args = parser.parse_args(argv)
+        artifacts = ArtifactStore().all()
+        if args.type is not None:
+            artifacts = [a for a in artifacts if a.type.value == args.type]
+        if args.tag is not None:
+            artifacts = [a for a in artifacts if args.tag in a.tags]
+        print(render_artifacts(artifacts))
+        return 0
+
+    def _rm(self, argv: list[str]) -> int:
+        parser = self._sub_parser("rm")
+        parser.add_argument("target", help="artifact id (or unique prefix)")
+        args = parser.parse_args(argv)
+        store = ArtifactStore()
+        found = store.find(args.target)
+        if found is None:
+            print(f"tx artifact rm: no artifact matches '{args.target}'", file=sys.stderr)
+            return 1
+        store.remove(found)
+        self.service.log.append(
+            "artifact", f"rm {found.type.value} '{found.title}' ({found.id[:8]})"
+        )
+        print(f"Removed {found.type.value} '{found.title}' ({found.id[:8]})")
+        return 0
+
+
+class ArtifactsCommand(Command):
+    """`tx artifacts` — the deliverables picker: the `attach` fzf machinery (tab-separated rows,
+    `--with-nth` hiding the id, ~1 Hz reload-sync, focus header) pointed at the artifact store,
+    with Enter swapped from nest-attach-the-session to open-the-deliverable: spawn (or reuse) an
+    nvim companion — `--open` for a file artifact, `--diff` for a diff — then join it exactly like
+    a picked session."""
+
+    name = "artifacts"
+    summary = "Browse registered deliverables (fzf) — Enter opens one in an nvim companion."
+
+    def run(self, argv: list[str]) -> int:
+        parser = self._parser()
+        parser.add_argument(
+            "-f",
+            "--filter",
+            dest="query",
+            default="",
+            metavar="QUERY",
+            help="pre-fill the search with QUERY",
+        )
+        parser.add_argument(
+            "-j",
+            "--jump",
+            action="store_true",
+            help="Enter focuses the pane already hosting the companion instead of "
+            "nest-attaching here (popup-friendly)",
+        )
+        args = parser.parse_args(argv)
+        return self._loop(args.jump, self._fzf_opts(args.query))
+
+    def _fzf_opts(self, query: str) -> list[str]:
+        bin_tx = str(_repo_root() / "bin" / "tx")
+        reload = f"reload-sync({bin_tx} _list-artifacts)"
+        bold, reset = palette.BOLD, palette.RESET
+        header_cols = (
+            f"{'TITLE':<{ARTIFACT_TITLE_W}} {'TYPE':<{ARTIFACT_TYPE_W}} "
+            f"{'AGE':<6} {'FROM':<{ARTIFACT_FROM_W}} TAGS"
+        )
+        # Focus header mirrors attach: bold-accent title + tag chips on line 1, columns on line 2.
+        # {2}=title, {3}=plain chips (field 1 is the id the selection resolves by).
+        focus_cmd = (
+            f"printf '{palette.ACCENT_ANSI}{bold}%s{reset} "
+            f"{palette.FG_ANSI}{bold}%s{reset}\\n%s' {{2}} {{3}} '{header_cols}'"
+        )
+        return [
+            "fzf",
+            "--exact",
+            "--ansi",
+            "--prompt=  ❯ ",
+            "--height=100%",
+            "--reverse",
+            "--delimiter=\t",
+            "--with-nth=4..",
+            "--listen",
+            "--track",
+            f"--color={_picker_color()}",
+            f"--header={header_cols}",
+            f"--query={query}",
+            # The same ~1 Hz reload loop as attach — new artifacts surface while agents work.
+            f"--bind=start:execute-silent(( while sleep 1; do "
+            f'curl -fsS -XPOST "localhost:$FZF_PORT" -d "{reload}" >/dev/null 2>&1 || exit 0; '
+            f"done ) &)",
+            f"--bind=ctrl-r:{reload}",
+            f"--bind=focus:transform-header({focus_cmd})",
+        ]
+
+    def _loop(self, jump: bool, opts: list[str]) -> int:
+        """Run fzf, open the selection — looping on a recoverable miss (a vanished artifact / a
+        gone deliverable), like the attach loop."""
+        store = ArtifactStore()
+        joiner = SessionJoiner(self.service)
+        while True:
+            result = subprocess.run(
+                opts,
+                input=artifact_picker_rows(store.all()),
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                return 0  # ESC / abort / empty list
+            artifact_id = result.stdout.rstrip("\n").split("\t")[0]
+            selected = store.load(artifact_id)
+            if selected is None:
+                print(f"tx artifacts: artifact {artifact_id[:8]} vanished", file=sys.stderr)
+                time.sleep(1.2)
+                continue
+            if self._open(selected, joiner, jump):
+                return 0
+            time.sleep(1.2)
+
+    def _open(self, selected: Artifact, joiner: SessionJoiner, jump: bool) -> bool:
+        """Open one artifact: reuse its live companion if the last open is still around, else
+        spawn a fresh one, then join it (nest-attach / jump — the picker contract). The companion
+        is named by the artifact id, so re-opening the same artifact lands in the same session."""
+        companion_name = f"art-{selected.id[:8]}"
+        existing = self.service.get(companion_name)
+        if existing is not None and existing.is_alive():
+            return (
+                joiner.jump_to(companion_name, existing.tmux_name)
+                if jump
+                else joiner.nest_attach(companion_name, existing.tmux_name)
+            )
+        spec = self._companion_spec(selected, companion_name)
+        if spec is None:
+            return False
+        session = self.service.spawn_nvim(spec)
+        return (
+            joiner.jump_to(session.name, session.tmux_name)
+            if jump
+            else joiner.nest_attach(session.name, session.tmux_name)
+        )
+
+    def _companion_spec(self, selected: Artifact, name: str) -> SpawnSpec | None:
+        """The nvim companion to open this artifact — `--diff` semantics for a diff (live git
+        state in the recorded repo), `--open` semantics for a file (live source, else the
+        snapshot — `open_path`). None (with a message) when the deliverable is truly gone."""
+        tags = selected.tags or ["artifacts"]
+        if selected.type == ArtifactType.DIFF:
+            if not Path(selected.repo).is_dir():
+                print(
+                    f"tx artifacts: repo '{selected.repo}' is gone — cannot open the diff",
+                    file=sys.stderr,
+                )
+                return None
+            return SpawnSpec.for_nvim(
+                name=name, tags=tags, cwd=selected.repo, diff_base=selected.diff_base
+            )
+        path = open_path(selected)
+        if path is None:
+            print(
+                f"tx artifacts: source and snapshot of '{selected.title}' are both gone",
+                file=sys.stderr,
+            )
+            return None
+        cwd = selected.repo if Path(selected.repo).is_dir() else str(Path(path).parent)
+        return SpawnSpec.for_nvim(name=name, tags=tags, cwd=cwd, open_file=path)
+
+
+class ListArtifactsCommand(Command):
+    name = "_list-artifacts"
+    summary = "Internal: ANSI fzf feed for `tx artifacts` (initial paint + each reload-sync)."
+
+    def run(self, argv: list[str]) -> int:
+        print(artifact_picker_rows(ArtifactStore().all()))
+        return 0
+
+
 PUBLIC_COMMANDS: list[type[Command]] = [
     StartCommand,
     AttachCommand,
     LsCommand,
+    ArtifactsCommand,
+    ArtifactCommand,
     SpawnCommand,
     SpawnNvimCommand,
     SpawnViewCommand,
@@ -1728,6 +2022,7 @@ PUBLIC_COMMANDS: list[type[Command]] = [
 ]
 HIDDEN_COMMANDS: list[type[Command]] = [
     ListCommand,
+    ListArtifactsCommand,
     EditTagCommand,
     FocusEnvelopeCommand,
     PaneInfoCommand,

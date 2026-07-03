@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 
+from .artifact import Artifact, open_path
 from .palette import RESET_FG, WARN_ANSI, tag_ansi
 from .session import Kind, Location, Session
 
@@ -172,6 +173,72 @@ def picker_display_rows(sessions: list[Session], namew: int, now: float | None =
         for session in _by_recent_activity(sessions)
         if session.kind != Kind.VIEW
     ]
+    return "\n".join(rows)
+
+
+# ----- artifacts (`tx artifact ls` + the `tx artifacts` picker feed) ------------------------------
+
+# Column widths shared with cli.py's `tx artifacts` header so the columns line up. TITLE is fixed
+# (no NAMEW dance — titles are prose, truncation is fine); TYPE fits the longest value
+# ("walkthrough" = 11); FROM is the producer session's display name.
+ARTIFACT_TITLE_W = 36
+ARTIFACT_TYPE_W = 11
+ARTIFACT_FROM_W = 18
+
+
+def _by_newest(artifacts: list[Artifact]) -> list[Artifact]:
+    return sorted(artifacts, key=lambda artifact: artifact.created_at, reverse=True)
+
+
+def render_artifacts(artifacts: list[Artifact], now: float | None = None) -> str:
+    """`tx artifact ls` — plain, pipe-friendly, newest first. Columns: short id, title, type, age,
+    tag chips, then the open target (the resolved file path, or `diff vs <base>` for a diff)."""
+    if now is None:
+        now = time.time()
+    rows = []
+    for artifact in _by_newest(artifacts):
+        if artifact.diff_base is not None:
+            target = f"diff vs {artifact.diff_base} @ {artifact.repo}"
+        else:
+            target = open_path(artifact) or "(content gone)"
+        rows.append("  {}  {:<{}} {:<{}} {:>5} {}  {}".format(
+            artifact.id[:8],
+            _trunc(artifact.title, ARTIFACT_TITLE_W), ARTIFACT_TITLE_W,
+            artifact.type.value, ARTIFACT_TYPE_W,
+            reltime(artifact.created_at, now),
+            _chips(artifact.tags),
+            target,
+        ))
+    if not rows:
+        return "ARTIFACTS\n  (none registered — see `tx artifact add`)"
+    return "\n".join(["ARTIFACTS", *rows])
+
+
+def artifact_picker_rows(artifacts: list[Artifact], now: float | None = None) -> str:
+    """The `tx artifacts` fzf feed, newest first — the picker-row contract of `_picker_row`:
+
+        id <TAB> title <TAB> plain_chips <TAB> visual
+
+    Field 1 is the id the selection resolves by (stable — titles are free prose); fields 2/3 feed
+    a header binding; field 4 is the visible row (`--with-nth=4..`): title, type (colored like a
+    tag chip), age in WARN yellow, the producer session's name, tag chips."""
+    if now is None:
+        now = time.time()
+    rows = []
+    for artifact in _by_newest(artifacts):
+        title = _trunc(artifact.title, ARTIFACT_TITLE_W)
+        plain_chips = _chips(artifact.tags)
+        colored_chips = "".join(f" {tag_ansi(tag)}[{tag}]{RESET_FG}" for tag in artifact.tags)
+        type_cell = (
+            f"{tag_ansi(artifact.type.value)}{artifact.type.value:<{ARTIFACT_TYPE_W}}{RESET_FG}"
+        )
+        producer = _trunc(artifact.session_name or "—", ARTIFACT_FROM_W)
+        visual = (
+            f"{title:<{ARTIFACT_TITLE_W}} {type_cell} "
+            f"{WARN_ANSI}{reltime(artifact.created_at, now):<6}{RESET_FG} "
+            f"{producer:<{ARTIFACT_FROM_W}}{colored_chips}"
+        )
+        rows.append("\t".join([artifact.id, title, plain_chips, visual]))
     return "\n".join(rows)
 
 
