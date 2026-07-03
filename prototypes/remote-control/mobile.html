@@ -134,6 +134,8 @@
             border-bottom: .5px solid var(--row-sep); }
   #banner b { font-weight: 600; }
   #banner[hidden] { display: none; }
+  /* neutral variant: the command you're APPROVING (the options are tappable below), not a dead end */
+  #banner.ctx { color: var(--amber); background: color-mix(in srgb, var(--amber) 10%, transparent); }
 
   #turns { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain;
            padding: 10px 12px 6px; display: flex; flex-direction: column; }
@@ -390,15 +392,24 @@ function renderThread() {
     `<span class="tname">${escapeHtml(item.name)}</span>${pctChip}`;
 
   const banner = $("banner");
-  const answerable = item.reason === "blocked" && item.blocked && item.blocked.questions;
+  const b = item.blocked;
+  const answerable = item.reason === "blocked" && b && b.questions && b.answerable;
+  // A concrete tool's permission prompt (Bash/Edit/Fetch…) — as opposed to a question-shaped
+  // dialog — shows WHAT you're approving above its tappable options.
+  const toolContext = b && b.tool && !["AskUserQuestion", "ExitPlanMode", "dialog"].includes(b.tool);
   if (item.error) {
-    banner.hidden = false;
+    banner.hidden = false; banner.className = "";
     banner.innerHTML = `⚠ ${escapeHtml(item.error)}`;
-  } else if (item.reason === "blocked" && item.blocked && !answerable) {
-    banner.hidden = false;
-    banner.innerHTML = `⏸ blocked on <b>${escapeHtml(item.blocked.tool)}</b> ${escapeHtml(item.blocked.input || "")} — answer it in the terminal`;
+  } else if (answerable && toolContext) {
+    banner.hidden = false; banner.className = "ctx";
+    banner.innerHTML = `⏸ approve <b>${escapeHtml(b.tool)}</b> ${escapeHtml(b.input || "")}`;
+  } else if (item.reason === "blocked" && b && !answerable) {
+    banner.hidden = false; banner.className = "";
+    banner.innerHTML = b.questions
+      ? `⏸ ${escapeHtml(b.questions[0].question)} — answer it in the terminal`
+      : `⏸ blocked on <b>${escapeHtml(b.tool)}</b> ${escapeHtml(b.input || "")} — answer it in the terminal`;
   } else {
-    banner.hidden = true;
+    banner.hidden = true; banner.className = "";
   }
 
   const turns = $("turns");

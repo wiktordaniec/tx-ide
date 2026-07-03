@@ -1,0 +1,43 @@
+
+╭─ Claude Code ────────────────────────────────────────────────────╮
+│                                                                  │
+│                  Welcome back Andrzej Zdobywca!                  │
+│                                                                  │
+│                              ▐▛███▜▌                             │
+│                             ▝▜█████▛▘                            │
+│                               ▘▘ ▝▝                              │
+│                                                                  │
+│                             Fable 5                              │
+│                            Claude Max                            │
+│                 /…/scratchpad/dialog-cwds/write                  │
+│                                                                  │
+╰──────────────────────────────────────────────────────────────────╯
+
+ ⚠ 3 MCP servers need authentication · run /mcp
+
+ ▎ Fable 5 is back.
+ ▎ Until July 7, you can use up to 50% of your plan's weekly usage
+ ▎ limit on Fable 5. If you hit your limit, you can continue on
+ ▎ Fable 5 with usage credits. Fable 5 draws down usage faster than
+ ▎ Opus 4.8. Learn more
+   +1 more · /status
+
+❯ Use the Write tool to create notes.txt containing the single line
+  hello. Do it immediately, no questions.
+
+● I'll create the file now.
+
+● Write(notes.txt)
+
+────────────────────────────────────────────────────────────────────
+ Create file
+ notes.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+  1 hello
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to create notes.txt?
+ ❯ 1. Yes
+   2. Yes, allow all edits during this session (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend

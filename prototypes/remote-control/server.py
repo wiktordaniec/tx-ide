@@ -12,10 +12,11 @@ The model is the Signal one: live llm sessions are conversations, ordered by new
 only (state is shown per row — never reorders). An item IS the session: reply from here, answer
 in tmux, or let another agent unblock it, and the next push resolves it. Reason per item:
 
-    blocked  WAITING with an unanswered tool_use in the transcript tail (a question dialog);
-             note that Claude Code does NOT flush a pending permission/plan-approval tool_use
-             to the transcript until it resolves, so those show as `ready` — exact blocked
-             detection wants a `waiting_reason` stamped by the hook pipeline (follow-up).
+    blocked  WAITING with an unanswered tool_use in the transcript tail (permission prompt,
+             plan approval, an AskUserQuestion). The tool_use names the tool + command; its
+             answer options, when the transcript can't carry them, are read off the pane and
+             merged in by `_blocked_state`, so the dialog is answerable from here — not just in
+             tmux — via tappable options relayed with send-keys (see `answer_question`).
     ready    WAITING, turn done — the session reported back and waits on you
     working  mid-turn; a reply is typed in and queues as a steering message
     idle     alive, no active turn
@@ -257,10 +258,13 @@ def _blocked_on(entries: list[dict]) -> dict | None:
                 "tool_use_id": use.get("id"),
                 "input": raw_input[:200] + ("…" if len(raw_input) > 200 else ""),
                 "questions": None,
+                "answerable": False,
             }
             # AskUserQuestion carries its options structurally — the app renders them as tappable
             # buttons and answers via /api/answer. Only the single-question, single-select shape
-            # is answerable remotely (multi-question dialogs tab between questions — terminal-only).
+            # answers cleanly from its transcript form; every other blocking dialog (a permission
+            # prompt, plan approval, a multi-question step) is answered off the pane instead —
+            # `_blocked_state` grafts the pane's options on when this leaves `answerable` False.
             if blocked["tool"] == "AskUserQuestion":
                 questions = (use.get("input") or {}).get("questions")
                 if (
@@ -275,6 +279,7 @@ def _blocked_on(entries: list[dict]) -> dict | None:
                             for o in questions[0]["options"] if isinstance(o, dict)
                         ],
                     }]
+                    blocked["answerable"] = True
             return blocked
     return None
 
@@ -292,12 +297,26 @@ def _context_pct(entries: list[dict], cmd: str) -> int | None:
     return min(100, round(tokens / window * 100))
 
 
-# A live dialog (AskUserQuestion / permission prompt / plan approval) is NOT in the transcript —
-# Claude Code flushes the tool_use line only when the dialog resolves. The dialog IS on the pane,
-# though: a numbered option list with a ❯ cursor. Parse it from `tmux capture-pane`; the answer
-# endpoint re-captures and compares the content hash, so a stale tap sends nothing.
+# A blocking dialog (permission prompt / plan approval / AskUserQuestion) renders on the pane as a
+# numbered option list with a ❯ cursor. Parse it from `tmux capture-pane`; the answer endpoint
+# re-captures and compares the content hash, so a stale tap sends nothing. This is the fallback for
+# anything the transcript can't carry answerably — the tool_use IS flushed for a permission prompt,
+# so `_blocked_on` still names the tool + command, but its options only live here on the pane.
 _DIALOG_OPTION = re.compile(r"^\s*(?:❯\s*)?(\d+)\.\s+(.+?)\s*$")
 _DIALOG_NOISE = re.compile(r"^[\s─╌═╭╮╰╯│┃▔▁]*$")
+# An option label as rendered carries chrome the answer never needs: a trailing key hint
+# ((esc), (shift+tab), …) and, in a multi-select dialog, a leading [ ] / [x] checkbox. Strip both
+# for display; the presence of a checkbox is also how a multi-select dialog is recognized.
+_DIALOG_KEYHINT = re.compile(r"\s*\([^)]*(?:esc|tab|ctrl|enter|space|↵)[^)]*\)\s*$", re.I)
+_DIALOG_CHECKBOX = re.compile(r"^\[.\]\s*")
+# A bare label/link line ("Security guide", "Learn more") that some dialogs render directly above
+# their options — a couple of unpunctuated words. Skipped when it sits right on the options, so
+# the real (blank-gap-separated) question above it is what's shown.
+_DIALOG_BARE_LABEL = re.compile(r"^[\w][\w ]{0,22}$")
+
+
+def _clean_option_label(text: str) -> str:
+    return _DIALOG_CHECKBOX.sub("", _DIALOG_KEYHINT.sub("", text)).strip()
 
 
 def _pane_dialog(tmux: Tmux, target: str) -> dict | None:
@@ -335,28 +354,65 @@ def _pane_dialog(tmux: Tmux, target: str) -> dict | None:
     for start, options in reversed(blocks):
         if start < len(lines) // 2 or not any(sel for _n, _t, sel in options):
             continue
-        # the question: nearest non-noise lines above the block (up to 3)
+        # the question: nearest non-noise lines above the block (up to 3). A blank line normally
+        # ends the question — that keeps a permission dialog's "Do you want to proceed?" from
+        # absorbing the command header above it. The exception: a bare label line sitting right on
+        # the options (a "Security guide" link) is skipped, and the blank gap above it crossed, to
+        # reach the actual question a paragraph higher.
         question_lines: list[str] = []
+        skipped_label = False
         for line in reversed(lines[:start]):
+            stripped = line.strip()
             if _DIALOG_NOISE.match(line):
-                if question_lines:
+                if question_lines and not skipped_label:
                     break
                 continue
-            question_lines.insert(0, line.strip())
+            if not question_lines and not skipped_label and _DIALOG_BARE_LABEL.match(stripped):
+                skipped_label = True
+                continue
+            question_lines.insert(0, stripped)
             if len(question_lines) >= 3:
                 break
         question = " ".join(question_lines).strip()
-        content = question + "|" + "|".join(text for _n, text, _s in options)
+        raw_texts = [text for _n, text, _s in options]
+        # Hash the RAW option text (pre-cleaning) so the id is stable across renders and matches
+        # what the answer endpoint recomputes; a multi-select dialog answers by toggle+navigate,
+        # which single-digit relaying can't drive, so it is surfaced but not answerable.
+        content = question + "|" + "|".join(raw_texts)
+        multiselect = any(_DIALOG_CHECKBOX.match(text) for text in raw_texts)
         return {
             "tool": "dialog",
             "tool_use_id": "pane:" + hashlib.sha1(content.encode()).hexdigest()[:16],
             "input": "",
+            "answerable": not multiselect,
             "questions": [{
                 "question": question or "The session is showing a dialog:",
-                "options": [{"label": text, "description": ""} for _n, text, _s in options],
+                "options": [{"label": _clean_option_label(text), "description": ""} for text in raw_texts],
             }],
         }
     return None
+
+
+def _blocked_state(session: Session, entries: list[dict], tmux: Tmux) -> dict | None:
+    """What a WAITING session is blocked on, ready to answer from the app — or None when its turn
+    simply ended. The transcript's unanswered tool_use names the real tool + command to show; when
+    that isn't itself an answerable AskUserQuestion, the numbered dialog the engine is rendering on
+    the pane (a permission prompt, plan approval, a multi-question step) supplies the tappable
+    options and the answer target. Grafting the two keeps the Bash/Edit/Fetch command visible AND
+    makes its Yes/No answerable — the gap the old either/or detection left for permission prompts."""
+    if session.state != State.WAITING:
+        return None
+    blocked = _blocked_on(entries)
+    if blocked and blocked.get("answerable"):
+        return blocked
+    dialog = _pane_dialog(tmux, _tmux_name(session))
+    if blocked is None:
+        return dialog
+    if dialog is not None:
+        blocked["questions"] = dialog["questions"]
+        blocked["tool_use_id"] = dialog["tool_use_id"]
+        blocked["answerable"] = dialog["answerable"]
+    return blocked
 
 
 def build_inbox_feed() -> dict:
@@ -372,9 +428,7 @@ def build_inbox_feed() -> dict:
         transcript = _transcript_of(session)
         entries = _tail_entries(transcript) if transcript else []
         turns = _dialogue_turns(entries, session.cmd or "")[-THREAD_TURNS:]
-        blocked = _blocked_on(entries) if session.state == State.WAITING else None
-        if session.state == State.WAITING and blocked is None:
-            blocked = _pane_dialog(tmux, _tmux_name(session))
+        blocked = _blocked_state(session, entries, tmux)
         if session.state == State.WAITING:
             reason = "blocked" if blocked else "ready"
         else:
@@ -447,9 +501,11 @@ def answer_question(session_id: str, tool_use_id: str, option: int) -> tuple[int
         return 200, {"ok": False, "error": "session is not live"}
     transcript = _transcript_of(session)
     entries = _tail_entries(transcript) if transcript else []
-    blocked = _blocked_on(entries) or _pane_dialog(tmux, target)
+    blocked = _blocked_state(session, entries, tmux)
     if not blocked or blocked.get("tool_use_id") != tool_use_id:
         return 200, {"ok": False, "error": "the dialog changed — reopen the thread"}
+    if not blocked.get("answerable"):
+        return 200, {"ok": False, "error": "this dialog can't be answered from here — use the terminal"}
     count = len((blocked.get("questions") or [{}])[0].get("options") or [])
     if not blocked.get("questions") or not (1 <= option <= count):
         return 400, {"ok": False, "error": "not an answerable question"}
