@@ -86,7 +86,7 @@ tx spawn <name> --tag <scope> --cwd <cwd> \
 Read ~/.tx-ide/agents/COMMON.md, ~/.tx-ide/agents/DEVELOPER.md, and ~/.tx-ide/agents/WORKFLOW-DEVELOPER.md as your first actions (a build worker layers all three — COMMON conventions, the DEVELOPER coding foundation, the WORKFLOW-DEVELOPER build-fleet additions). Then, for each of those, if it exists also read the matching ~/.tx-ide/user-agents/<NAME>.md (replaces the shipped file) and <NAME>.local.md (extends it). Follow all of these for the duration of this session.
 ```
 
-tx-ide ships `DEVELOPER.md` (the coding foundation) and its build-fleet layer `WORKFLOW-DEVELOPER.md`, plus `ORCHESTRATOR.md` and `OVERSIGHT.md`, alongside `COMMON.md`, `HISTORIAN.md`, `TX-ASSISTANT.md`. Swap in whichever role(s) this worker plays — a build worker layers `DEVELOPER` + `WORKFLOW-DEVELOPER`; a named role with no shipped or user-agent file is unknown — don't guess.
+tx-ide ships `DEVELOPER.md` (the coding foundation) and its build-fleet layer `WORKFLOW-DEVELOPER.md`, plus `ORCHESTRATOR.md` and `OVERSIGHT.md`, alongside `COMMON.md`, `HISTORIAN.md`, `TX-ASSISTANT.md`, and the role-agnostic `ARTIFACTS.md` skill (register deliverables for the `tx artifacts` browser — layer it onto any worker that produces plans, diffs, or reports). Swap in whichever role(s) this worker plays — a build worker layers `DEVELOPER` + `WORKFLOW-DEVELOPER`; a named role with no shipped or user-agent file is unknown — don't guess.
 
 Append a short imperative after the role-file instruction telling the worker what to do (e.g., `Then implement the plan at ~/Code/foo/.claude/plans/auth-rewrite.md.`).
 

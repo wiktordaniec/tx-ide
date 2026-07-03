@@ -78,6 +78,8 @@ So the user can read your work without leaving their session, spawn an nvim comp
 - **Plan** — the moment you're handed (or write) a plan file, open it: a `-plan` companion via `--open <plan-path>`.
 - **Diff** — once the PR is open (Git workflow step 6), open the branch diff against its base: a `-diff` companion via `--diff <base>`.
 
+At the same two moments, **register the deliverable** so it is findable later in the `tx artifacts` browser, not just visible next to you now — `tx artifact add --type plan <plan-path>` / `tx artifact add --type diff --base "$BASE"`. See `agents/ARTIFACTS.md` for the full skill (types, titles, snapshot semantics).
+
 Each companion **inherits from you, the parent worker**:
 
 - **Name** = your name + `-plan` / `-diff`. A worker named `orderbook-recorder` spawns `orderbook-recorder-plan` and `orderbook-recorder-diff`.
