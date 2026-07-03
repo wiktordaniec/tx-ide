@@ -146,8 +146,8 @@ echo "    • vp-bash   → amber 'approve Bash touch marker-file.txt' banner + 
 echo "                  Tap Yes → resolves (marker-file.txt created); or tap No → session unlocks."
 echo "    • vp-plan   → the plan question with tappable approve options."
 echo "    • vp-ask    → 'deploy now or wait' rendered as two tappable options."
-echo "    • vp-multi  → NON-answerable: shows the question but says answer it in the terminal"
-echo "                  (multi-select can't be driven by a single tap)."
+echo "    • vp-multi  → multi-select: options as checkboxes — tick any, then Submit;"
+echo "                  the session records exactly the set you ticked."
 echo
 echo "  Ctrl-C here when done — puppets and the server are torn down automatically."
 echo "════════════════════════════════════════════════════════════════════════════"

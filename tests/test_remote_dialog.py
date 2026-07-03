@@ -102,7 +102,7 @@ EXPECTED = {
         "options": ["Red", "Blue", "Type something.", "Chat about this"],
     },
     "askmulti": {
-        "answerable": False,                          # multi-select: surfaced but not answerable
+        "answerable": True,                           # multi-select: answerable via toggle + submit
         "question": "Which of these would you like?",
         "options": ["Pizza", "Pasta", "Salad", "Type something", "Chat about this"],  # [ ] stripped
     },
@@ -126,6 +126,16 @@ check(trust is not None and trust["questions"][0]["question"] != "Security guide
       "trust: bare 'Security guide' label skipped, real question reached")
 check([o["label"] for o in trust["questions"][0]["options"]] == ["Yes, I trust this folder", "No, exit"],
       "trust: options parsed")
+
+# Multi-select structure: the flag is set, checkbox options are marked, and (a fresh dialog) all
+# start unchecked; a single-select dialog carries no checkbox options.
+multi = pane_dialog("askmulti")
+check(multi["multiselect"] is True, "askmulti: multiselect flag set")
+check(all(o["checkbox"] for o in multi["questions"][0]["options"][:4]), "askmulti: content options are checkboxes")
+check(not any(o["checked"] for o in multi["questions"][0]["options"]), "askmulti: fresh dialog starts unchecked")
+single = pane_dialog("bash")
+check(single["multiselect"] is False, "bash: not multiselect")
+check(not any(o["checkbox"] for o in single["questions"][0]["options"]), "bash: no checkbox options")
 
 
 # ---- 2. _blocked_state merge (transcript tool_use × pane dialog) ---------------------------------
@@ -180,5 +190,48 @@ check(ask is not None and ask["answerable"] is True and ask["tool_use_id"] == "t
 with_pane((FIXTURES / "bash.txt").read_text())
 check(server._blocked_state(FakeSession(State.WORKING), [], None) is None,
       "merge: a non-WAITING session is not blocked")
+
+
+# ---- 3. _answer_multiselect toggle + submit sequence --------------------------------------------
+# Toggling is a flip, so only options whose current state differs from what's wanted get a digit;
+# then Right opens the review screen and its Submit option is pressed. The review screen is
+# re-parsed (not assumed), so this fake pane must render a real "Submit answers / Cancel" dialog.
+REVIEW_PANE = """
+──────────────────────────────────────────────────────────────────
+ Review your answers
+ ● Which of these would you like?
+   → Pizza, Salad
+ Ready to submit your answers?
+ ❯ 1. Submit answers
+   2. Cancel
+──────────────────────────────────────────────────────────────────
+"""
+
+
+class FakeTmux:
+    def __init__(self):
+        self.keys = []
+
+    def has_session(self, target):
+        return True
+
+    def send_keys(self, target, keys, literal=False):
+        self.keys.append(keys)
+
+
+server.time = types.SimpleNamespace(sleep=lambda *a, **k: None, time=lambda: 0.0)  # no real waits
+
+q_options = pane_dialog("askmulti")["questions"][0]["options"]   # Pizza Pasta Salad [Type…] [Chat…]
+with_pane(REVIEW_PANE)                                           # what _pane_dialog reads after Right
+fake = FakeTmux()
+code, resp = server._answer_multiselect(fake, "puppet", "pane:x", q_options, [1, 3], "puppet")
+check(resp.get("ok") is True, "multiselect: submits successfully")
+# want {1,3}: Pizza(1) and Salad(3) toggled on; Pasta(2)/Type-something(4) left; then Right, Submit(1), Enter
+check(fake.keys == ["1", "3", "Right", "1", "Enter"], f"multiselect: key sequence ({fake.keys})")
+
+# Nothing selected → refused, no keys sent.
+fake2 = FakeTmux()
+code, resp = server._answer_multiselect(fake2, "puppet", "pane:x", q_options, [], "puppet")
+check(resp.get("ok") is not True and fake2.keys == [], "multiselect: empty selection refused, no keys sent")
 
 print(f"OK — {checks} checks passed")

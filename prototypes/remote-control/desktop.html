@@ -170,6 +170,15 @@
   .qopt .qlabel { display: block; font-size: 15px; font-weight: 600; color: var(--blue); }
   .qopt .qdesc { display: block; font-size: 12.5px; color: var(--dim); margin-top: 2px; }
   .qcard .qhint { display: block; margin-top: 8px; color: var(--muted); font-size: 11.5px; }
+  /* multi-select: a leading checkbox; ticked rows fill in. One Submit sends the whole set at once. */
+  .qopt.check { padding-left: 42px; position: relative; }
+  .qopt.check::before { content: ""; position: absolute; left: 13px; top: 11px; width: 18px; height: 18px;
+                        border-radius: 5px; border: 1.5px solid var(--muted); }
+  .qopt.check.on::before { background: var(--blue); border-color: var(--blue); }
+  .qopt.check.on::after { content: "✓"; position: absolute; left: 16.5px; top: 10px; font-size: 12px; font-weight: 800; color: #fff; }
+  .qsubmit { display: block; width: 100%; margin-top: 10px; padding: 11px; border-radius: 11px;
+             background: var(--sent); color: #fff; font: inherit; font-size: 15px; font-weight: 700; }
+  .qsubmit:disabled { background: var(--bubble); color: var(--muted); }
 
   /* the typing bubble — shown while the session is WORKING, instead of any text hint */
   .typing { align-self: flex-start; background: var(--bubble); border-radius: 18px;
@@ -439,18 +448,9 @@ function renderThread() {
   }).join("") || `<div class="turn tools">no dialogue yet</div>`;
   // A WORKING session shows the classic typing bubble instead of any text hint.
   if (item.reason === "working") turns.insertAdjacentHTML("beforeend", typingHtml(""));
-  // An answerable AskUserQuestion renders as an in-thread option card — click to answer the dialog.
-  if (answerable) {
-    const q = item.blocked.questions[0];
-    turns.insertAdjacentHTML("beforeend",
-      `<div class="qcard" data-tuid="${escapeHtml(item.blocked.tool_use_id || "")}">` +
-      `<div class="qtext">${escapeHtml(q.question)}</div>` +
-      q.options.map((o, i) =>
-        `<button class="qopt" data-opt="${i + 1}"><span class="qlabel">${escapeHtml(o.label)}</span>` +
-        (o.description ? `<span class="qdesc">${escapeHtml(o.description)}</span>` : "") + `</button>`
-      ).join("") +
-      `<span class="qhint">clicking answers the dialog in the session</span></div>`);
-  }
+  // An answerable dialog renders as an in-thread option card — click to answer (multi-select: tick
+  // options then Submit). A live repaint reuses it, but only fires on a real change (see qcardHtml).
+  if (answerable) turns.insertAdjacentHTML("beforeend", qcardHtml(item.blocked, "clicking"));
   if (older.id === item.id && !older.more) {
     turns.insertAdjacentHTML("afterbegin", `<div class="turn tools">· beginning of loaded history ·</div>`);
   }

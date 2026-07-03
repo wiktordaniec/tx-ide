@@ -259,6 +259,7 @@ def _blocked_on(entries: list[dict]) -> dict | None:
                 "input": raw_input[:200] + ("…" if len(raw_input) > 200 else ""),
                 "questions": None,
                 "answerable": False,
+                "multiselect": False,
             }
             # AskUserQuestion carries its options structurally — the app renders them as tappable
             # buttons and answers via /api/answer. Only the single-question, single-select shape
@@ -308,7 +309,7 @@ _DIALOG_NOISE = re.compile(r"^[\s─╌═╭╮╰╯│┃▔▁]*$")
 # ((esc), (shift+tab), …) and, in a multi-select dialog, a leading [ ] / [x] checkbox. Strip both
 # for display; the presence of a checkbox is also how a multi-select dialog is recognized.
 _DIALOG_KEYHINT = re.compile(r"\s*\([^)]*(?:esc|tab|ctrl|enter|space|↵)[^)]*\)\s*$", re.I)
-_DIALOG_CHECKBOX = re.compile(r"^\[.\]\s*")
+_DIALOG_CHECKBOX = re.compile(r"^\[(.)\]\s*")   # group 1: the box glyph (space = unchecked)
 # A bare label/link line ("Security guide", "Learn more") that some dialogs render directly above
 # their options — a couple of unpunctuated words. Skipped when it sits right on the options, so
 # the real (blank-gap-separated) question above it is what's shown.
@@ -374,20 +375,33 @@ def _pane_dialog(tmux: Tmux, target: str) -> dict | None:
             if len(question_lines) >= 3:
                 break
         question = " ".join(question_lines).strip()
-        raw_texts = [text for _n, text, _s in options]
-        # Hash the RAW option text (pre-cleaning) so the id is stable across renders and matches
-        # what the answer endpoint recomputes; a multi-select dialog answers by toggle+navigate,
-        # which single-digit relaying can't drive, so it is surfaced but not answerable.
-        content = question + "|" + "|".join(raw_texts)
-        multiselect = any(_DIALOG_CHECKBOX.match(text) for text in raw_texts)
+        opts = []
+        multiselect = False
+        for _n, text, _s in options:
+            box = _DIALOG_CHECKBOX.match(text)
+            if box:
+                multiselect = True
+            opts.append({
+                "label": _clean_option_label(text),
+                "description": "",
+                "checkbox": bool(box),
+                "checked": bool(box) and box.group(1).strip() != "",
+            })
+        # Hash the question + CLEANED labels (not the raw text) so the id is STABLE across a
+        # multi-select's toggles — the raw text's [ ]/[✔] flips on every toggle, but the answer
+        # target must not. The answer endpoint recomputes the same id; a different dialog hashes
+        # differently. Multi-select is answerable now too: toggle the boxes, then submit
+        # (see `_answer_multiselect`).
+        content = question + "|" + "|".join(o["label"] for o in opts)
         return {
             "tool": "dialog",
             "tool_use_id": "pane:" + hashlib.sha1(content.encode()).hexdigest()[:16],
             "input": "",
-            "answerable": not multiselect,
+            "answerable": True,
+            "multiselect": multiselect,
             "questions": [{
                 "question": question or "The session is showing a dialog:",
-                "options": [{"label": _clean_option_label(text), "description": ""} for text in raw_texts],
+                "options": opts,
             }],
         }
     return None
@@ -412,6 +426,7 @@ def _blocked_state(session: Session, entries: list[dict], tmux: Tmux) -> dict | 
         blocked["questions"] = dialog["questions"]
         blocked["tool_use_id"] = dialog["tool_use_id"]
         blocked["answerable"] = dialog["answerable"]
+        blocked["multiselect"] = dialog["multiselect"]
     return blocked
 
 
@@ -483,13 +498,46 @@ def inbox_signature() -> str:
     return hashlib.sha1("|".join(sorted(parts)).encode()).hexdigest()
 
 
-def answer_question(session_id: str, tool_use_id: str, option: int) -> tuple[int, dict]:
-    """Answer the dialog currently on a session's pane by relaying its option digit. Guarded
-    against staleness: the session must still be WAITING and the pane must still show the SAME
-    dialog (content hash) the client rendered — if it resolved (timeout, terminal answer) between
-    render and tap, nothing is sent. After the digit, the pane is re-checked: if the dialog is
-    still up (a dialog where digits only select), Enter submits; if it's gone, no Enter — never
-    a stray keystroke into a live prompt box."""
+def _answer_multiselect(tmux: Tmux, target: str, tool_use_id: str,
+                        q_options: list[dict], desired: list[int], name: str) -> tuple[int, dict]:
+    """Answer a multi-select dialog: toggle the checkbox options to match `desired` (1-based
+    indices), then navigate to its Submit screen and confirm. Toggling is a flip, so only the
+    options whose current checked-state differs from what's wanted get a digit; the ❯ cursor never
+    has to move. Right opens the "Submit answers / Cancel" review (itself a plain numbered dialog),
+    which is answered by its own Submit option — re-parsed rather than assumed, so a restyle of
+    that screen fails loudly instead of pressing the wrong key."""
+    wanted = set(desired)
+    checkbox_indices = {i for i, o in enumerate(q_options, 1) if o.get("checkbox")}
+    wanted &= checkbox_indices
+    if not wanted:
+        return 400, {"ok": False, "error": "select at least one option"}
+    for i, option in enumerate(q_options, 1):
+        if option.get("checkbox") and (i in wanted) != bool(option.get("checked")):
+            tmux.send_keys(target, str(i), literal=True)
+            time.sleep(0.35)
+    tmux.send_keys(target, "Right")
+    time.sleep(0.6)
+    review = _pane_dialog(tmux, target)
+    if review is None:
+        return 200, {"ok": False, "error": "could not reach the submit screen — answer in the terminal"}
+    labels = [o["label"] for o in review["questions"][0]["options"]]
+    submit = next((idx for idx, label in enumerate(labels, 1) if "submit" in label.lower()), None)
+    if submit is None:
+        return 200, {"ok": False, "error": "no submit option on the review screen — answer in the terminal"}
+    tmux.send_keys(target, str(submit), literal=True)
+    time.sleep(0.3)
+    tmux.send_keys(target, "Enter")
+    return 200, {"ok": True, "name": name, "options": sorted(wanted)}
+
+
+def answer_question(session_id: str, tool_use_id: str, option: int,
+                    options: list[int] | None = None) -> tuple[int, dict]:
+    """Answer the dialog currently on a session's pane. Guarded against staleness: the session must
+    still be WAITING and the pane must still show the SAME dialog (content hash) the client
+    rendered — if it resolved (timeout, terminal answer) between render and tap, nothing is sent.
+    A single-select answer relays the option digit, then re-checks the pane and sends Enter only if
+    the dialog is still up (a dialog where digits only select); a multi-select answer (`options`,
+    the checked set) is handed to `_answer_multiselect` for its toggle+submit sequence."""
     session = next((s for s in SessionStore().all() if s.id == session_id), None)
     if session is None:
         return 404, {"ok": False, "error": "no such session"}
@@ -506,8 +554,10 @@ def answer_question(session_id: str, tool_use_id: str, option: int) -> tuple[int
         return 200, {"ok": False, "error": "the dialog changed — reopen the thread"}
     if not blocked.get("answerable"):
         return 200, {"ok": False, "error": "this dialog can't be answered from here — use the terminal"}
-    count = len((blocked.get("questions") or [{}])[0].get("options") or [])
-    if not blocked.get("questions") or not (1 <= option <= count):
+    q_options = (blocked.get("questions") or [{}])[0].get("options") or []
+    if blocked.get("multiselect"):
+        return _answer_multiselect(tmux, target, tool_use_id, q_options, options or [], session.name)
+    if not q_options or not (1 <= option <= len(q_options)):
         return 400, {"ok": False, "error": "not an answerable question"}
     tmux.send_keys(target, str(option), literal=True)
     time.sleep(0.6)
@@ -917,8 +967,12 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 option = int(body.get("option", 0))
             except (TypeError, ValueError):
                 option = 0
+            raw_options = body.get("options")
+            options = None
+            if isinstance(raw_options, list):
+                options = [int(x) for x in raw_options if isinstance(x, (int, str)) and str(x).isdigit()]
             status, payload = answer_question(
-                str(body.get("id", "")), str(body.get("tool_use_id", "")), option
+                str(body.get("id", "")), str(body.get("tool_use_id", "")), option, options
             )
         elif path == "/api/upload":
             status, payload = save_upload(str(body.get("name", "")), str(body.get("data", "")))

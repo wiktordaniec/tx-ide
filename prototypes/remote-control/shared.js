@@ -114,6 +114,30 @@ function timeSep(ts) {
   return `<div class="tsep">${label}</div>`;
 }
 
+// The in-thread option card for an answerable dialog. Single-select: each option answers on tap.
+// Multi-select: options render as checkboxes (pre-ticked from the pane's own state), tapped to
+// build a selection, then Submit — the escape-hatch pseudo-options ("Type something" / "Chat about
+// this") are dropped, since they lead to free text / a side chat, not a box to tick. `verb` is the
+// face's word ("tapping" / "clicking"). Shared so both faces build an identical card.
+function qcardHtml(blocked, verb) {
+  const q = blocked.questions[0];
+  const multi = !!blocked.multiselect;
+  const isEscape = (label) => /^(type something|chat about this)\.?$/i.test(label.trim());
+  const rows = q.options
+    .map((option, index) => ({ option, opt: index + 1 }))
+    .filter(({ option }) => !multi || (option.checkbox && !isEscape(option.label)));
+  const anyChecked = multi && rows.some(({ option }) => option.checked);
+  const optionsHtml = rows.map(({ option, opt }) =>
+    `<button class="qopt${multi ? " check" : ""}${multi && option.checked ? " on" : ""}" data-opt="${opt}">` +
+    `<span class="qlabel">${escapeHtml(option.label)}</span>` +
+    (option.description ? `<span class="qdesc">${escapeHtml(option.description)}</span>` : "") +
+    `</button>`).join("");
+  return `<div class="qcard" data-tuid="${escapeHtml(blocked.tool_use_id || "")}" data-multi="${multi ? 1 : 0}">` +
+    `<div class="qtext">${escapeHtml(q.question)}</div>` + optionsHtml +
+    (multi ? `<button class="qsubmit"${anyChecked ? "" : " disabled"}>Submit</button>` : "") +
+    `<span class="qhint">${multi ? "tick the options you want, then Submit" : verb + " answers the dialog in the session"}</span></div>`;
+}
+
 // ---- session details sheet -------------------------------------------------------------------
 // Tap the thread's avatar or name → a bottom sheet with the session's vitals, fetched fresh from
 // /api/session: model + context usage (with a fill bar against the window), state/age, cwd +
@@ -363,32 +387,52 @@ $("list").addEventListener("click", (event) => {
 $("turns").addEventListener("scroll", () => {
   if ($("turns").scrollTop < 80) loadOlder();
 });
-// Tap an option → answer the live dialog. The server re-verifies the dialog is still up and
-// still the same tool_use before any key is sent; a stale tap becomes a harmless error hint.
-$("turns").addEventListener("click", async (event) => {
-  const optionButton = event.target.closest(".qopt");
-  if (!optionButton || !sel) return;
-  const card = optionButton.closest(".qcard");
+// POST an answer for the open dialog and, on success, drop an optimistic "you" turn (the real
+// state flips on the next push). `payload` is {option} for single-select or {options:[…]} for
+// multi-select; `label` is what to echo into the thread.
+async function postAnswer(card, payload, label) {
   const item = feed && feed.items.find((candidate) => candidate.id === sel);
-  optionButton.disabled = true;
   try {
     const response = await fetch(withToken("/api/answer"), {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: sel, tool_use_id: card.dataset.tuid, option: Number(optionButton.dataset.opt) }),
+      body: JSON.stringify({ id: sel, tool_use_id: card.dataset.tuid, ...payload }),
     });
     if (response.status === 401) { showGate(); return; }
     const result = await response.json();
-    if (!result.ok) {
-      $("hint").className = "show err";
-      $("hint").textContent = result.error || "answer failed";
-      return;
-    }
-    // Optimistic: show the chosen option as your turn; the real state flips on the next push.
-    const label = optionButton.querySelector(".qlabel").textContent;
+    if (!result.ok) { $("hint").className = "show err"; $("hint").textContent = result.error || "answer failed"; return; }
     if (item) { item.turns.push({ who: "you", text: label, ts: Date.now() / 1000 }); item.blocked = null; item.reason = "working"; renderThread(); }
   } catch {
-    $("hint").className = "show err";
-    $("hint").textContent = "answer failed: server unreachable";
+    $("hint").className = "show err"; $("hint").textContent = "answer failed: server unreachable";
+  }
+}
+
+// Tap an option → answer the live dialog. A single-select option answers on the tap. A multi-select
+// card instead accumulates a selection (each tap toggles a box, no send) and answers only when its
+// Submit is tapped. The server re-verifies the dialog is still up and still the same tool_use before
+// any key is sent; a stale tap becomes a harmless error hint.
+$("turns").addEventListener("click", async (event) => {
+  const card = event.target.closest(".qcard");
+  if (!card || !sel) return;
+  const multi = card.dataset.multi === "1";
+  const optionButton = event.target.closest(".qopt");
+  const submitButton = event.target.closest(".qsubmit");
+  if (multi && optionButton) {                       // toggle this box; nothing is sent until Submit
+    optionButton.classList.toggle("on");
+    card.querySelector(".qsubmit").disabled = !card.querySelector(".qopt.on");
+    return;
+  }
+  if (multi && submitButton) {
+    const chosen = [...card.querySelectorAll(".qopt.on")];
+    if (!chosen.length) return;
+    submitButton.disabled = true;
+    await postAnswer(card, { options: chosen.map((b) => Number(b.dataset.opt)) },
+      chosen.map((b) => b.querySelector(".qlabel").textContent).join(", "));
+    return;
+  }
+  if (!multi && optionButton) {
+    optionButton.disabled = true;
+    await postAnswer(card, { option: Number(optionButton.dataset.opt) },
+      optionButton.querySelector(".qlabel").textContent);
   }
 });
 $("send").addEventListener("click", sendReply);
