@@ -1,0 +1,20 @@
+
+────────────────────────────────────────────────────────────────────
+ Accessing workspace:
+
+ /tmp/claude-1000/-home-ubuntu-Desktop-Coding-tx-ide/7a7ae37c-46d5-
+ 473f-b5a8-fc7838586c61/scratchpad/dialog-cwds/trust
+
+ Quick safety check: Is this a project you created or one you
+ trust? (Like your own code, a well-known open source project, or
+ work from your team). If not, take a moment to review what's in
+ this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ 1. Yes, I trust this folder
+   2. No, exit
+
+ Enter to confirm · Esc to cancel
