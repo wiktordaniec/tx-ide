@@ -2,6 +2,10 @@
 
 These conventions apply to every agent session in this system: the tx-assistant, every worker, and any ad-hoc session you spin up inside the orchestration repo.
 
+## Reporting style
+
+When reporting information to the user, be extremely concise and sacrifice grammar for the sake of concision.
+
 ## tx, not raw tmux
 
 **Every operation that creates, ends, or mutates a session — spawn, kill, tag, message, rename, attach — MUST go through `tx`, never raw `tmux`.** `tx` owns the durable record at `~/.tx-ide/sessions/<uuid>.json` and updates it in the same step it touches tmux. A raw `tmux` command changes live tmux state but leaves that record stale, and the picker, history, and supervisor all read the record — so the drift is silent and survives the tmux process. Every such operation has a `tx` verb; use it:
@@ -94,7 +98,7 @@ Append a short imperative after the role-file instruction telling the worker wha
 
 Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` holding its `name`, `kind`, `role`, `tags`, `cwd`, `cmd`, `env`, `parent`, `pid`, and `chats`. One tmux pointer, `@tx_id` (set once at spawn), links the live session to its record, so the record survives a `kill-session` or a tmux restart. Spawning exports `TX_SESSION_ID` into the session; an llm spawn also records a chat id for the session, so every llm session's transcript is tracked and resumable (`tx resume`) with no extra ceremony — there is no `--chat` flag.
 
-Tags, kind, and role live in the record, not tmux options — read them by resolving `@tx_id`, and change tags through `tx tag <name> [tags]` (or the picker's Ctrl-T), never `tmux set @tag`/`@kind`. `role` (`llm` / `nvim` / `shell` / `other`) is derived from the launch command at spawn — there is no role tag and nothing to set by hand.
+Tags, kind, and role live in the record, not tmux options — read them by resolving `@tx_id`; read a session's current tags with `tx tag <name>` (no tags argument) and change them with `tx tag <name> <tags>` (or the picker's Ctrl-T), never `tmux set @tag`/`@kind`. `role` (`llm` / `nvim` / `shell` / `other`) is derived from the launch command at spawn — there is no role tag and nothing to set by hand.
 
 ## Inter-session communication
 
