@@ -74,7 +74,7 @@ def check(label, condition):
 # The exact command the Codex adapter builds (design §5 / verification Evidence 1) — the headline
 # acceptance string. Hard-coded (not imported from the adapter) so a regression in the adapter is
 # caught here too, and so this file never imports `tx.engines.codex` (check 5).
-CODEX_PREFIX = ("codex -m gpt-5.5 -c model_reasoning_effort=high "
+CODEX_PREFIX = ("codex -m gpt-5.6-sol -c model_reasoning_effort=high "
                 "--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust")
 CLAUDE_PREFIX = "claude --dangerously-skip-permissions"
 

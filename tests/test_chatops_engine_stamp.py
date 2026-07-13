@@ -63,7 +63,7 @@ def check(label, condition):
 
 
 # The per-engine source launch commands (the adapter shapes — see test_spawn_wiring / verification §5).
-CODEX_CMD = ("codex -m gpt-5.5 -c model_reasoning_effort=high "
+CODEX_CMD = ("codex -m gpt-5.6-sol -c model_reasoning_effort=high "
              "--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust")
 CLAUDE_CMD = "claude --dangerously-skip-permissions --model opus"
 
