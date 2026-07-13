@@ -12,7 +12,7 @@ suite covers:
 
   - **op argv per design §5** — fork = `codex fork <id>` + inherited persona + bypass flags; handover
     / rollover = a fresh `codex` + persona + the seed (NO identity subcommand); distiller = the FIXED
-    `codex -m gpt-5.5 -c model_reasoning_effort=high` + bypass + seed (no source persona);
+    `codex -m gpt-5.6-sol -c model_reasoning_effort=high` + bypass + seed (no source persona);
   - **persona parse** — `-m VALUE` / `-c KEY=VALUE` / the bypass flags honored; `-c` read as a VALUE
     flag (not bare); a leading `resume`/`fork` subcommand + its id stripped;
   - **R1 (MANDATORY) — Codex unknown-flag survival (#50 parity)** — an unrecognised codex value-flag
@@ -49,7 +49,7 @@ BYPASS = [BYPASS_A, BYPASS_H]
 CHAT_ID = "019ea7f9-5334-7221-a09e-f7891025114c"
 
 # A canonical fresh-codex source command (what a real Codex session's `cmd` looks like, design §5).
-SOURCE = f"codex -m gpt-5.5 -c model_reasoning_effort=high {BYPASS_A} {BYPASS_H}"
+SOURCE = f"codex -m gpt-5.6-sol -c model_reasoning_effort=high {BYPASS_A} {BYPASS_H}"
 
 PASSED = 0
 
@@ -68,21 +68,21 @@ def check(label, condition):
 fork = codex.fork_command(SOURCE, CHAT_ID)
 check("fork: native `codex fork <id>` subcommand",
       fork[:3] == ["codex", "fork", CHAT_ID])
-check("fork: inherits the source persona (-m gpt-5.5 -c model_reasoning_effort=high)",
-      fork[3:7] == ["-m", "gpt-5.5", "-c", "model_reasoning_effort=high"])
+check("fork: inherits the source persona (-m gpt-5.6-sol -c model_reasoning_effort=high)",
+      fork[3:7] == ["-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=high"])
 check("fork: keeps both bypass flags (no duplication)",
       fork.count(BYPASS_A) == 1 and fork.count(BYPASS_H) == 1)
 
 seed = codex.seed_command(SOURCE, "read the brief and begin")
 check("seed: a fresh codex (NO fork/resume identity subcommand)",
       seed[0] == "codex" and "fork" not in seed and "resume" not in seed)
-check("seed: inherits the source persona", seed[1:5] == ["-m", "gpt-5.5", "-c", "model_reasoning_effort=high"])
+check("seed: inherits the source persona", seed[1:5] == ["-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=high"])
 check("seed: both bypass flags present", BYPASS_A in seed and BYPASS_H in seed)
 check("seed: the seed is the positional tail", seed[-1] == "read the brief and begin")
 
 distiller = codex.distiller_command("summarise this chat")
-check("distiller: the FIXED gpt-5.5/high command (no source persona)",
-      distiller[:5] == ["codex", "-m", "gpt-5.5", "-c", "model_reasoning_effort=high"])
+check("distiller: the FIXED gpt-5.6-sol/high command (no source persona)",
+      distiller[:5] == ["codex", "-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=high"])
 check("distiller: both bypass flags present", BYPASS_A in distiller and BYPASS_H in distiller)
 check("distiller: the seed is the positional tail", distiller[-1] == "summarise this chat")
 
@@ -100,17 +100,17 @@ check("parse: -c is NOT misread as a bare flag (its value is not dropped/treated
       override_seed[-1] == "go" and "model_reasoning_effort=xhigh" in override_seed)
 
 # A baked positional prompt on the source is dropped (the op seeds its own).
-baked_src = f'codex -m gpt-5.5 {BYPASS_A} {BYPASS_H} "the original baked prompt"'
+baked_src = f'codex -m gpt-5.6-sol {BYPASS_A} {BYPASS_H} "the original baked prompt"'
 check("parse: the source's baked positional prompt is dropped",
       "the original baked prompt" not in codex.seed_command(baked_src, "fresh seed"))
 
 # A forked/resumed source `cmd` — the identity subcommand + its id are stripped, persona kept.
-forked_src = f"codex fork SOME-OLD-ID -m gpt-5.5 -c model_reasoning_effort=high {BYPASS_A} {BYPASS_H}"
+forked_src = f"codex fork SOME-OLD-ID -m gpt-5.6-sol -c model_reasoning_effort=high {BYPASS_A} {BYPASS_H}"
 forked_reseed = codex.seed_command(forked_src, "continue")
 check("parse: a `fork <id>` identity subcommand is stripped (no stale id, no nested fork)",
       "SOME-OLD-ID" not in forked_reseed and "fork" not in forked_reseed)
-check("parse: persona survives the subcommand strip", forked_reseed[1:5] == ["-m", "gpt-5.5", "-c", "model_reasoning_effort=high"])
-resumed_src = f"codex resume SOME-OLD-ID -m gpt-5.5 {BYPASS_A} {BYPASS_H}"
+check("parse: persona survives the subcommand strip", forked_reseed[1:5] == ["-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=high"])
+resumed_src = f"codex resume SOME-OLD-ID -m gpt-5.6-sol {BYPASS_A} {BYPASS_H}"
 check("parse: a `resume <id>` identity subcommand is stripped too",
       "SOME-OLD-ID" not in codex.fork_command(resumed_src, CHAT_ID)
       and codex.fork_command(resumed_src, CHAT_ID)[:3] == ["codex", "fork", CHAT_ID])
@@ -134,7 +134,7 @@ SEED = "continue the task"
 
 for flag, value in UNKNOWN_VALUE_FLAGS:
     # Place the unknown flag amid the known persona so the parse can't trivially "keep the tail".
-    source_cmd = f'codex -m gpt-5.5 {flag} {value} -c model_reasoning_effort=high {BYPASS_A} {BYPASS_H} "baked"'
+    source_cmd = f'codex -m gpt-5.6-sol {flag} {value} -c model_reasoning_effort=high {BYPASS_A} {BYPASS_H} "baked"'
 
     fork = codex.fork_command(source_cmd, CHAT_ID)
     check(f"R1 fork: unknown {flag} survives WITH its value",
@@ -214,9 +214,9 @@ check("dispatch/fork routes to Codex: cmd is a `codex fork <id>` command",
 service = _FakeService()
 ChatOps(service)._spawn_distiller("cx-distill", "rollover", "/work", "summarise", Engine.CODEX)
 distiller_cmd = service.spawned[-1].cmd
-check("dispatch/distiller routes to Codex: gpt-5.5/high fixed command",
+check("dispatch/distiller routes to Codex: gpt-5.6-sol/high fixed command",
       distiller_cmd == shlex.join(codex.distiller_command("summarise"))
-      and distiller_cmd.startswith("codex -m gpt-5.5 -c model_reasoning_effort=high "))
+      and distiller_cmd.startswith("codex -m gpt-5.6-sol -c model_reasoning_effort=high "))
 
 
 print(f"OK — {PASSED} checks passed")

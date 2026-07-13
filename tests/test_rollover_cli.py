@@ -58,7 +58,7 @@ def check(label, condition):
 
 
 CMD_FOR = {
-    Engine.CODEX: ("codex -m gpt-5.5 -c model_reasoning_effort=high "
+    Engine.CODEX: ("codex -m gpt-5.6-sol -c model_reasoning_effort=high "
                    "--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"),
     Engine.CLAUDE: "claude --dangerously-skip-permissions --model opus",
 }

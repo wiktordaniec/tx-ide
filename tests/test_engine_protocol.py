@@ -166,8 +166,8 @@ check("codex: matches_binary('') is False", codex.matches_binary("") is False)
 
 codex_fresh = codex.build_launch_command(initial_prompt="do the thing")
 check("codex build_launch_command: binary first", codex_fresh[0] == "codex")
-check("codex build_launch_command: renders -m gpt-5.5 -c model_reasoning_effort=high",
-      codex_fresh[1:5] == ["-m", "gpt-5.5", "-c", "model_reasoning_effort=high"])
+check("codex build_launch_command: renders -m gpt-5.6-sol -c model_reasoning_effort=high",
+      codex_fresh[1:5] == ["-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=high"])
 check("codex build_launch_command: bakes BOTH bypass flags",
       "--dangerously-bypass-approvals-and-sandbox" in codex_fresh
       and "--dangerously-bypass-hook-trust" in codex_fresh)
@@ -181,14 +181,14 @@ check("codex resume_command: keeps the hook-trust bypass so hooks fire",
       "--dangerously-bypass-hook-trust" in codex_resume)
 
 # New-signature smoke (T8b); deep Codex persona + R1 unknown-flag survival → tests/test_codex_chatops.py.
-_codex_source = ("codex -m gpt-5.5 -c model_reasoning_effort=high "
+_codex_source = ("codex -m gpt-5.6-sol -c model_reasoning_effort=high "
                  "--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust")
 codex_fork = codex.fork_command(_codex_source, "CID-2")
 check("codex fork_command: native subcommand + id", codex_fork[:3] == ["codex", "fork", "CID-2"])
 check("codex fork_command: keeps the hook-trust bypass",
       "--dangerously-bypass-hook-trust" in codex_fork)
-check("codex fork_command: inherits the source persona (-m gpt-5.5)",
-      "-m" in codex_fork and "gpt-5.5" in codex_fork)
+check("codex fork_command: inherits the source persona (-m gpt-5.6-sol)",
+      "-m" in codex_fork and "gpt-5.6-sol" in codex_fork)
 
 codex_seed = codex.seed_command(_codex_source, "read the brief")
 check("codex seed_command: binary first", codex_seed[0] == "codex")
@@ -197,8 +197,8 @@ check("codex seed_command: no fork/resume identity subcommand (a fresh codex)",
       "fork" not in codex_seed and "resume" not in codex_seed)
 
 codex_distill = codex.distiller_command("summarise the chat")
-check("codex distiller_command: gpt-5.5 at high effort (fixed — no source persona)",
-      codex_distill[1:5] == ["-m", "gpt-5.5", "-c", "model_reasoning_effort=high"])
+check("codex distiller_command: gpt-5.6-sol at high effort (fixed — no source persona)",
+      codex_distill[1:5] == ["-m", "gpt-5.6-sol", "-c", "model_reasoning_effort=high"])
 check("codex distiller_command: seed is the positional tail", codex_distill[-1] == "summarise the chat")
 
 check("codex state_source is HOOK_EVENTS (Codex emits a Stop hook)",
