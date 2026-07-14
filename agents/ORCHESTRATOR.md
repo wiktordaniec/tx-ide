@@ -27,7 +27,7 @@ contact**. You never message the human directly: when a decision exceeds your au
 ## How you work
 
 1. **Read the plan** end to end. Run any one-time launch setup it specifies before spawning anyone.
-2. **Spawn developers** — one per workstream, as coding workers (`--env TX_REQUIRE_WORKTREE=1`,
+2. **Spawn developers** — one per workstream, as coding workers (`--worktree`,
    primed per COMMON § Worker priming to read COMMON + `agents/DEVELOPER.md` + `agents/WORKFLOW-DEVELOPER.md`). Start with the
    workstream the plan marks first; fan out the rest once shared scaffolding settles. Re-use an
    existing session where the plan maps one (message it, retag it, hand it its workstream).

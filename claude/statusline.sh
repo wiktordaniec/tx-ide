@@ -96,6 +96,9 @@ if [ -n "$cwd" ]; then
       main_root=$(git -C "$cwd" worktree list 2>/dev/null | awk 'NR==1{print $1}')
       repo_name=$(basename "$main_root")
       worktree_name=$(basename "$git_root")
+      case "$worktree_name" in
+        "$repo_name--"*) worktree_name="${worktree_name#"$repo_name--"}" ;;
+      esac
       line1="\033[1m${DIR_COLOR}${repo_name}${RESET} \033[1m${WORKTREE_COLOR}${worktree_name}${RESET}"
     else
       repo_name=$(basename "$git_root")

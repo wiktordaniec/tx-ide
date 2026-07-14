@@ -1,4 +1,4 @@
-"""Git worktree creation for isolated Codex worker spawns."""
+"""Git worktree creation for isolated agent worker spawns."""
 
 from __future__ import annotations
 

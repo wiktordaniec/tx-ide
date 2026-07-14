@@ -33,11 +33,12 @@ Use `tx spawn` (bare) and `tx spawn-nvim` (nvim companion). Both require `--tag`
 
 ```bash
 tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
-tx spawn <name> --tag TAGS --cwd DIR --engine codex --worktree [--prompt TEXT]
+tx spawn <name> --tag TAGS --cwd DIR --engine ENGINE --worktree [--prompt TEXT]
 tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--open FILE] [--env K=V ...]
 ```
 
-`--env` may repeat — pass any env vars the spawned process needs (e.g. the require-worktree env vars for coding workers — see **§ Spawning workers**).
+`--env` may repeat — pass any additional env vars the spawned process needs. Coding workers get the
+require-worktree guard automatically from `--worktree`; see **§ Spawning workers**.
 
 **Tag convention** — tags are **pure scope**. Do **not** put a session's role (`llm` / `nvim` / `shell`) in `--tag`: the role is derived automatically from the launch command and shown as its own ROLE column in `tx attach`, so a role tag is redundant — it just shows up twice (once in the ROLE column, once as a stray chip).
 - AI worker session: `--tag <scope>` (e.g. `wrangler-p1`)
@@ -52,7 +53,9 @@ tx spawn build-watch --tag wrangler-p1 --cmd 'npm run watch'   # an ad-hoc proce
 tx spawn-nvim wrangler-p1-diff --tag wrangler-p1 --diff main   # an nvim companion
 ```
 
-An agent **worker** is also a `tx spawn`, but it needs a priming prompt in `--cmd` — see **§ Spawning workers** below. A bare agent CLI with no priming never reads these conventions.
+An agent **worker** is also a `tx spawn`, but it needs a priming prompt through `--prompt` (or
+through a fully hand-written `--cmd`) — see **§ Spawning workers** below. A bare agent CLI with no
+priming never reads these conventions.
 
 Both inject `COLORTERM=truecolor` and `TERM=xterm-256color`. `spawn-nvim` also forces `colorscheme tokyonight-moon` via `+CMD` because `tmux new-session -d` strips the OSC11 background hint and nvim's auto-mode would land on the light variant.
 
@@ -71,26 +74,20 @@ tx spawn <name> --tag <scope> --cwd <cwd> \
 - Model + effort: `--model "opus[1m]"` and `--effort max` are the defaults; don't downgrade unless asked.
 - Keep `<priming>` short and single-line — long, quoted, special-char-laden prompts crash tmux input.
 
-For **coding workers**, also pass `TX_REQUIRE_WORKTREE=1`. It trips a PreToolUse hook (a user-installed `~/.claude/settings.json` guard — **not** a tx-ide feature) that blocks Write/Edit until the worker `cd`s into a linked worktree:
-
-```bash
-tx spawn <name> --tag <scope> --cwd <cwd> \
-  --env TX_REQUIRE_WORKTREE=1 \
-  --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
-```
-
-For a **Codex worker**, create the worktree before the process starts so Codex records the correct
-workspace from its first frame:
+For **coding workers**, create the worktree before the process starts so every engine records the
+correct workspace from its first frame:
 
 ```bash
 tx spawn <name> --tag <scope> --cwd <repository> \
-  --engine codex --worktree --prompt "<priming>"
+  --engine <engine> --worktree --prompt "<priming>"
 ```
 
 `--worktree` creates a detached `.tx-ide/worktrees/<repository-name>--<name>` checkout, launches
-Codex from it, and injects `TX_REQUIRE_WORKTREE=1`. The combined directory name makes Codex's native
-`project-name` footer identify both the repository and worktree. Do not create the worktree after
-Codex has started—the task would remain associated with its original workspace.
+the selected Claude or Codex engine from it, and injects `TX_REQUIRE_WORKTREE=1`. The combined
+directory name lets engine status lines identify both the repository and worktree. The detached
+worker creates its correctly typed task branch after startup. Do not create the worktree after the
+agent has started—the task would remain associated with its original workspace. Non-coding workers
+may omit `--worktree`.
 
 ### Worker priming
 

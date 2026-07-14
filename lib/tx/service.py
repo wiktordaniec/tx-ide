@@ -68,10 +68,10 @@ class SessionService:
     def spawn(self, spec: SpawnSpec) -> Session:
         return self._spawn(spec)
 
-    def spawn_codex_worktree(self, spec: SpawnSpec) -> Session:
-        """Create an isolated, visibly named worktree before launching a Codex worker there."""
-        if spec.role != Role.LLM or spec.engine != Engine.CODEX:
-            raise ServiceError("a worktree spawn requires a Codex agent command")
+    def spawn_in_worktree(self, spec: SpawnSpec) -> Session:
+        """Create an isolated, visibly named worktree before launching an agent worker there."""
+        if spec.role != Role.LLM:
+            raise ServiceError("a worktree spawn requires an agent command")
         self._require_name_free(spec.name)
         try:
             worktree_directory = self.worktrees.create(spec.cwd, spec.name)

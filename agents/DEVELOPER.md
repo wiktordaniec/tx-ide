@@ -45,7 +45,7 @@ for orchestrator coordination.)*
 5. Push and open a draft PR when done (`gh pr create --draft`).
 6. **After the PR is open, spawn a `-diff` nvim companion** so the user can review the diff without context-switching — see **§ nvim companions for review**.
 
-Worktree convention: `.tx-ide/worktrees/<session-name>` inside the repo. A tx-managed Codex
+Worktree convention: `.tx-ide/worktrees/<session-name>` inside the repo. A tx-managed worker
 worktree includes the repository for footer visibility: `.tx-ide/worktrees/<repo>--<session-name>`.
 
 ## Self-verify
@@ -103,4 +103,4 @@ The companion's `nvim` role is derived from its launch command — it is never a
 
 ## Spawning sub-workers
 
-You are not limited to the nvim companions above — you may spawn your own agent workers to parallelize independent parts of a plan (a coding worker per subsystem). For answering an unknown, see **§ Experiment explorer** above. Follow **COMMON § Spawning workers** for the recipe: the `tx spawn … --cmd 'claude …'` pattern (Claude by default), the `--env TX_REQUIRE_WORKTREE=1` for coding sub-workers, and the role-file priming string that makes a sub-worker load these same conventions. Always prime — a bare agent spawn gets you a worker that ignores all of this.
+You are not limited to the nvim companions above — you may spawn your own agent workers to parallelize independent parts of a plan (a coding worker per subsystem). For answering an unknown, see **§ Experiment explorer** above. Follow **COMMON § Spawning workers** for the recipe: use the engine-built `tx spawn … --worktree --prompt …` form for coding sub-workers and include the role-file priming string that makes a sub-worker load these same conventions. Always prime — a bare agent spawn gets you a worker that ignores all of this.

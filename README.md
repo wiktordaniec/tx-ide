@@ -104,7 +104,7 @@ session, retag, message a peer. It follows `agents/TX-ASSISTANT.md`.
 
 | Command | What it does |
 |---|---|
-| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd CMD] [--engine ENGINE] [--prompt TEXT] [--worktree] [--env K=V …]` | Spawn a detached tmux session. `--tag` is mandatory; `--cwd` defaults to the firing pane's path; `--cmd` to your shell. `--engine codex --worktree` first creates a detached `.tx-ide/worktrees/<repository>--<name>` checkout and launches Codex there. LLM chats are captured automatically. |
+| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd CMD] [--engine ENGINE] [--prompt TEXT] [--worktree] [--env K=V …]` | Spawn a detached tmux session. `--tag` is mandatory; `--cwd` defaults to the firing pane's path; `--cmd` to your shell. `--engine ENGINE --worktree` first creates a detached `.tx-ide/worktrees/<repository>--<name>` checkout and launches the Claude or Codex agent there. LLM chats are captured automatically. |
 | `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V …]` | Spawn a detached nvim companion. `--diff [BASE]` opens a diffview (base defaults to `main`). |
 | `tx spawn-view <name> [--tag TAGS] [--cwd DIR] [--cmd CMD] [--env K=V …]` | Spawn a detached view session (`kind=view`); `--tag` defaults to `views`. |
 

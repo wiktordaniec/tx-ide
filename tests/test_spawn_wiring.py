@@ -271,18 +271,32 @@ with tempfile.TemporaryDirectory() as repository_parent:
               stdout=subprocess.DEVNULL,
               stderr=subprocess.DEVNULL,
           ).returncode != 0)
-    check("tx spawn --worktree still uses the Codex adapter command", command == CODEX_PREFIX)
+    check("tx spawn --worktree uses the Codex adapter command", command == CODEX_PREFIX)
 
-# The flag is deliberately Codex-only: Claude keeps its existing worker-created worktree flow, and
-# shell/nvim sessions must not cause surprise Git mutations.
+    claude_session, claude_command = run_spawn(
+        "claude-worktree-worker",
+        ["--tag", "s", "--cwd", str(repository), "--engine", "claude", "--worktree"],
+    )
+    expected_claude_worktree = (
+        repository / ".tx-ide" / "worktrees" / "sample-repository--claude-worktree-worker"
+    ).resolve()
+    check("tx spawn --worktree creates a worktree for Claude", expected_claude_worktree.is_dir())
+    check("tx spawn --worktree records Claude's worktree as cwd",
+          claude_session.cwd == str(expected_claude_worktree))
+    check("tx spawn --worktree injects the guard for Claude",
+          claude_session.env["TX_REQUIRE_WORKTREE"] == "1")
+    check("tx spawn --worktree uses the Claude adapter command",
+          claude_command == CLAUDE_PREFIX)
+
+# The flag is deliberately agent-only: shell/nvim sessions must not cause surprise Git mutations.
 try:
     with contextlib.redirect_stderr(io.StringIO()):
         SpawnCommand(spawn_service()).run(
-            ["bad-worktree", "--tag", "s", "--engine", "claude", "--worktree"]
+            ["bad-worktree", "--tag", "s", "--worktree"]
         )
-    check("tx spawn --worktree rejects non-Codex launches", False)
+    check("tx spawn --worktree rejects non-agent launches", False)
 except SystemExit as exit_error:
-    check("tx spawn --worktree rejects non-Codex launches", exit_error.code != 0)
+    check("tx spawn --worktree rejects non-agent launches", exit_error.code != 0)
 
 session, command = run_spawn("w-codex-me",
                              ["--tag", "s", "--cwd", "/p", "--engine", "codex",
