@@ -33,6 +33,7 @@ Use `tx spawn` (bare) and `tx spawn-nvim` (nvim companion). Both require `--tag`
 
 ```bash
 tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
+tx spawn <name> --tag TAGS --cwd DIR --engine codex --worktree [--prompt TEXT]
 tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--open FILE] [--env K=V ...]
 ```
 
@@ -77,6 +78,19 @@ tx spawn <name> --tag <scope> --cwd <cwd> \
   --env TX_REQUIRE_WORKTREE=1 \
   --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
 ```
+
+For a **Codex worker**, create the worktree before the process starts so Codex records the correct
+workspace from its first frame:
+
+```bash
+tx spawn <name> --tag <scope> --cwd <repository> \
+  --engine codex --worktree --prompt "<priming>"
+```
+
+`--worktree` creates a detached `.tx-ide/worktrees/<repository-name>--<name>` checkout, launches
+Codex from it, and injects `TX_REQUIRE_WORKTREE=1`. The combined directory name makes Codex's native
+`project-name` footer identify both the repository and worktree. Do not create the worktree after
+Codex has started—the task would remain associated with its original workspace.
 
 ### Worker priming
 

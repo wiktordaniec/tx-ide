@@ -159,6 +159,11 @@ class SpawnCommand(Command):
         parser.add_argument(
             "--effort", help="reasoning-effort override for an --engine agent spawn"
         )
+        parser.add_argument(
+            "--worktree",
+            action="store_true",
+            help="create a detached <repository>--<session> worktree and launch a Codex agent there",
+        )
         parser.add_argument("--env", action="append", type=_env_pair)
         args = parser.parse_args(argv)
         tags = _split_tags(args.tag)
@@ -170,15 +175,26 @@ class SpawnCommand(Command):
                 "with --cmd (the full hand-written command)"
             )
         command, engine = self._resolve_command(args)
+        if args.worktree and (
+            engine != Engine.CODEX or infer_role(command) != Role.LLM
+        ):
+            parser.error("--worktree requires a Codex agent launch")
+        environment = _parse_env(args.env)
+        if args.worktree:
+            environment["TX_REQUIRE_WORKTREE"] = "1"
         spec = SpawnSpec.for_process(
             name=args.name,
             tags=tags,
             cwd=args.cwd or self._default_cwd(),
             cmd=command,
-            env=_parse_env(args.env),
+            env=environment,
             engine=engine,
         )
-        session = self.service.spawn(spec)
+        session = (
+            self.service.spawn_codex_worktree(spec)
+            if args.worktree
+            else self.service.spawn(spec)
+        )
         print(f"Spawned '{session.name}' (cwd={session.cwd}, tag={args.tag})")
         return 0
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from dataclasses import replace
 
 from .events import EventLog
 from .messages import build_envelope
@@ -24,6 +25,7 @@ from .session import ChatRef, Engine, Kind, Origin, Role, Session, State
 from .spawn import SpawnSpec
 from .store import SessionStore
 from .tmux import Tmux, format_envelope
+from .worktree import WorktreeError, WorktreeManager
 
 
 class ServiceError(RuntimeError):
@@ -49,6 +51,7 @@ class SessionService:
         tmux: Tmux | None = None,
         log: EventLog | None = None,
         reconciler: Reconciler | None = None,
+        worktrees: WorktreeManager | None = None,
     ):
         self.store = store if store is not None else SessionStore()
         self.tmux = tmux if tmux is not None else Tmux()
@@ -58,11 +61,23 @@ class SessionService:
             if reconciler is not None
             else Reconciler(self.store, self.tmux, self.log)
         )
+        self.worktrees = worktrees if worktrees is not None else WorktreeManager()
 
     # ----- spawn ---------------------------------------------------------------------------
 
     def spawn(self, spec: SpawnSpec) -> Session:
         return self._spawn(spec)
+
+    def spawn_codex_worktree(self, spec: SpawnSpec) -> Session:
+        """Create an isolated, visibly named worktree before launching a Codex worker there."""
+        if spec.role != Role.LLM or spec.engine != Engine.CODEX:
+            raise ServiceError("a worktree spawn requires a Codex agent command")
+        self._require_name_free(spec.name)
+        try:
+            worktree_directory = self.worktrees.create(spec.cwd, spec.name)
+        except WorktreeError as error:
+            raise ServiceError(f"could not create worktree: {error}") from error
+        return self._spawn(replace(spec, cwd=str(worktree_directory)))
 
     def spawn_nvim(self, spec: SpawnSpec) -> Session:
         return self._spawn(spec)

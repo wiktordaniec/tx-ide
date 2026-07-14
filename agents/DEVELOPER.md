@@ -35,14 +35,18 @@ for orchestrator coordination.)*
 
 ## Git workflow
 
-1. **Create a git worktree as the first action** — never work in the main checkout.
-2. Branch naming: `<type>/<short-description>` (e.g., `feat/orchestrator-cleanup`).
+1. **Worktree-check as the first action** — if the launcher already placed you in a linked
+   worktree, use it; otherwise create one. Never work in the main checkout or create a nested
+   worktree inside the provided one.
+2. Create/check out a branch named `<type>/<short-description>` (e.g.,
+   `feat/orchestrator-cleanup`). A launcher-provided detached worktree needs this before edits.
 3. Never commit directly to main/master.
 4. Make atomic commits with descriptive messages.
 5. Push and open a draft PR when done (`gh pr create --draft`).
 6. **After the PR is open, spawn a `-diff` nvim companion** so the user can review the diff without context-switching — see **§ nvim companions for review**.
 
-Worktree convention: `.tx-ide/worktrees/<session-name>` inside the repo.
+Worktree convention: `.tx-ide/worktrees/<session-name>` inside the repo. A tx-managed Codex
+worktree includes the repository for footer visibility: `.tx-ide/worktrees/<repo>--<session-name>`.
 
 ## Self-verify
 

@@ -89,7 +89,7 @@ You run as the session `tx-assistant`, tagged `tx-system`. "This session" in use
 | Subcommand | Purpose |
 |---|---|
 | `tx ls` | Plain stdout list, two sections: VIEWS, PROCESSES. Use this to answer "what's running" questions. |
-| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]` | Spawn a detached tmux session. `--tag` is mandatory. `--cwd` defaults to the firing pane's path. `--cmd` defaults to the user's shell. An llm command automatically gets a chat id recorded, so its transcript is tracked and resumable — no flag needed. `--env` may repeat to pass env vars into the session. |
+| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--engine ENGINE] [--prompt TEXT] [--worktree] [--env K=V ...]` | Spawn a detached tmux session. `--tag` is mandatory. `--cwd` defaults to the firing pane's path. `--cmd` defaults to the user's shell. `--engine codex --worktree` creates `.tx-ide/worktrees/<repository>--<name>` first and launches Codex there. An llm session automatically records its chat. `--env` may repeat. |
 | `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]` | Spawn an nvim companion. `--diff` defaults `BASE` to `main` if omitted. Forces a dark colorscheme. `--env` may repeat. |
 | `tx tag <name> [tags]` | Read or set a session's tags in the durable store — the non-interactive counterpart to the picker's Ctrl-T. With `tags` (comma-separated): set them. Without: print the current tags. Resolves `<name>` via its live `@tx_id`, falling back to a store name lookup for a session no longer live. |
 | `tx send-message <target> <body>` | Peer-message another agent session. Wraps body in the `<from-agent session="...">…</from-agent>` envelope, fills your session name automatically, handles the post-send sleep. |
@@ -142,6 +142,20 @@ When the user asks for a worker, follow **COMMON § Spawning workers** for the r
 
 - `<cwd>` — if the user said "here", use `pane-path` / `inner-pane-path` from the focus envelope; otherwise resolve the project root they named.
 - After spawning, tell the user the attach command: `tx attach`, filtered by the scope tag.
+
+When the user asks for a **Codex** worker, always use tx's engine-built worktree form—never launch
+Codex in the source checkout and ask it to create a worktree after startup:
+
+```bash
+tx spawn <name> --tag <scope> --cwd <project-root> \
+  --engine codex --worktree --prompt "<priming>"
+```
+
+`--worktree` is Codex-only. It creates a detached worktree named `<repository>--<name>`, stamps that
+path as the session cwd before Codex starts, and injects `TX_REQUIRE_WORKTREE=1`. The detached worker
+creates its correctly typed task branch after startup. The Git mutation is encapsulated by `tx`, so
+using this verb remains within the assistant's no-raw-git scope. Leave `--effort` unset unless the
+user names a Codex-supported value; the Codex adapter supplies its compatible default.
 
 ## Peer messaging
 

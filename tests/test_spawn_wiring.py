@@ -32,6 +32,7 @@ import contextlib
 import io
 import os
 import shlex
+import subprocess
 import sys
 import tempfile
 import time
@@ -85,6 +86,8 @@ class CliTmux:
 
     def __init__(self):
         self.command = None
+        self.cwd = None
+        self.environment = None
 
     def has_session(self, name):
         return False
@@ -97,6 +100,8 @@ class CliTmux:
 
     def new_session(self, name, cwd, command, env):
         self.command = command
+        self.cwd = cwd
+        self.environment = env
         return 4242
 
     def set_tx_id(self, name, session_id):
@@ -229,6 +234,55 @@ session, command = run_spawn("w-codex-bare", ["--tag", "s", "--cwd", "/p", "--en
 check("tx spawn --engine codex with no --prompt builds the default codex command (no trailing prompt)",
       command == CODEX_PREFIX)
 check("tx spawn --engine codex (no prompt) still stamps CODEX", session.engine == Engine.CODEX)
+
+# --worktree creates the checkout BEFORE spawning, names it <repository>--<session>, records that
+# path as cwd, and injects the guard automatically. The worktree is detached so tx never invents a
+# task branch; the worker creates its correctly typed branch after launch.
+with tempfile.TemporaryDirectory() as repository_parent:
+    repository = Path(repository_parent) / "sample-repository"
+    repository.mkdir()
+    subprocess.run(["git", "-C", str(repository), "init", "-b", "main"], check=True,
+                   stdout=subprocess.DEVNULL)
+    subprocess.run(["git", "-C", str(repository), "config", "user.email", "test@example.com"],
+                   check=True)
+    subprocess.run(["git", "-C", str(repository), "config", "user.name", "Test User"], check=True)
+    (repository / "README.md").write_text("fixture\n")
+    subprocess.run(["git", "-C", str(repository), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(repository), "commit", "-m", "fixture"], check=True,
+                   stdout=subprocess.DEVNULL)
+
+    session, command = run_spawn(
+        "worktree-worker",
+        ["--tag", "s", "--cwd", str(repository), "--engine", "codex", "--worktree"],
+    )
+    expected_worktree = (
+        repository / ".tx-ide" / "worktrees" / "sample-repository--worktree-worker"
+    ).resolve()
+    check("tx spawn --worktree creates <repository>--<session>", expected_worktree.is_dir())
+    check("tx spawn --worktree records the created worktree as cwd",
+          session.cwd == str(expected_worktree))
+    check("tx spawn --worktree injects TX_REQUIRE_WORKTREE=1",
+          session.env["TX_REQUIRE_WORKTREE"] == "1")
+    check("tx spawn --worktree creates a linked Git worktree",
+          (expected_worktree / ".git").is_file())
+    check("tx spawn --worktree starts detached instead of inventing a branch",
+          subprocess.run(
+              ["git", "-C", str(expected_worktree), "symbolic-ref", "-q", "HEAD"],
+              stdout=subprocess.DEVNULL,
+              stderr=subprocess.DEVNULL,
+          ).returncode != 0)
+    check("tx spawn --worktree still uses the Codex adapter command", command == CODEX_PREFIX)
+
+# The flag is deliberately Codex-only: Claude keeps its existing worker-created worktree flow, and
+# shell/nvim sessions must not cause surprise Git mutations.
+try:
+    with contextlib.redirect_stderr(io.StringIO()):
+        SpawnCommand(spawn_service()).run(
+            ["bad-worktree", "--tag", "s", "--engine", "claude", "--worktree"]
+        )
+    check("tx spawn --worktree rejects non-Codex launches", False)
+except SystemExit as exit_error:
+    check("tx spawn --worktree rejects non-Codex launches", exit_error.code != 0)
 
 session, command = run_spawn("w-codex-me",
                              ["--tag", "s", "--cwd", "/p", "--engine", "codex",
