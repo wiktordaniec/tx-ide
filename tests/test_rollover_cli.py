@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -118,6 +119,14 @@ def service_with_source(txid, engine, cwd):
 
 
 WORK = tempfile.mkdtemp()
+subprocess.run(["git", "-C", WORK, "init", "-b", "main"], check=True,
+               stdout=subprocess.DEVNULL)
+subprocess.run(["git", "-C", WORK, "config", "user.email", "test@example.com"], check=True)
+subprocess.run(["git", "-C", WORK, "config", "user.name", "Test User"], check=True)
+(Path(WORK) / "README.md").write_text("fixture\n")
+subprocess.run(["git", "-C", WORK, "add", "README.md"], check=True)
+subprocess.run(["git", "-C", WORK, "commit", "-m", "fixture"], check=True,
+               stdout=subprocess.DEVNULL)
 
 # Stub the detached finish: the unit asserts the CLI wrapper, not the async `_chat-op-finish`
 # subprocess (codex-plan: "driving the full detached finish isn't required for the unit").

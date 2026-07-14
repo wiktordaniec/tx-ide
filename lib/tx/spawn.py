@@ -55,6 +55,9 @@ class SpawnSpec:
     cmd: str
     tags: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    # New agent workers are writable by default and therefore placed in a linked worktree by
+    # SessionService.spawn_worker. The explicit read-only mode stays in the requested cwd.
+    read_only: bool = False
     # The agent engine this session runs (v3, design §1) — set from `tx spawn --engine` and stamped
     # onto `Session.engine` by `service._spawn`. `None` means "unspecified": `_spawn` defaults an llm
     # session to Claude (the engine default) and leaves a non-llm session engine-less. NEVER inferred
@@ -76,6 +79,7 @@ class SpawnSpec:
         cwd: str,
         cmd: str,
         env: dict[str, str] | None = None,
+        read_only: bool = False,
         records_own_chat: bool = False,
         engine: Engine | None = None,
     ) -> SpawnSpec:
@@ -92,6 +96,7 @@ class SpawnSpec:
             cmd=cmd,
             tags=list(tags),
             env=dict(env or {}),
+            read_only=read_only,
             records_own_chat=records_own_chat,
             engine=engine,
         )

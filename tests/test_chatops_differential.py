@@ -353,6 +353,18 @@ class _FakeService:
         self.register(new)
         return new
 
+    def next_worker_name(self, starting_directory, base_name):
+        return base_name
+
+    def spawn_worker(self, spec, **kwargs):
+        before_spawn = kwargs.get("before_spawn")
+        if before_spawn is not None:
+            before_spawn(spec)
+        return self.spawn(spec)
+
+    def spawn_internal(self, spec):
+        return self.spawn(spec)
+
 
 def _source_session(txid, name, cmd):
     return Session(
@@ -414,6 +426,25 @@ try:
           rollover_command.startswith("env TX_SESSION_ID=SRC3 "))
     check("dispatch/rollover: source persona + #50 flag survive after the env prefix",
           "--model opus --effort high --append-system-prompt-file /tmp/x.md" in rollover_command)
+
+    read_only_source = _source_session(
+        "SRC4", "src4",
+        shlex.join(claude.build_launch_command(model="opus", read_only=True)),
+    )
+    read_only_source.env["TX_READ_ONLY"] = "1"
+    service = _FakeService()
+    service.register(read_only_source)
+    read_only_spec = ChatOpSpec(
+        op_id="op-ro", kind="rollover", source_txid="SRC4", source_chat=CHAT_ID,
+        cwd="/work", artifact_path=str(_NOTE), pane="%10",
+    )
+    ChatOps(service)._finish_rollover(read_only_spec)
+    _, read_only_command = service.tmux.respawned[-1]
+    check("dispatch/rollover: read-only marker survives the pane respawn",
+          "TX_READ_ONLY=1" in read_only_command)
+    check("dispatch/rollover: read-only Claude controls survive the pane respawn",
+          "--permission-mode plan" in read_only_command
+          and "--dangerously-skip-permissions" not in read_only_command)
 finally:
     chat_module.history.ingest_session = _orig_ingest
 

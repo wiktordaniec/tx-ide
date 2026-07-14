@@ -33,12 +33,12 @@ Use `tx spawn` (bare) and `tx spawn-nvim` (nvim companion). Both require `--tag`
 
 ```bash
 tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
-tx spawn <name> --tag TAGS --cwd DIR --engine ENGINE --worktree [--prompt TEXT]
+tx spawn <name> --tag TAGS --cwd DIR --engine ENGINE [--read-only] [--prompt TEXT]
 tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--open FILE] [--env K=V ...]
 ```
 
-`--env` may repeat — pass any additional env vars the spawned process needs. Coding workers get the
-require-worktree guard automatically from `--worktree`; see **§ Spawning workers**.
+`--env` may repeat — pass any additional env vars the spawned process needs. Writable agent workers
+get their worktree and require-worktree guard automatically; see **§ Spawning workers**.
 
 **Tag convention** — tags are **pure scope**. Do **not** put a session's role (`llm` / `nvim` / `shell`) in `--tag`: the role is derived automatically from the launch command and shown as its own ROLE column in `tx attach`, so a role tag is redundant — it just shows up twice (once in the ROLE column, once as a stray chip).
 - AI worker session: `--tag <scope>` (e.g. `wrangler-p1`)
@@ -65,7 +65,7 @@ When you need to delegate work — coding, scoping, planning, or research/explor
 
 ```bash
 tx spawn <name> --tag <scope> --cwd <cwd> \
-  --cmd 'claude --dangerously-skip-permissions --model "opus[1m]" --effort max "<priming>"'
+  --engine claude --model "opus[1m]" --effort max --prompt "<priming>"
 ```
 
 - `<name>` — short, descriptive (`orchestrator-cleanup`, `auth-review`).
@@ -74,20 +74,32 @@ tx spawn <name> --tag <scope> --cwd <cwd> \
 - Model + effort: `--model "opus[1m]"` and `--effort max` are the defaults; don't downgrade unless asked.
 - Keep `<priming>` short and single-line — long, quoted, special-char-laden prompts crash tmux input.
 
-For **coding workers**, create the worktree before the process starts so every engine records the
-correct workspace from its first frame:
+Every writable agent worker—including coding workers, forks, and handovers—gets a worktree before
+the process starts, so every engine records the correct workspace from its first frame:
 
 ```bash
 tx spawn <name> --tag <scope> --cwd <repository> \
-  --engine <engine> --worktree --prompt "<priming>"
+  --engine <engine> --prompt "<priming>"
 ```
 
-`--worktree` creates a detached `.tx-ide/worktrees/<repository-name>--<name>` checkout, launches
-the selected Claude or Codex engine from it, and injects `TX_REQUIRE_WORKTREE=1`. The combined
-directory name lets engine status lines identify both the repository and worktree. The detached
-worker creates its correctly typed task branch after startup. Do not create the worktree after the
-agent has started—the task would remain associated with its original workspace. Non-coding workers
-may omit `--worktree`.
+tx creates a detached `.tx-ide/worktrees/<repository-name>--<name>` checkout, launches the selected
+Claude or Codex engine from it, and injects `TX_REQUIRE_WORKTREE=1`. The combined directory name lets
+engine status lines identify both the repository and worktree. The detached worker creates its
+correctly typed task branch after startup. `--worktree` remains accepted for compatibility but is
+redundant.
+
+The only placement exception is an explicitly read-only worker:
+
+```bash
+tx spawn <name> --tag <scope> --cwd <repository> \
+  --engine <engine> --read-only --prompt "<priming>"
+```
+
+`--read-only` stays in the requested checkout, persists `TX_READ_ONLY=1`, and asks the engine adapter
+to block repository edits. It cannot be combined with a hand-written `--cmd`. To turn an
+investigation into implementation, fork it: `tx fork <investigation> <implementation>`. The new
+session is writable by default and gets its own worktree; pass `--read-only` to `tx fork` only when
+the fork must remain read-only. Resume and rollover preserve the source session's access mode.
 
 ### Worker priming
 

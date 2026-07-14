@@ -126,6 +126,7 @@ class ChatOpSpec:
     cwd: str
     artifact_path: str  # the brief (handover) / note (rollover) the distiller writes; "" = self-catch-up
     self_catch_up: bool = False
+    read_only: bool = False  # handover destination; rollover reads the source record instead
     worker_name: str = ""   # handover
     pane: str = ""          # rollover
     distiller_name: str = ""
@@ -141,13 +142,15 @@ class ChatOpSpec:
     @classmethod
     def load(cls, op_id: str) -> ChatOpSpec:
         data = json.loads((chat_ops_dir() / op_id / "spec.json").read_text())
+        data.setdefault("read_only", False)
         return cls(**data)
 
     def to_dict(self) -> dict:
         return {
             "op_id": self.op_id, "kind": self.kind, "source_txid": self.source_txid,
             "source_chat": self.source_chat, "cwd": self.cwd, "artifact_path": self.artifact_path,
-            "self_catch_up": self.self_catch_up, "worker_name": self.worker_name,
+            "self_catch_up": self.self_catch_up, "read_only": self.read_only,
+            "worker_name": self.worker_name,
             "pane": self.pane, "distiller_name": self.distiller_name,
         }
 
@@ -160,7 +163,9 @@ class ChatOps:
 
     # ----- fork (§4) -----------------------------------------------------------------------
 
-    def fork(self, source: str, new_name: str | None = None) -> Session:
+    def fork(
+        self, source: str, new_name: str | None = None, read_only: bool = False
+    ) -> Session:
         """Branch the source's active chat into a NEW tx session that starts with the full history,
         then diverges. Native `--fork-session`, interactive, no `-p`. The source `.jsonl` is
         read-only under `--fork-session` (#8) — safe to fork a session you are actively using."""
@@ -172,18 +177,38 @@ class ChatOps:
             raise ServiceError(f"fork: '{source_session.name}' has no chat to fork")
 
         cwd = source_chat.cwd
-        name = self._unique_name(new_name or f"{source_session.name}-fork")
+        base_name = new_name or f"{source_session.name}-fork"
+        name = (
+            self._unique_name(base_name)
+            if read_only
+            else self.service.next_worker_name(cwd, base_name)
+        )
+
+        adapter = registry.get(source_session.engine)
 
         spec = SpawnSpec.for_process(
             name=name, tags=list(source_session.tags), cwd=cwd,
-            cmd=shlex.join(registry.get(source_session.engine).fork_command(source_session.cmd, source_chat.id)),
+            cmd=shlex.join(
+                adapter.fork_command(
+                    source_session.cmd, source_chat.id, read_only=read_only
+                )
+            ),
             env=_inherited_env(source_session), records_own_chat=True,
-            engine=source_session.engine,
+            engine=source_session.engine, read_only=read_only,
         )
-        new_session = self.service.spawn(spec)
+        new_session = self.service.spawn_worker(
+            spec,
+            before_spawn=lambda prepared: adapter.prepare_chat_for_cwd(
+                source_chat.id, source_chat.cwd, prepared.cwd
+            ),
+        )
 
-        self._record_fork_chat(new_session.id, cwd, source_session.id, source_chat.id)
-        self.service.log.append("fork", f"{source_session.name} → {name} (chat pending)")
+        self._record_fork_chat(
+            new_session.id, new_session.cwd, source_session.id, source_chat.id
+        )
+        self.service.log.append(
+            "fork", f"{source_session.name} → {new_session.name} (chat pending)"
+        )
         return self.service.store.load(new_session.id)
 
     def _record_fork_chat(
@@ -210,7 +235,12 @@ class ChatOps:
     # ----- handover (§5) -------------------------------------------------------------------
 
     def handover(
-        self, source: str, task: str, new_name: str | None = None, self_catch_up: bool = False
+        self,
+        source: str,
+        task: str,
+        new_name: str | None = None,
+        self_catch_up: bool = False,
+        read_only: bool = False,
     ) -> str:
         """Distill the source chat into a focused brief for a NEW worker (source untouched). The
         default spins a temporary opus distiller that writes the brief then triggers `_chat-op-finish`
@@ -227,14 +257,19 @@ class ChatOps:
         # session (source untouched). Blocking so the bundle is complete before we read.
         history.ingest_session(self.service.store, source_session.id, wait=True)
 
-        worker_name = self._unique_name(new_name or f"{source_session.name}-handover")
+        base_name = new_name or f"{source_session.name}-handover"
+        worker_name = (
+            self._unique_name(base_name)
+            if read_only
+            else self.service.next_worker_name(source_chat.cwd, base_name)
+        )
         brief_path = history_dir() / source_session.id / f"handover-{_slug(task)}.md"
 
         spec = ChatOpSpec(
             op_id=str(uuid.uuid4()), kind="handover", source_txid=source_session.id,
             source_chat=source_chat.id, cwd=source_chat.cwd,
             artifact_path="" if self_catch_up else str(brief_path),
-            self_catch_up=self_catch_up, worker_name=worker_name,
+            self_catch_up=self_catch_up, read_only=read_only, worker_name=worker_name,
         )
 
         if self_catch_up:
@@ -243,7 +278,9 @@ class ChatOps:
             self.service.log.append("handover", f"{source_session.name} → {worker_name} (self-catch-up)")
             return worker_name
 
-        distiller = self._unique_name(f"{worker_name}-distill")
+        distiller = self.service.next_worker_name(
+            source_chat.cwd, f"{worker_name}-distill"
+        )
         spec.distiller_name = distiller
         spec.save()
         seed = (
@@ -255,7 +292,12 @@ class ChatOps:
             f"saved, run exactly this command and nothing else: "
             f"{_tx_invocation()} _chat-op-finish {shlex.quote(spec.op_id)}"
         )
-        self._spawn_distiller(distiller, "handover", source_chat.cwd, seed, source_session.engine)
+        distiller_session = self._spawn_distiller(
+            distiller, "handover", source_chat.cwd, seed, source_session.engine
+        )
+        if distiller_session.name != spec.distiller_name:
+            spec.distiller_name = distiller_session.name
+            spec.save()
         self._detach(["_chat-op-watch", spec.op_id])
         self.service.log.append("handover", f"{source_session.name} → {worker_name} (distilling)")
         return worker_name
@@ -298,7 +340,9 @@ class ChatOps:
 
         # Read the freshest bundle (blocking) so the summary reflects the latest turn.
         history.ingest_session(self.service.store, record.id, wait=True)
-        distiller = self._unique_name(f"{record.name}-rollover-distill")
+        distiller = self.service.next_worker_name(
+            current_chat.cwd, f"{record.name}-rollover-distill"
+        )
         spec.distiller_name = distiller
         spec.save()
         seed = (
@@ -308,7 +352,12 @@ class ChatOps:
             f"and decisions — to {note_path} . When the note file is saved, run exactly this command "
             f"and nothing else: {_tx_invocation()} _chat-op-finish {shlex.quote(spec.op_id)}"
         )
-        self._spawn_distiller(distiller, "rollover", current_chat.cwd, seed, record.engine)
+        distiller_session = self._spawn_distiller(
+            distiller, "rollover", current_chat.cwd, seed, record.engine
+        )
+        if distiller_session.name != spec.distiller_name:
+            spec.distiller_name = distiller_session.name
+            spec.save()
         self._detach(["_chat-op-watch", spec.op_id])
         self.service.log.append("rollover", f"{record.name} (distilling)")
 
@@ -356,16 +405,20 @@ class ChatOps:
                 f"Your task brief is at {spec.artifact_path} — read it and begin. Fuller predecessor "
                 f"history, only if the brief is insufficient: {bundle}/ ."
             )
-        launch = shlex.join(registry.get(source.engine).seed_command(source.cmd, seed))
-        worker = self.service.spawn(SpawnSpec.for_process(
+        launch = shlex.join(
+            registry.get(source.engine).seed_command(
+                source.cmd, seed, read_only=spec.read_only
+            )
+        )
+        worker = self.service.spawn_worker(SpawnSpec.for_process(
             name=spec.worker_name, tags=list(source.tags), cwd=spec.cwd, cmd=launch,
             env=_inherited_env(source), records_own_chat=True,
-            engine=source.engine,
+            engine=source.engine, read_only=spec.read_only,
         ))
         self._record_seeded_chat(
-            worker.id, spec.cwd, "handover", spec.source_txid, spec.source_chat
+            worker.id, worker.cwd, "handover", spec.source_txid, spec.source_chat
         )
-        self.service.log.append("handover-finish", f"{spec.worker_name} (chat pending)")
+        self.service.log.append("handover-finish", f"{worker.name} (chat pending)")
 
     def _finish_rollover(self, spec: ChatOpSpec) -> None:
         """Rotate `pane` onto a fresh chat in place. Re-ingests the source's FINAL transcript first
@@ -396,8 +449,12 @@ class ChatOps:
             )
         # The rotated pane keeps the SAME tx session, so its hook (TX_SESSION_ID) fills the pending
         # rollover ref. No chat-control env — provenance is on the ref, the id is captured (T4).
-        env = {"TX_SESSION_ID": spec.source_txid}
-        command = _env_prefix(env) + shlex.join(registry.get(record.engine).seed_command(record.cmd, seed))
+        env = {**record.env, "TX_SESSION_ID": spec.source_txid}
+        command = _env_prefix(env) + shlex.join(
+            registry.get(record.engine).seed_command(
+                record.cmd, seed, read_only=record.read_only
+            )
+        )
         self.service.tmux.respawn_pane(spec.pane, command)
         self._record_seeded_chat(
             spec.source_txid, spec.cwd, "rollover", spec.source_txid,
@@ -448,10 +505,16 @@ class ChatOps:
         """Kill the throwaway distiller (it has done its job — initial-prompt-seeded, it never needed
         to self-kill) and remove the op-spec dir. Best-effort: a missing session/dir is success."""
         if spec.distiller_name:
+            distiller = self.service.get(spec.distiller_name)
             try:
                 self.service.kill(spec.distiller_name)
             except ServiceError:
                 pass  # already gone
+            if distiller is not None:
+                try:
+                    self.service.remove_worker_worktree(distiller.cwd)
+                except ServiceError:
+                    pass  # best-effort cleanup; the ended record keeps the cwd for manual recovery
         shutil.rmtree(spec.dir, ignore_errors=True)
 
     # ----- pane / note resolution ----------------------------------------------------------

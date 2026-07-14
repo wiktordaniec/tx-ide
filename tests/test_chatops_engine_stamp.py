@@ -27,6 +27,7 @@ resolvers' homes) + a fake Tmux. No real spawn, no live home touched.
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -44,7 +45,17 @@ from tx import history  # noqa: E402
 from tx.chat import ChatOps, ChatOpSpec  # noqa: E402  (imports tx.spawn → registers the adapters)
 from tx.history import resolve_transcript  # noqa: E402
 from tx.service import SessionService  # noqa: E402
-from tx.session import ChatRef, Engine, Kind, Origin, Role, Session, State  # noqa: E402
+from tx.session import (  # noqa: E402
+    READ_ONLY_ENV,
+    REQUIRE_WORKTREE_ENV,
+    ChatRef,
+    Engine,
+    Kind,
+    Origin,
+    Role,
+    Session,
+    State,
+)
 from tx.storage import ensure_home  # noqa: E402
 from tx.store import SessionStore  # noqa: E402
 
@@ -141,7 +152,15 @@ def chat_of(session, role):
     return next((chat for chat in session.chats if chat.role == role), None)
 
 
-WORK = tempfile.mkdtemp()  # a real cwd for the source/derived sessions
+WORK = tempfile.mkdtemp()  # a real Git cwd for the source/derived sessions
+subprocess.run(["git", "-C", WORK, "init", "-b", "main"], check=True,
+               stdout=subprocess.DEVNULL)
+subprocess.run(["git", "-C", WORK, "config", "user.email", "test@example.com"], check=True)
+subprocess.run(["git", "-C", WORK, "config", "user.name", "Test User"], check=True)
+(Path(WORK) / "README.md").write_text("fixture\n")
+subprocess.run(["git", "-C", WORK, "add", "README.md"], check=True)
+subprocess.run(["git", "-C", WORK, "commit", "-m", "fixture"], check=True,
+               stdout=subprocess.DEVNULL)
 
 # =================================================================================================
 # 1. fork / handover / distiller stamp the SOURCE engine on the new record + its new ChatRef.
@@ -163,6 +182,9 @@ for engine in (Engine.CODEX, Engine.CLAUDE):
     check(f"fork [{tag}]: a pending fork ChatRef exists (id captured later)",
           fork_ref is not None and fork_ref.id is None)
     check(f"fork [{tag}]: the fork ChatRef inherits engine == {tag}", fork_ref.engine == engine)
+    check(f"fork [{tag}]: a new writable session gets a repo--session worktree",
+          Path(forked.cwd).name == f"{Path(WORK).name}--myfork-{tag}"
+          and forked.env[REQUIRE_WORKTREE_ENV] == "1")
 
     # --- _finish_handover() — spawns the fresh seeded worker (the D1 site driven directly) ---
     service = service_over(source_session(f"src-ho-{tag}", f"src-ho-{tag}", engine,
@@ -183,6 +205,9 @@ for engine in (Engine.CODEX, Engine.CLAUDE):
           handover_ref is not None and handover_ref.id is None)
     check(f"handover [{tag}]: the handover ChatRef inherits engine == {tag}",
           handover_ref.engine == engine)
+    check(f"handover [{tag}]: the new writable worker gets a repo--session worktree",
+          Path(worker.cwd).name == f"{Path(WORK).name}--hw-{tag}"
+          and worker.env[REQUIRE_WORKTREE_ENV] == "1")
 
     # --- _spawn_distiller() — a plain llm spawn; gets a pending `original` ref from `_spawn` ---
     service = service_over()
@@ -194,6 +219,29 @@ for engine in (Engine.CODEX, Engine.CLAUDE):
           distiller.engine == engine)
     check(f"distiller [{tag}]: the distiller's original ChatRef inherits engine == {tag}",
           bool(distiller.chats) and distiller.chats[0].engine == engine)
+
+    # A read-only fork is the explicit placement exception: same source checkout, safe adapter
+    # command, persistent access marker. A later ordinary fork returns to the writable default.
+    service = service_over(source_session(f"src-ro-{tag}", f"src-ro-{tag}", engine,
+                                          f"ROCHAT-{tag}", WORK))
+    read_only_fork = ChatOps(service).fork(
+        f"src-ro-{tag}", f"readonly-fork-{tag}", read_only=True
+    )
+    check(f"fork [{tag}/read-only]: stays in the source checkout",
+          read_only_fork.cwd == WORK)
+    check(f"fork [{tag}/read-only]: persists the read-only marker",
+          read_only_fork.read_only and read_only_fork.env[READ_ONLY_ENV] == "1")
+    if engine == Engine.CLAUDE:
+        safe_command = (
+            "--permission-mode plan" in read_only_fork.cmd
+            and "--dangerously-skip-permissions" not in read_only_fork.cmd
+        )
+    else:
+        safe_command = (
+            "--sandbox read-only" in read_only_fork.cmd
+            and "--dangerously-bypass-approvals-and-sandbox" not in read_only_fork.cmd
+        )
+    check(f"fork [{tag}/read-only]: uses the engine's enforced read-only command", safe_command)
 
 # =================================================================================================
 # 2. The stamp is LOAD-BEARING for ingest (codex-plan bonus): a captured codex fork resolves +

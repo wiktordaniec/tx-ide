@@ -24,6 +24,11 @@ from enum import Enum
 # record. v3 added the explicit `engine` field (design §1); `tx migrate` upgrades v2 records in place.
 SCHEMA_VERSION = 3
 
+# Access-mode markers live in the already-persisted session environment, so v3 records remain
+# readable across this additive behavior change. An absent marker is the writable default.
+READ_ONLY_ENV = "TX_READ_ONLY"
+REQUIRE_WORKTREE_ENV = "TX_REQUIRE_WORKTREE"
+
 
 class UnsupportedRecordError(Exception):
     """A persisted record is not a current (v3) tx-ide record (OPEN-0b boundary guard).
@@ -267,6 +272,11 @@ class Session:
         non-llm session never lights up."""
         return self.role == Role.LLM and self.state == State.WAITING
 
+    @property
+    def read_only(self) -> bool:
+        """Whether this agent was launched in the explicit repository read-only mode."""
+        return self.role == Role.LLM and self.env.get(READ_ONLY_ENV) == "1"
+
     def transition_to(self, new_state: State) -> bool:
         """Apply a state transition, honoring C3: terminal states (EXITED / ARCHIVED) are
         absorbing — once terminal, refuse to move anywhere else. This guards the late-async-hook
@@ -294,6 +304,7 @@ class Session:
                 self.role.value,
                 self.kind.value,
                 self.state.value,
+                "read-only" if self.read_only else "writable",
                 self.cwd,
                 *self.tags,
             ]

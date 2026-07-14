@@ -41,26 +41,41 @@ class EngineAdapter(Protocol):
         model: str | None = None,
         effort: str | None = None,
         initial_prompt: str | None = None,
+        read_only: bool = False,
     ) -> list[str]:
-        """Argv for a fresh session, rendering (model, effort) this engine's way + its yolo flags."""
+        """Argv for a fresh session, including the requested repository access mode."""
         ...
 
-    def resume_command(self, chat_id: str) -> list[str]:
+    def resume_command(self, chat_id: str, *, read_only: bool = False) -> list[str]:
         """Argv to resume an existing chat in place."""
         ...
 
-    def fork_command(self, source_cmd: str, chat_id: str) -> list[str]:
+    def fork_command(
+        self, source_cmd: str, chat_id: str, *, read_only: bool = False
+    ) -> list[str]:
         """Argv to fork a chat onto its full history, carrying the source persona (parsed per-engine,
         preserving unknown value-flags) plus this fork's own identity."""
         ...
 
-    def seed_command(self, source_cmd: str, seed: str) -> list[str]:
+    def seed_command(
+        self, source_cmd: str, seed: str, *, read_only: bool = False
+    ) -> list[str]:
         """Argv for a fresh session carrying the source persona (no identity flag) + `seed` as the
         initial-prompt positional. Preserve unknown value-flags (the #50 safe default)."""
         ...
 
     def distiller_command(self, seed: str) -> list[str]:
         """Argv for the fixed distiller pass (no source persona) that summarizes a chat into a brief."""
+        ...
+
+    def prepare_chat_for_cwd(
+        self, chat_id: str, source_cwd: str, target_cwd: str
+    ) -> None:
+        """Make an existing chat discoverable when a continuation moves to another cwd."""
+        ...
+
+    def is_read_only_command(self, command: str) -> bool:
+        """Whether the rendered command carries this engine's enforced read-only controls."""
         ...
 
     # ----- transcript -----

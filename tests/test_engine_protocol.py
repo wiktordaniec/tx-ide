@@ -66,6 +66,8 @@ REQUIRED_METHODS = {
     "fork_command": 2,
     "seed_command": 2,
     "distiller_command": 1,
+    "prepare_chat_for_cwd": 3,
+    "is_read_only_command": 1,
     "resolve_transcript": 2,
     "iter_messages": 1,
     "bundle_sidecars": 2,
@@ -112,6 +114,19 @@ check("build_launch_command: prompt is the positional tail", fresh[-1] == "do th
 check("build_launch_command: bare call is just the binary + yolo",
       claude.build_launch_command() == ["claude", "--dangerously-skip-permissions"])
 
+claude_read_only = claude.build_launch_command(
+    initial_prompt="inspect only", read_only=True
+)
+check("claude read-only: removes the permission bypass",
+      "--dangerously-skip-permissions" not in claude_read_only)
+check("claude read-only: plan mode + write-capable tools are denied",
+      "--permission-mode" in claude_read_only and "plan" in claude_read_only
+      and all(tool in claude_read_only for tool in ("Bash", "Edit", "Write", "NotebookEdit")))
+check("claude read-only: adapter recognizes its rendered command",
+      claude.is_read_only_command(" ".join(claude_read_only)))
+check("claude read-only: prompt remains the positional tail",
+      claude_read_only[-1] == "inspect only")
+
 resume = claude.resume_command("CID-1")
 check("resume_command: binary first", resume[0] == "claude")
 check("resume_command: --resume <id>", resume[1:3] == ["--resume", "CID-1"])
@@ -124,6 +139,11 @@ check("fork_command: binary first", fork[0] == "claude")
 check("fork_command: resumes + forks the source",
       "--resume" in fork and "--fork-session" in fork and "CID-2" in fork)
 check("fork_command: inherits the source persona (--model opus)", "--model" in fork and "opus" in fork)
+promoted_fork = claude.fork_command(" ".join(claude_read_only), "CID-3")
+check("claude writable fork strips inherited read-only controls",
+      "--dangerously-skip-permissions" in promoted_fork
+      and "--permission-mode" not in promoted_fork
+      and "--disallowedTools" not in promoted_fork)
 
 seed = claude.seed_command("claude --model opus", "read the brief")
 check("seed_command: binary first", seed[0] == "claude")
@@ -175,6 +195,19 @@ check("codex build_launch_command: prompt is the positional tail", codex_fresh[-
 check("codex build_launch_command: bare call has no positional prompt (ends on the yolo flags)",
       codex.build_launch_command()[-1] == "--dangerously-bypass-hook-trust")
 
+codex_read_only = codex.build_launch_command(
+    initial_prompt="inspect only", read_only=True
+)
+check("codex read-only: uses the read-only sandbox without the full bypass",
+      "--sandbox" in codex_read_only and "read-only" in codex_read_only
+      and "--dangerously-bypass-approvals-and-sandbox" not in codex_read_only)
+check("codex read-only: never asks to escalate a blocked write",
+      "--ask-for-approval" in codex_read_only and "never" in codex_read_only)
+check("codex read-only: adapter recognizes its rendered command",
+      codex.is_read_only_command(" ".join(codex_read_only)))
+check("codex read-only: prompt remains the positional tail",
+      codex_read_only[-1] == "inspect only")
+
 codex_resume = codex.resume_command("CID-1")
 check("codex resume_command: native subcommand + id", codex_resume[:3] == ["codex", "resume", "CID-1"])
 check("codex resume_command: keeps the hook-trust bypass so hooks fire",
@@ -189,6 +222,11 @@ check("codex fork_command: keeps the hook-trust bypass",
       "--dangerously-bypass-hook-trust" in codex_fork)
 check("codex fork_command: inherits the source persona (-m gpt-5.5)",
       "-m" in codex_fork and "gpt-5.5" in codex_fork)
+codex_promoted_fork = codex.fork_command(" ".join(codex_read_only), "CID-3")
+check("codex writable fork strips inherited read-only controls",
+      "--dangerously-bypass-approvals-and-sandbox" in codex_promoted_fork
+      and "--sandbox" not in codex_promoted_fork
+      and "--ask-for-approval" not in codex_promoted_fork)
 
 codex_seed = codex.seed_command(_codex_source, "read the brief")
 check("codex seed_command: binary first", codex_seed[0] == "codex")
@@ -252,6 +290,13 @@ claude_project = claude_engine.project_dir(claude_cwd)
 (claude_project / f"{claude_chat}.jsonl").write_text('{"type":"user"}\n')
 (claude_project / claude_chat / "subagents" / "sub.jsonl").write_text("{}\n")
 (claude_project / claude_chat / "tool-results" / "out.txt").write_text("result-bytes")
+
+relocated_cwd = "/Users/me/claude-proj-worktree"
+claude.prepare_chat_for_cwd(claude_chat, claude_cwd, relocated_cwd)
+check("prepare_chat_for_cwd/claude: transcript copied into the target cwd project",
+      claude_engine.transcript_path(claude_chat, relocated_cwd).is_file())
+check("prepare_chat_for_cwd/claude: sidecars copied into the target cwd project",
+      (claude_engine.sidecar_dir(claude_chat, relocated_cwd) / "tool-results" / "out.txt").is_file())
 
 claude_bundle = history.ingest_chat("tx-claude", claude_chat, claude_cwd, Engine.CLAUDE, wait=True)
 check("dual-layout/claude: transcript.jsonl mirrored",

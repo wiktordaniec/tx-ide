@@ -27,6 +27,13 @@ REASONING_EFFORT_KEY = "model_reasoning_effort"
 BYPASS_APPROVALS_FLAG = "--dangerously-bypass-approvals-and-sandbox"
 BYPASS_HOOK_TRUST_FLAG = "--dangerously-bypass-hook-trust"
 YOLO_FLAGS = [BYPASS_APPROVALS_FLAG, BYPASS_HOOK_TRUST_FLAG]
+READ_ONLY_FLAGS = [
+    "--sandbox",
+    "read-only",
+    "--ask-for-approval",
+    "never",
+    BYPASS_HOOK_TRUST_FLAG,
+]
 
 # A rollout is `sessions/<Y>/<M>/<D>/rollout-<ts>-<id>.jsonl`; the id is unique across the tree, so a
 # recursive `**` glob resolves it regardless of date-dir nesting.
@@ -146,6 +153,29 @@ def _ensure_yolo(command: list[str]) -> list[str]:
     return command
 
 
+def _strip_access_flags(command: list[str]) -> list[str]:
+    """Drop tx's writable/read-only controls before applying the destination session's mode."""
+    stripped: list[str] = []
+    index = 0
+    value_flags = frozenset({"--sandbox", "-s", "--ask-for-approval", "-a"})
+    while index < len(command):
+        token = command[index]
+        if token in YOLO_FLAGS:
+            index += 1
+            continue
+        if token in value_flags:
+            index += 2
+            continue
+        stripped.append(token)
+        index += 1
+    return stripped
+
+
+def _apply_access(command: list[str], read_only: bool) -> list[str]:
+    command = _strip_access_flags(command)
+    return [*command, *READ_ONLY_FLAGS] if read_only else _ensure_yolo(command)
+
+
 # ----- the adapter --------------------------
 
 # Hook-event-name → State. Codex has NO session-end event: a finished turn rests in WAITING and EXITED
@@ -189,6 +219,7 @@ class CodexEngine(EngineAdapter):
         model: str | None = None,
         effort: str | None = None,
         initial_prompt: str | None = None,
+        read_only: bool = False,
     ) -> list[str]:
         """Argv for a fresh session. A positional prompt auto-submits in the interactive TUI, so the
         seed needs no send-keys."""
@@ -196,26 +227,30 @@ class CodexEngine(EngineAdapter):
             CODEX_BIN,
             "-m", model or CODEX_MODEL,
             "-c", f"{REASONING_EFFORT_KEY}={effort or CODEX_EFFORT}",
-            *YOLO_FLAGS,
         ]
+        command = _apply_access(command, read_only)
         if initial_prompt:
             command.append(initial_prompt)
         return command
 
-    def resume_command(self, chat_id: str) -> list[str]:
+    def resume_command(self, chat_id: str, *, read_only: bool = False) -> list[str]:
         """Resume a chat in place via Codex's native `resume` subcommand (bypass flags ride along so hooks fire)."""
-        return [CODEX_BIN, "resume", chat_id, *YOLO_FLAGS]
+        return _apply_access([CODEX_BIN, "resume", chat_id], read_only)
 
-    def fork_command(self, source_cmd: str, chat_id: str) -> list[str]:
+    def fork_command(
+        self, source_cmd: str, chat_id: str, *, read_only: bool = False
+    ) -> list[str]:
         """Codex's native `fork` subcommand, carrying the source persona. Mints a NEW id, captured post-hoc."""
         binary, inherited = _strip_identity(source_cmd)
-        return _ensure_yolo([binary, "fork", chat_id, *inherited])
+        return _apply_access([binary, "fork", chat_id, *inherited], read_only)
 
-    def seed_command(self, source_cmd: str, seed: str) -> list[str]:
+    def seed_command(
+        self, source_cmd: str, seed: str, *, read_only: bool = False
+    ) -> list[str]:
         """A fresh `codex` carrying the source persona (no identity subcommand) + `seed` as its positional
         prompt (which auto-submits)."""
         binary, inherited = _strip_identity(source_cmd)
-        command = _ensure_yolo([binary, *inherited])
+        command = _apply_access([binary, *inherited], read_only)
         command.append(seed)
         return command
 
@@ -236,6 +271,22 @@ class CodexEngine(EngineAdapter):
         if found is not None:
             return found
         return sessions_root() / f"{ROLLOUT_PREFIX}{chat_id}{TRANSCRIPT_SUFFIX}"
+
+    def prepare_chat_for_cwd(
+        self, chat_id: str, source_cwd: str, target_cwd: str
+    ) -> None:
+        """Codex rollouts are global by id rather than keyed to cwd; no relocation is needed."""
+
+    def is_read_only_command(self, command: str) -> bool:
+        tokens = shlex.split(command)
+        if BYPASS_APPROVALS_FLAG in tokens:
+            return False
+        try:
+            sandbox = tokens[tokens.index("--sandbox") + 1]
+            approval = tokens[tokens.index("--ask-for-approval") + 1]
+        except (ValueError, IndexError):
+            return False
+        return sandbox == "read-only" and approval == "never"
 
     def iter_messages(self, transcript: Path) -> Iterator[dict]:
         """Yield each turn as an engine-neutral message dict, normalizing the OpenAI Responses-item

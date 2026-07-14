@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
@@ -19,6 +20,8 @@ DEFAULT_CLAUDE_HOME = "~/.claude"
 CLAUDE_BIN = "claude"
 TRANSCRIPT_SUFFIX = ".jsonl"
 BUNDLE_TRANSCRIPT_NAME = "transcript.jsonl"
+SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
+READ_ONLY_TOOLS = ("Bash", "Edit", "Write", "NotebookEdit")
 
 
 # ----- transcript / path internals ----------------------------------------------------------
@@ -189,9 +192,46 @@ def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
 def _ensure_skip_permissions(command: list[str]) -> list[str]:
     """Guarantee --dangerously-skip-permissions — else a forked/seeded session stalls on a
     permission prompt and its initial prompt never runs."""
-    if "--dangerously-skip-permissions" not in command:
-        command.append("--dangerously-skip-permissions")
+    if SKIP_PERMISSIONS_FLAG not in command:
+        command.append(SKIP_PERMISSIONS_FLAG)
     return command
+
+
+def _strip_access_flags(command: list[str]) -> list[str]:
+    """Drop tx's writable/read-only controls before applying the destination session's mode."""
+    stripped: list[str] = []
+    index = 0
+    while index < len(command):
+        token = command[index]
+        if token == SKIP_PERMISSIONS_FLAG:
+            index += 1
+            continue
+        if token == "--permission-mode":
+            index += 2
+            continue
+        if token in ("--disallowedTools", "--disallowed-tools"):
+            index += 1
+            while index < len(command) and not command[index].startswith("-"):
+                index += 1
+            continue
+        stripped.append(token)
+        index += 1
+    return stripped
+
+
+def _apply_access(command: list[str], read_only: bool) -> list[str]:
+    command = _strip_access_flags(command)
+    if not read_only:
+        return _ensure_skip_permissions(command)
+    # The deny-list is variadic, so put it before the next flag; otherwise a positional initial
+    # prompt would be consumed as another tool name. Denying Bash closes the shell-write escape.
+    return [
+        *command,
+        "--disallowedTools",
+        *READ_ONLY_TOOLS,
+        "--permission-mode",
+        "plan",
+    ]
 
 
 # ----- the adapter --------------------------------------------------------------------------
@@ -241,6 +281,7 @@ class ClaudeEngine(EngineAdapter):
         model: str | None = None,
         effort: str | None = None,
         initial_prompt: str | None = None,
+        read_only: bool = False,
     ) -> list[str]:
         # A positional prompt auto-submits in interactive mode (measured).
         command = [CLAUDE_BIN]
@@ -248,27 +289,31 @@ class ClaudeEngine(EngineAdapter):
             command += ["--model", model]
         if effort:
             command += ["--effort", effort]
-        command.append("--dangerously-skip-permissions")
+        command = _apply_access(command, read_only)
         if initial_prompt:
             command.append(initial_prompt)
         return command
 
-    def resume_command(self, chat_id: str) -> list[str]:
-        return [CLAUDE_BIN, "--resume", chat_id, "--dangerously-skip-permissions"]
+    def resume_command(self, chat_id: str, *, read_only: bool = False) -> list[str]:
+        return _apply_access([CLAUDE_BIN, "--resume", chat_id], read_only)
 
-    def fork_command(self, source_cmd: str, chat_id: str) -> list[str]:
+    def fork_command(
+        self, source_cmd: str, chat_id: str, *, read_only: bool = False
+    ) -> list[str]:
         """Branch a chat onto its full history, inheriting the source persona (incl. unknown
         value-flags) with the identity flags swapped for this fork's own. The fork mints its own id."""
         binary, inherited = _strip_identity(source_cmd)
-        return _ensure_skip_permissions(
-            [binary, "--resume", chat_id, "--fork-session", *inherited]
+        return _apply_access(
+            [binary, "--resume", chat_id, "--fork-session", *inherited], read_only
         )
 
-    def seed_command(self, source_cmd: str, seed: str) -> list[str]:
+    def seed_command(
+        self, source_cmd: str, seed: str, *, read_only: bool = False
+    ) -> list[str]:
         """A fresh session inheriting the source persona (no identity flag) with `seed` as the
         initial-prompt positional. The positional auto-submits, so no send-keys."""
         binary, inherited = _strip_identity(source_cmd)
-        command = _ensure_skip_permissions([binary, *inherited])
+        command = _apply_access([binary, *inherited], read_only)
         command.append(seed)
         return command
 
@@ -284,6 +329,42 @@ class ClaudeEngine(EngineAdapter):
 
     def resolve_transcript(self, chat_id: str, cwd: str) -> Path:
         return transcript_path(chat_id, cwd)
+
+    def prepare_chat_for_cwd(
+        self, chat_id: str, source_cwd: str, target_cwd: str
+    ) -> None:
+        """Copy Claude's cwd-keyed chat files so resume/fork can start in a new worktree."""
+        if Path(source_cwd).resolve() == Path(target_cwd).resolve():
+            return
+        source_transcript = transcript_path(chat_id, source_cwd)
+        if not source_transcript.is_file():
+            return
+        target_transcript = transcript_path(chat_id, target_cwd)
+        target_transcript.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_transcript, target_transcript)
+
+        source_sidecars = sidecar_dir(chat_id, source_cwd)
+        if source_sidecars.is_dir():
+            shutil.copytree(
+                source_sidecars,
+                sidecar_dir(chat_id, target_cwd),
+                dirs_exist_ok=True,
+            )
+
+    def is_read_only_command(self, command: str) -> bool:
+        tokens = shlex.split(command)
+        if SKIP_PERMISSIONS_FLAG in tokens:
+            return False
+        try:
+            permission_mode = tokens[tokens.index("--permission-mode") + 1]
+            tools_index = tokens.index("--disallowedTools") + 1
+        except (ValueError, IndexError):
+            return False
+        denied: set[str] = set()
+        while tools_index < len(tokens) and not tokens[tools_index].startswith("-"):
+            denied.update(tokens[tools_index].split(","))
+            tools_index += 1
+        return permission_mode == "plan" and set(READ_ONLY_TOOLS) <= denied
 
     def iter_messages(self, transcript: Path) -> Iterator[dict]:
         # Claude's on-disk schema (Anthropic JSONL, one object per line) IS the engine-neutral form,

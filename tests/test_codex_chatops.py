@@ -196,6 +196,18 @@ class _FakeService:
         self.register(new)
         return new
 
+    def next_worker_name(self, starting_directory, base_name):
+        return base_name
+
+    def spawn_worker(self, spec, **kwargs):
+        before_spawn = kwargs.get("before_spawn")
+        if before_spawn is not None:
+            before_spawn(spec)
+        return self.spawn(spec)
+
+    def spawn_internal(self, spec):
+        return self.spawn(spec)
+
 
 service = _FakeService()
 service.register(Session(

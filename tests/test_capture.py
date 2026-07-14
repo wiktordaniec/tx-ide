@@ -199,12 +199,12 @@ check("resolve_transcript: a chat not on disk → None",
 # (fork / handover / resume) passes `records_own_chat=True` so `_spawn` does NOT also write one —
 # otherwise resume (whose `_attach_resumed_chat` appends the known-id ref) is left with an orphan
 # pending ref the same-id SessionStart never clears (V-T4 finding, cli.py:359).
-plain = spawn_service().spawn(SpawnSpec.for_process(
+plain = spawn_service()._spawn(SpawnSpec.for_process(
     name="plain", tags=[], cwd="/p", cmd="claude --dangerously-skip-permissions"))
 check("plain llm spawn: exactly one pending original ref",
       len(plain.chats) == 1 and plain.chats[0].id is None and plain.chats[0].role == "original")
 
-owns = spawn_service().spawn(SpawnSpec.for_process(
+owns = spawn_service()._spawn(SpawnSpec.for_process(
     name="owns", tags=[], cwd="/p", cmd="claude --resume X --dangerously-skip-permissions",
     records_own_chat=True))
 check("records_own_chat spawn: NO auto original ref (the op records its own — no orphan)",

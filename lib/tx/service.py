@@ -16,12 +16,25 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
 
 from .events import EventLog
+from .engines import registry
 from .messages import build_envelope
 from .reconcile import Reconciler
-from .session import ChatRef, Engine, Kind, Origin, Role, Session, State
+from .session import (
+    READ_ONLY_ENV,
+    REQUIRE_WORKTREE_ENV,
+    ChatRef,
+    Engine,
+    Kind,
+    Origin,
+    Role,
+    Session,
+    State,
+)
 from .spawn import SpawnSpec
 from .store import SessionStore
 from .tmux import Tmux, format_envelope
@@ -66,18 +79,96 @@ class SessionService:
     # ----- spawn ---------------------------------------------------------------------------
 
     def spawn(self, spec: SpawnSpec) -> Session:
-        return self._spawn(spec)
+        """Public spawn policy: every ordinary agent is a worker; non-agents launch directly."""
+        return self.spawn_worker(spec) if spec.role == Role.LLM else self._spawn(spec)
 
-    def spawn_in_worktree(self, spec: SpawnSpec) -> Session:
-        """Create an isolated, visibly named worktree before launching an agent worker there."""
+    def spawn_worker(
+        self,
+        spec: SpawnSpec,
+        *,
+        reuse_existing_worktree: bool = False,
+        before_spawn: Callable[[SpawnSpec], None] | None = None,
+    ) -> Session:
+        """Apply the agent placement invariant, then launch.
+
+        Writable workers get a detached, visibly named worktree before tmux starts. Read-only
+        workers stay in the requested cwd. Resume/rollover callers may explicitly reuse a linked
+        worktree that already belongs to the continuing session.
+        """
         if spec.role != Role.LLM:
-            raise ServiceError("a worktree spawn requires an agent command")
-        self._require_name_free(spec.name)
+            raise ServiceError("a worker spawn requires an agent command")
+
+        environment = dict(spec.env)
+        if spec.read_only:
+            engine = spec.engine or Engine.CLAUDE
+            if not registry.get(engine).is_read_only_command(spec.cmd):
+                raise ServiceError(
+                    f"{engine.value} command does not enforce the requested read-only mode"
+                )
+            environment[READ_ONLY_ENV] = "1"
+            environment.pop(REQUIRE_WORKTREE_ENV, None)
+            prepared = replace(spec, env=environment)
+            if before_spawn is not None:
+                before_spawn(prepared)
+            return self._spawn(prepared)
+
+        environment.pop(READ_ONLY_ENV, None)
+        environment[REQUIRE_WORKTREE_ENV] = "1"
+        if reuse_existing_worktree and self.worktrees.is_linked(spec.cwd):
+            prepared = replace(spec, env=environment)
+            if before_spawn is not None:
+                before_spawn(prepared)
+            return self._spawn(prepared)
+
+        self.reconcile()
+        unavailable_names = {
+            session.name for session in self.store.all() if session.is_alive()
+        }
         try:
-            worktree_directory = self.worktrees.create(spec.cwd, spec.name)
+            name, worktree_directory = self.worktrees.create_unique(
+                spec.cwd, spec.name, unavailable_names
+            )
         except WorktreeError as error:
             raise ServiceError(f"could not create worktree: {error}") from error
-        return self._spawn(replace(spec, cwd=str(worktree_directory)))
+        prepared = replace(
+            spec, name=name, cwd=str(worktree_directory), env=environment
+        )
+        try:
+            if before_spawn is not None:
+                before_spawn(prepared)
+            return self._spawn(prepared)
+        except Exception:
+            try:
+                self.worktrees.remove(worktree_directory)
+            except WorktreeError:
+                pass
+            raise
+
+    def spawn_in_worktree(self, spec: SpawnSpec) -> Session:
+        """Backward-compatible explicit form; writable workers already use this path by default."""
+        return self.spawn_worker(replace(spec, read_only=False))
+
+    def next_worker_name(self, starting_directory: str, base_name: str) -> str:
+        """Resolve the display/worktree name before an asynchronous handover is scheduled."""
+        self.reconcile()
+        unavailable_names = {
+            session.name for session in self.store.all() if session.is_alive()
+        }
+        try:
+            return self.worktrees.next_name(
+                starting_directory, base_name, unavailable_names
+            )
+        except WorktreeError as error:
+            raise ServiceError(f"could not resolve worktree name: {error}") from error
+
+    def remove_worker_worktree(self, directory: str) -> None:
+        """Remove a temporary worker's linked worktree after its tx session has ended."""
+        if not self.worktrees.is_linked(directory):
+            return
+        try:
+            self.worktrees.remove(Path(directory))
+        except WorktreeError as error:
+            raise ServiceError(f"could not remove worktree: {error}") from error
 
     def spawn_nvim(self, spec: SpawnSpec) -> Session:
         return self._spawn(spec)

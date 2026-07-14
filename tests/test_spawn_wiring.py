@@ -52,8 +52,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 from tx.cli import ResumeCommand, SpawnCommand  # noqa: E402  (imports tx.spawn → registers the bundled adapters)
 from tx.engines import registry  # noqa: E402
 from tx.reconcile import Reconciler  # noqa: E402
-from tx.service import SessionService  # noqa: E402
-from tx.session import ChatRef, Engine, Kind, Origin, Role, Session, State  # noqa: E402
+from tx.service import ServiceError, SessionService  # noqa: E402
+from tx.session import (  # noqa: E402
+    READ_ONLY_ENV,
+    REQUIRE_WORKTREE_ENV,
+    ChatRef,
+    Engine,
+    Kind,
+    Origin,
+    Role,
+    Session,
+    State,
+)
 from tx.spawn import SpawnSpec, infer_role  # noqa: E402
 from tx.storage import ensure_home  # noqa: E402
 from tx.store import SessionStore  # noqa: E402
@@ -133,19 +143,52 @@ class FakeLog:
         pass
 
 
+class FakeWorktrees:
+    """Hermetic placement for command-shape checks that intentionally use synthetic `/p` cwds."""
+
+    def __init__(self):
+        self.created = []
+
+    def next_name(self, starting_directory, base_name, unavailable_names=()):
+        unavailable = set(unavailable_names)
+        for suffix in range(1, 100):
+            candidate = base_name if suffix == 1 else f"{base_name}-{suffix}"
+            if candidate not in unavailable:
+                return candidate
+        raise AssertionError("fixture exhausted names")
+
+    def create_unique(self, starting_directory, base_name, unavailable_names=()):
+        name = self.next_name(starting_directory, base_name, unavailable_names)
+        path = Path(starting_directory) / ".tx-ide" / "worktrees" / f"repo--{name}"
+        self.created.append(path)
+        return name, path
+
+    def is_linked(self, directory):
+        return Path(directory) in self.created
+
+    def remove(self, directory):
+        pass
+
+
 def spawn_service():
-    return SessionService(store=SessionStore(), tmux=CliTmux(), reconciler=NoReconcile())
+    return SessionService(
+        store=SessionStore(), tmux=CliTmux(), reconciler=NoReconcile(),
+        worktrees=FakeWorktrees(),
+    )
 
 
-def run_spawn(name, argv):
+def run_spawn(name, argv, *, real_worktrees=False):
     """Drive the real `tx spawn` command object through a hermetic service; return (saved Session,
     the captured launch command)."""
     tmux = CliTmux()
-    service = SessionService(store=SessionStore(), tmux=tmux, reconciler=NoReconcile())
+    service = SessionService(
+        store=SessionStore(), tmux=tmux, reconciler=NoReconcile(),
+        worktrees=None if real_worktrees else FakeWorktrees(),
+    )
     with contextlib.redirect_stdout(io.StringIO()):  # swallow the "Spawned …" line — keep gate output clean
         rc = SpawnCommand(service).run([name, *argv])
     check(f"`tx spawn {name} …` returns 0", rc == 0)
-    return service.store.find_by_name(name), tmux.command
+    return max(service.store.all(), key=lambda session: session.created_at or 0), tmux.command
 
 
 # ----- 1. infer_role: any registered engine binary → LLM; codex joins claude --------------------
@@ -253,7 +296,8 @@ with tempfile.TemporaryDirectory() as repository_parent:
 
     session, command = run_spawn(
         "worktree-worker",
-        ["--tag", "s", "--cwd", str(repository), "--engine", "codex", "--worktree"],
+        ["--tag", "s", "--cwd", str(repository), "--engine", "codex"],
+        real_worktrees=True,
     )
     expected_worktree = (
         repository / ".tx-ide" / "worktrees" / "sample-repository--worktree-worker"
@@ -275,7 +319,8 @@ with tempfile.TemporaryDirectory() as repository_parent:
 
     claude_session, claude_command = run_spawn(
         "claude-worktree-worker",
-        ["--tag", "s", "--cwd", str(repository), "--engine", "claude", "--worktree"],
+        ["--tag", "s", "--cwd", str(repository), "--engine", "claude"],
+        real_worktrees=True,
     )
     expected_claude_worktree = (
         repository / ".tx-ide" / "worktrees" / "sample-repository--claude-worktree-worker"
@@ -288,6 +333,53 @@ with tempfile.TemporaryDirectory() as repository_parent:
     check("tx spawn --worktree uses the Claude adapter command",
           claude_command == CLAUDE_PREFIX)
 
+    collision_session, _ = run_spawn(
+        "worktree-worker",
+        ["--tag", "s", "--cwd", str(repository), "--engine", "codex"],
+        real_worktrees=True,
+    )
+    expected_collision_worktree = (
+        repository / ".tx-ide" / "worktrees" / "sample-repository--worktree-worker-2"
+    ).resolve()
+    check("writable spawn suffixes a stale worktree-path collision",
+          collision_session.name == "worktree-worker-2"
+          and collision_session.cwd == str(expected_collision_worktree))
+
+    read_only_claude, read_only_claude_command = run_spawn(
+        "readonly-claude",
+        ["--tag", "s", "--cwd", str(repository), "--engine", "claude",
+         "--read-only", "--prompt", "inspect only"],
+        real_worktrees=True,
+    )
+    check("read-only Claude stays in the requested checkout",
+          read_only_claude.cwd == str(repository))
+    check("read-only Claude persists TX_READ_ONLY instead of the worktree guard",
+          read_only_claude.read_only
+          and read_only_claude.env[READ_ONLY_ENV] == "1"
+          and REQUIRE_WORKTREE_ENV not in read_only_claude.env)
+    check("read-only Claude removes yolo and blocks shell/edit tools",
+          "--dangerously-skip-permissions" not in read_only_claude_command
+          and "--permission-mode plan" in read_only_claude_command
+          and "--disallowedTools Bash Edit Write NotebookEdit" in read_only_claude_command)
+
+    read_only_codex, read_only_codex_command = run_spawn(
+        "readonly-codex",
+        ["--tag", "s", "--cwd", str(repository), "--engine", "codex",
+         "--read-only", "--prompt", "inspect only"],
+        real_worktrees=True,
+    )
+    check("read-only Codex stays in the requested checkout",
+          read_only_codex.cwd == str(repository) and read_only_codex.read_only)
+    check("read-only Codex uses its sandbox and removes the full bypass",
+          "--sandbox read-only --ask-for-approval never" in read_only_codex_command
+          and "--dangerously-bypass-approvals-and-sandbox" not in read_only_codex_command)
+
+session, _ = run_spawn(
+    "explicit-worktree", ["--tag", "s", "--cwd", "/p", "--engine", "claude", "--worktree"]
+)
+check("legacy --worktree remains accepted but is redundant",
+      session.env[REQUIRE_WORKTREE_ENV] == "1" and not session.read_only)
+
 # The flag is deliberately agent-only: shell/nvim sessions must not cause surprise Git mutations.
 try:
     with contextlib.redirect_stderr(io.StringIO()):
@@ -297,6 +389,28 @@ try:
     check("tx spawn --worktree rejects non-agent launches", False)
 except SystemExit as exit_error:
     check("tx spawn --worktree rejects non-agent launches", exit_error.code != 0)
+
+for invalid_argv, label in (
+    (["bad-readonly-cmd", "--tag", "s", "--engine", "claude", "--read-only",
+      "--cmd", "claude"], "read-only rejects a hand-written agent command"),
+    (["bad-readonly-worktree", "--tag", "s", "--engine", "claude", "--read-only",
+      "--worktree"], "read-only rejects the contradictory explicit worktree flag"),
+):
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            SpawnCommand(spawn_service()).run(invalid_argv)
+        check(label, False)
+    except SystemExit as exit_error:
+        check(label, exit_error.code != 0)
+
+try:
+    spawn_service().spawn_worker(SpawnSpec.for_process(
+        name="unsafe-readonly", tags=["s"], cwd="/p", cmd=CLAUDE_PREFIX,
+        engine=Engine.CLAUDE, read_only=True,
+    ))
+    check("service rejects a read-only marker on an unsafe adapter command", False)
+except ServiceError:
+    check("service rejects a read-only marker on an unsafe adapter command", True)
 
 session, command = run_spawn("w-codex-me",
                              ["--tag", "s", "--cwd", "/p", "--engine", "codex",
@@ -358,16 +472,20 @@ check("registry: Codex is registered via the spawn/reconcile side-effect imports
 # Claude transcript path and the record mis-reports its engine (a real T9 resume-of-codex bug).
 
 
-def resume_record(session_id, name, engine, chat_id, cwd):
+def resume_record(session_id, name, engine, chat_id, cwd, *, read_only=False):
     """Store a past (EXITED) llm session with one resumable chat, return a hermetic service over it."""
     store = SessionStore()
     store.save(Session(
         id=session_id, name=name, kind=Kind.PROCESS, role=Role.LLM, state=State.EXITED,
         cwd=cwd, cmd="(past)", engine=engine, created_at=stale,
+        env={READ_ONLY_ENV: "1"} if read_only else {},
         chats=[ChatRef(id=chat_id, role="original", cwd=cwd, transcript_path="",
                        origin=Origin(how="spawn", session_id=session_id, chat_id=None),
                        started_at=stale, engine=engine)]))
-    return SessionService(store=store, tmux=CliTmux(), reconciler=NoReconcile())
+    return SessionService(
+        store=store, tmux=CliTmux(), reconciler=NoReconcile(),
+        worktrees=FakeWorktrees(),
+    )
 
 
 resume_cwd = tempfile.mkdtemp()  # a real dir — `tx resume` requires Path(cwd).is_dir()
@@ -378,6 +496,8 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
 check("resume-of-codex returns 0", rc == 0)
 resumed = codex_svc.store.find_by_name("codex-resumed")
 check("resume-of-codex stamps the resumed record engine == CODEX", resumed.engine == Engine.CODEX)
+check("resume-of-writable-codex creates a replacement worktree",
+      resumed.cwd != resume_cwd and resumed.env[REQUIRE_WORKTREE_ENV] == "1")
 check("resume-of-codex builds a `codex resume …` command (T4 routing intact)",
       resumed.cmd.startswith("codex resume CX-CHAT"))
 check("resume-of-codex stamps the resumed ChatRef engine == CODEX",
@@ -388,5 +508,20 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
     ResumeCommand(claude_svc).run(["past-claude", "--as", "claude-resumed", "--cwd", resume_cwd])
 check("resume-of-claude keeps engine == CLAUDE (unchanged)",
       claude_svc.store.find_by_name("claude-resumed").engine == Engine.CLAUDE)
+
+readonly_svc = resume_record(
+    "past-readonly", "past-readonly", Engine.CLAUDE, "RO-CHAT", resume_cwd,
+    read_only=True,
+)
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    ResumeCommand(readonly_svc).run(
+        ["past-readonly", "--as", "readonly-resumed", "--cwd", resume_cwd]
+    )
+readonly_resumed = readonly_svc.store.find_by_name("readonly-resumed")
+check("resume preserves read-only placement in the source checkout",
+      readonly_resumed.cwd == resume_cwd and readonly_resumed.read_only)
+check("resume preserves Claude's enforced read-only command",
+      "--permission-mode plan" in readonly_resumed.cmd
+      and "--dangerously-skip-permissions" not in readonly_resumed.cmd)
 
 print(f"OK — {PASSED} checks passed")

@@ -89,7 +89,7 @@ You run as the session `tx-assistant`, tagged `tx-system`. "This session" in use
 | Subcommand | Purpose |
 |---|---|
 | `tx ls` | Plain stdout list, two sections: VIEWS, PROCESSES. Use this to answer "what's running" questions. |
-| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--engine ENGINE] [--prompt TEXT] [--worktree] [--env K=V ...]` | Spawn a detached tmux session. `--tag` is mandatory. `--cwd` defaults to the firing pane's path. `--cmd` defaults to the user's shell. `--engine ENGINE --worktree` creates `.tx-ide/worktrees/<repository>--<name>` first and launches the agent there. An llm session automatically records its chat. `--env` may repeat. |
+| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--engine ENGINE] [--prompt TEXT] [--read-only] [--env K=V ...]` | Spawn a detached tmux session. `--tag` is mandatory. Writable agents automatically launch from `.tx-ide/worktrees/<repository>--<name>`; `--read-only` is the explicit source-checkout exception. An llm session automatically records its chat. `--env` may repeat. |
 | `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]` | Spawn an nvim companion. `--diff` defaults `BASE` to `main` if omitted. Forces a dark colorscheme. `--env` may repeat. |
 | `tx tag <name> [tags]` | Read or set a session's tags in the durable store — the non-interactive counterpart to the picker's Ctrl-T. With `tags` (comma-separated): set them. Without: print the current tags. Resolves `<name>` via its live `@tx_id`, falling back to a store name lookup for a session no longer live. |
 | `tx send-message <target> <body>` | Peer-message another agent session. Wraps body in the `<from-agent session="...">…</from-agent>` envelope, fills your session name automatically, handles the post-send sleep. |
@@ -139,7 +139,7 @@ The schema is open — unknown keys are ignored. If the user names a knob you do
 ## Spawning workers
 
 When the user asks for a worker, follow **COMMON § Spawning workers** for the engine-built launch,
-the `--worktree` requirement for coding workers, any adapter-specific model/effort conventions, and
+the automatic worktree placement for writable workers, any adapter-specific model/effort conventions, and
 the role-file priming string. Two things are yours as the assistant, layered on that recipe:
 
 - `<cwd>` — if the user said "here", use `pane-path` / `inner-pane-path` from the focus envelope; otherwise resolve the project root they named.
@@ -151,14 +151,15 @@ startup:
 
 ```bash
 tx spawn <name> --tag <scope> --cwd <project-root> \
-  --engine <engine> --worktree --prompt "<priming>"
+  --engine <engine> --prompt "<priming>"
 ```
 
-`--worktree` creates a detached worktree named `<repository>--<name>`, stamps that path as the
-session cwd before the engine starts, and injects `TX_REQUIRE_WORKTREE=1`. The detached worker creates
-its correctly typed task branch after startup. The Git mutation is encapsulated by `tx`, so using
-this verb remains within the assistant's no-raw-git scope. Add adapter-specific model or effort
-overrides only when the role conventions or user request calls for them.
+tx creates a detached worktree named `<repository>--<name>`, stamps that path as the session cwd
+before the engine starts, and injects `TX_REQUIRE_WORKTREE=1`. Use `--read-only` only when the worker
+must not modify the repository; it stays in the requested checkout with engine-enforced write
+blocking. A normal `tx fork <read-only-session> <implementation-name>` is the promotion path: the
+new fork is writable and receives a worktree. Add adapter-specific model or effort overrides only
+when the role conventions or user request calls for them.
 
 ## Peer messaging
 
