@@ -252,7 +252,7 @@ def _iter_sources(
         yield (
             bundle, recipient_id,
             session.name if session else recipient_id,
-            session.cmd if session else "",
+            session.initial_cmd if session else "",
             chat_id,
         )
     for session in sessions:
@@ -263,7 +263,7 @@ def _iter_sources(
                 continue
             live = history.resolve_transcript(chat.id, chat.cwd, chat.engine)
             if live is not None:
-                yield (live, session.id, session.name, session.cmd, chat.id)
+                yield (live, session.id, session.name, session.initial_cmd, chat.id)
 
 
 def _role_resolver(sessions: list[Session]) -> Callable[[str], Role | None]:
@@ -271,7 +271,7 @@ def _role_resolver(sessions: list[Session]) -> Callable[[str], Role | None]:
     prefer the freshest). Returns a lookup that yields None for an unknown name."""
     best: dict[str, tuple[float, Role]] = {}
     for session in sessions:
-        activity = session.last_activity or 0.0
+        activity = session.activity_at
         current = best.get(session.name)
         if current is None or activity > current[0]:
             best[session.name] = (activity, session.role)

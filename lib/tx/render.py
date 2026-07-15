@@ -1,12 +1,14 @@
 """Rendering — `tx ls` sections + the `_list` picker feed (stages S1a + S1b).
 
-Pure formatting over `Session` objects — no I/O, no tmux. `tx ls` keeps the old two-section
-VIEWS / PROCESSES shape (plain, pipe-friendly). **`picker_display_rows` is S1b's fzf feed**: a
-faithful port of the old bash `sessions_with_meta` — the same tab-separated 4-column shape with a
-padded name, the STARTED / IDLE columns, and per-tag colored chips, so the Python picker renders
-identically to `cmd_pick`. The NAME column width (`picker_namew`) is sized once by the picker and
-threaded through so the initial feed and the `reload-sync` subshells line up. S6 inserts a LOCATION
-column into the picker row.
+Pure formatting over `Session` objects — no I/O, no tmux. `tx ls` is a single PROCESSES listing
+(plain, pipe-friendly): views are no longer records (they are live `@tx_view` tmux objects), so
+there is no VIEWS section to render. **`picker_display_rows` is S1b's fzf feed**: a faithful port
+of the old bash `sessions_with_meta` — the same tab-separated shape with a padded name, the
+STARTED / IDLE columns, and per-tag colored chips, so the Python picker renders identically to
+`cmd_pick`. The IDLE column shows a real last-turn age only for an llm session — a non-llm session
+has no activity signal, so it renders `—` rather than a faked time. The NAME column width
+(`picker_namew`) is sized once by the picker and threaded through so the initial feed and the
+`reload-sync` subshells line up. S6 inserts a LOCATION column into the picker row.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from __future__ import annotations
 import time
 
 from .palette import RESET_FG, WARN_ANSI, tag_ansi
-from .session import Kind, Location, Session
+from .session import LlmSession, Location, Session
 
 
 def reltime(epoch: float | None, now: float | None = None) -> str:
@@ -74,24 +76,32 @@ def location_text(locations: list[Location]) -> str:
 
 
 def _by_recent_activity(sessions: list[Session]) -> list[Session]:
-    return sorted(sessions, key=lambda session: session.last_activity or 0, reverse=True)
+    return sorted(sessions, key=lambda session: session.activity_at, reverse=True)
+
+
+def _idle_cell(session: Session, now: float) -> str:
+    """The IDLE column: the real last-turn age for an llm session, `—` for a non-llm one. tx has no
+    activity signal for a shell/nvim/other session (no hooks fire for it), so it shows `—` rather
+    than faking a time off the spawn timestamp."""
+    if isinstance(session, LlmSession):
+        return reltime(session.last_activity, now)
+    return "—"
 
 
 def render_ls(sessions: list[Session], now: float | None = None) -> str:
-    """Two sections — VIEWS (kind == view) and PROCESSES — newest-activity first. Plain stdout,
-    pipe-friendly. Columns: name, state, location, idle, tag chips."""
+    """A single PROCESSES listing, newest-activity first (Q6: views are no longer records — `tx ls`
+    and the picker list the sessions that are units of work, and the home views are visible in tmux
+    itself). Plain stdout, pipe-friendly. Columns: name, state, location, idle, tag chips."""
     if now is None:
         now = time.time()
-    views: list[str] = []
-    processes: list[str] = []
+    rows: list[str] = []
     for session in _by_recent_activity(sessions):
-        row = (
+        rows.append(
             f"  {session.name:<24} {session.state.value:<8} "
             f"{location_text(session.attached_to):<{LOCATION_W}} "
-            f"{reltime(session.last_activity, now):<6}{_chips(session.tags)}"
+            f"{_idle_cell(session, now):<6}{_chips(session.tags)}"
         )
-        (views if session.kind == Kind.VIEW else processes).append(row)
-    return "\n".join(["VIEWS", *views, "", "PROCESSES", *processes])
+    return "\n".join(["PROCESSES", *rows])
 
 
 # ----- fzf picker feed (S1b) ---------------------------------------------------------------------
@@ -147,7 +157,9 @@ def _picker_row(
     plain_chips = "".join(f" [{tag}]" for tag in tags)
     colored_chips = "".join(f" {tag_ansi(tag)}[{tag}]{RESET_FG}" for tag in tags)
     started = reltime(created_at, now)
-    idle = reltime(last_activity, now)
+    # IDLE is a real last-turn age only for an llm row; a non-llm session has no activity signal, so
+    # it shows `—` (the caller passes last_activity=None for those — see picker_display_rows).
+    idle = reltime(last_activity, now) if role == "llm" else "—"
     # Color the role like a tag chip — reuse `tag_ansi` so a role keeps the exact color it carried
     # as the old leading `[llm]`/`[nvim]` chip, with no separate role palette to maintain.
     role_cell = f"{tag_ansi(role)}{role:<{ROLE_W}}{RESET_FG}"
@@ -160,17 +172,19 @@ def _picker_row(
 
 
 def picker_display_rows(sessions: list[Session], namew: int, now: float | None = None) -> str:
-    """The fzf picker feed, newest-activity first, views excluded (§7 — the everyday picker never
-    lists the home base). Consumed by both the initial paint and each `reload-sync` (`tx _list`)."""
+    """The fzf picker feed, newest-activity first. The store is process-only now (views are live
+    `@tx_view` tmux objects, never records), so there is no view row to filter out. The IDLE cell is
+    real only for an llm row, so a non-llm row passes `last_activity=None` (rendered as `—`).
+    Consumed by both the initial paint and each `reload-sync` (`tx _list`)."""
     if now is None:
         now = time.time()
     rows = [
         _picker_row(
             session.name, session.tmux_name, session.role.value, session.tags, session.created_at,
-            session.last_activity, location_text(session.attached_to), namew, now,
+            session.last_activity if isinstance(session, LlmSession) else None,
+            location_text(session.attached_to), namew, now,
         )
         for session in _by_recent_activity(sessions)
-        if session.kind != Kind.VIEW
     ]
     return "\n".join(rows)
 
@@ -186,14 +200,14 @@ def render_history(sessions: list[Session], now: float | None = None) -> str:
     if now is None:
         now = time.time()
     ordered = sorted(
-        sessions, key=lambda session: session.ended_at or session.last_activity or 0, reverse=True
+        sessions, key=lambda session: session.ended_at or session.activity_at, reverse=True
     )
     rows = []
     for session in ordered:
         rows.append("  {:<24} {:<8} {:>5}  {:>2}c {}  {}".format(
             _trunc(session.name, 24),
             session.state.value,
-            reltime(session.ended_at or session.last_activity, now),
+            reltime(session.ended_at or session.activity_at, now),
             len(session.chats),
             _chips(session.tags) or "",
             session.cwd,

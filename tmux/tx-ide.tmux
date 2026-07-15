@@ -18,9 +18,6 @@
 # own tmux.conf wins, since tmux is last-write-wins.
 set -u
 
-# The python shim (repo-relative), used by the after-new-window hook to read a session's kind
-# from the v2 store. Resolves $TX_IDE_HOME (default ~/.tx-ide) inside the package.
-TX="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tx"
 # Repo-relative relabeler the prefix+s bind runs to refresh @tx_name just before choose-tree opens.
 RELABEL="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tmux-session-relabel"
 # Repo-relative poke the focus hooks run (backgrounded) to nudge the session-graph dashboard's ring.
@@ -80,8 +77,11 @@ set -g pane-border-indicators both
 set -g pane-border-status off
 set -g pane-border-format " [#P] #(tmux-pane-session-name #D) "
 EOF
-  cat >>"$CONF" <<EOF
-set-hook -g after-new-window "if-shell 'test \"\$($TX _pane-kind \"#{@tx_id}\")\" = view' 'setw pane-border-status top'"
+  # A new window in a VIEW gets window-top pane borders (so nested panes carry a labelled border).
+  # A view is marked by the @tx_view session option, so the hook reads it directly with `if-shell
+  # -F` (non-empty/non-zero = true) — no Python launch on the hook path.
+  cat >>"$CONF" <<'EOF'
+set-hook -g after-new-window "if-shell -F '#{@tx_view}' 'setw pane-border-status top'"
 EOF
 fi
 
