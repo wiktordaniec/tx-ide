@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 # Side-effect import: each adapter self-registers at import, so registered() sees every engine.
 from .engines import claude, codex  # noqa: F401
 from .engines import registry
-from .session import Engine, Kind, Role
+from .session import Engine, Role
 
 # Nvim companion command. `tmux new-session -d` strips the terminal's OSC11 background hint, so
 # nvim's auto-mode would land on the light variant — force dark + tokyonight-moon (COMMON.md).
@@ -49,7 +49,6 @@ class SpawnSpec:
     classifies), never a shell-expansion placeholder. `launch_cmd`, when set, is what tmux runs."""
 
     name: str
-    kind: Kind
     role: Role
     cwd: str
     cmd: str
@@ -93,7 +92,6 @@ class SpawnSpec:
         for a shell/nvim/other spawn or to take the engine default."""
         return cls(
             name=name,
-            kind=Kind.PROCESS,
             role=infer_role(cmd),
             cwd=cwd,
             cmd=cmd,
@@ -125,7 +123,6 @@ class SpawnSpec:
             command += f" {shlex.quote(open_file)}"
         return cls(
             name=name,
-            kind=Kind.PROCESS,
             role=Role.NVIM,
             cwd=cwd,
             cmd=command,
@@ -138,19 +135,18 @@ class SpawnSpec:
         cls,
         *,
         name: str,
-        tags: list[str],
         cwd: str,
         cmd: str,
         env: dict[str, str] | None = None,
     ) -> SpawnSpec:
-        """A `kind=view` home base (`tx spawn-view`) — surfaces under VIEWS and is filtered out of
-        the picker. Role is still inferred from `cmd` (a view runs a shell → SHELL)."""
+        """A view home base (`tx spawn-view`). `service.spawn_view` realizes this spec as a live
+        `@tx_view` tmux session (marker + chrome), never a store record. Role is still inferred from
+        `cmd` (a view runs a shell → SHELL), but a view carries **no tags** (Q4) — the store never
+        sees it, so there is nothing to tag."""
         return cls(
             name=name,
-            kind=Kind.VIEW,
             role=infer_role(cmd),
             cwd=cwd,
             cmd=cmd,
-            tags=list(tags),
             env=dict(env or {}),
         )

@@ -52,8 +52,8 @@ class SessionStore:
 
     def load(self, session_id: str) -> Session | None:
         """Load one record by id, or None if there is no such file. Propagates
-        `UnsupportedRecordError` (OPEN-0b): the caller named this record, so a non-v2 file is a
-        real error, not something to swallow."""
+        `UnsupportedRecordError` (OPEN-0b): the caller named this record, so a non-current-version
+        file is a real error, not something to swallow."""
         path = self._path(session_id)
         if not path.exists():
             return None

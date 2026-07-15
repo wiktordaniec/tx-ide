@@ -30,8 +30,9 @@ from .session import (
     REQUIRE_WORKTREE_ENV,
     ChatRef,
     Engine,
-    Kind,
+    LlmSession,
     Origin,
+    OtherSession,
     Role,
     Session,
     State,
@@ -201,26 +202,42 @@ class SessionService:
     def spawn_nvim(self, spec: SpawnSpec) -> Session:
         return self._spawn(spec)
 
-    def spawn_view(self, spec: SpawnSpec) -> Session:
-        session = self._spawn(spec)
-        # A view is a home base the user lives in: turn on its status bar and put pane borders at
-        # window-top so nested panes get a labelled border (mirrors the old cmd_spawn_view). A view
-        # is tmux-named by its human name (tmux_name == name), but key on tmux_name for uniformity.
-        self.tmux.set_option(session.tmux_name, "status", "on")
-        self.tmux.set_window_option(session.tmux_name, "pane-border-status", "top")
-        return session
+    def spawn_view(self, spec: SpawnSpec) -> str:
+        """Bring up a view — a home base the user lives in and nests other sessions into. Unlike a
+        worker/agent/shell, a view is **not a store record**: it is a pure live tmux object marked
+        by `@tx_view` (its whole durable identity — checked by the picker's nest-attach, the
+        after-new-window border hook, the focus envelope, and `kill`'s view fallback). So this does
+        NOT go through `_spawn`: it gets no `TX_SESSION_ID`/`@tx_id` (nothing keys on it — the
+        reconciler only ever sees process records) and no tags (Q4). It replicates what `_spawn`
+        gave a view — the `has_session` duplicate guard and ONE `EventLog` line (a view spawn must
+        not vanish from the event history) — then applies the chrome (status bar + window-top pane
+        borders so nested panes get a labelled border, mirroring the old cmd_spawn_view). Views are
+        human-named, so the tmux session name is the human name. Returns that name for the CLI to
+        print; there is no `Session` object to return."""
+        if self.tmux.has_session(spec.name):
+            raise SessionExists(f"session '{spec.name}' already exists")
+        self.tmux.new_session(
+            name=spec.name,
+            cwd=spec.cwd,
+            command=spec.launch_cmd or spec.cmd,
+            env=dict(spec.env),
+        )
+        self.tmux.set_tx_view(spec.name)
+        self.tmux.set_option(spec.name, "status", "on")
+        self.tmux.set_window_option(spec.name, "pane-border-status", "top")
+        self.log.append("spawn-view", f"{spec.name} {spec.cwd}")
+        return spec.name
 
     def _spawn(self, spec: SpawnSpec) -> Session:
         """The shared spawn mechanics: create the detached session, set `@tx_id`, persist the
         record, log once. Liveness/EXITED is handled globally (C2 — see below), not per-session.
 
-        A PROCESS is created in tmux under its `id` (Session.tmux_name), so the human `name` is a
-        free, store-owned display label; a VIEW is created under its human name (navigated via
-        native tmux chrome). Live human-name uniqueness — which used to fall out of tmux's own
-        unique-session-name rule — is now enforced against the store, since for a process tmux only
-        ever sees the collision-free id."""
+        Every record is a process now (views leave the store), so a session is always created in
+        tmux under its `id` (Session.tmux_name) and the human `name` is a free, store-owned display
+        label. Live human-name uniqueness — which used to fall out of tmux's own unique-session-name
+        rule — is enforced against the store, since tmux only ever sees the collision-free id."""
         session_id = str(uuid.uuid4())
-        tmux_name = session_id if spec.kind == Kind.PROCESS else spec.name
+        tmux_name = session_id
         self._require_name_free(spec.name)
         if self.tmux.has_session(tmux_name):
             raise SessionExists(f"session '{tmux_name}' already exists")
@@ -264,23 +281,41 @@ class SessionService:
         # hook (S2, hooks.py) plus reconcile-on-read (C1/C4): both diff `@tx_id` liveness over one
         # `list-sessions` and stamp only genuinely-vanished records, so neither can cross-fire.
 
-        session = Session(
-            id=session_id,
-            name=spec.name,
-            kind=spec.kind,
-            role=spec.role,
-            state=State.initial_for(spec.role),
-            cwd=spec.cwd,
-            cmd=spec.cmd,
-            engine=engine,
-            tags=list(spec.tags),
-            env=dict(spec.env),
-            parent=parent,
-            pid=pid,
-            created_at=now,
-            last_activity=now,
-            chats=chats,
-        )
+        session: Session
+        if spec.role == Role.LLM:
+            # engine is non-None here (the llm branch of the line above); an LlmSession also carries
+            # the pending `original` chat, a fresh last_activity, and an unarmed C5 turn clock.
+            session = LlmSession(
+                id=session_id,
+                name=spec.name,
+                state=State.initial_for(spec.role),
+                cwd=spec.cwd,
+                initial_cmd=spec.cmd,
+                engine=engine or Engine.CLAUDE,
+                tags=list(spec.tags),
+                spawn_env=dict(spec.env),
+                parent=parent,
+                pid=pid,
+                created_at=now,
+                last_activity=now,
+                turn_started_at=None,
+                chats=chats,
+            )
+        else:
+            # nvim / shell / other: none of the llm axis (no engine/chats/last_activity).
+            session = OtherSession(
+                id=session_id,
+                name=spec.name,
+                role=spec.role,
+                state=State.initial_for(spec.role),
+                cwd=spec.cwd,
+                initial_cmd=spec.cmd,
+                tags=list(spec.tags),
+                spawn_env=dict(spec.env),
+                parent=parent,
+                pid=pid,
+                created_at=now,
+            )
         self.store.save(session)
         self.log.append("spawn", f"{spec.name} [{spec.role.value}] {spec.cwd}")
         return session
@@ -296,10 +331,23 @@ class SessionService:
 
     # ----- lifecycle -----------------------------------------------------------------------
 
-    def kill(self, name_or_id: str) -> Session:
+    def kill(self, name_or_id: str) -> Session | None:
         """End the tmux session (if live) and mark the record EXITED. Idempotent with the
-        `session-closed` hook the kill triggers — whichever runs second is a no-op transition."""
-        session = self._require(name_or_id)
+        `session-closed` hook the kill triggers — whichever runs second is a no-op transition.
+
+        Q3: `kill` is the one view op tx keeps. A view is not a record, so when nothing resolves,
+        fall back to a live `@tx_view` session by that name and end it (one log line, `None`
+        returned — there is no record). This keeps `tx kill <view>` working so every kill still goes
+        through tx (COMMON.md), without giving views any other tx verb."""
+        session = self._resolve(name_or_id)
+        if session is None:
+            if self.tmux.has_session(name_or_id) and self.tmux.is_view(name_or_id):
+                self.tmux.kill_session(name_or_id)
+                self.log.append("kill", name_or_id)
+                return None
+            raise SessionNotFound(
+                f"session '{name_or_id}' not found (no live @tx_id, no store record)"
+            )
         if self.tmux.has_session(session.tmux_name):
             self.tmux.kill_session(session.tmux_name)
         if session.transition_to(State.EXITED):
@@ -342,18 +390,17 @@ class SessionService:
         return session
 
     def rename(self, name_or_id: str, new_name: str) -> Session:
-        """Rename a session's DISPLAY name. For a PROCESS this is a pure store write — tmux names it
-        by its (unchanging) id, so nothing moves in tmux and the pane border reflects the new name
-        on its next ≤1s refresh. A VIEW is tmux-named by its human name, so its tmux session is
-        renamed too. `@tx_id` is untouched either way, so the record link + liveness tracking are
-        unbroken (liveness is the global id-less `session-closed` hook + reconcile-on-read)."""
+        """Rename a session's DISPLAY name — a pure store write. tmux names every session by its
+        (unchanging) id, so nothing moves in tmux and the pane border reflects the new name on its
+        next ≤1s refresh. `@tx_id` is untouched, so the record link + liveness tracking are unbroken
+        (liveness is the global id-less `session-closed` hook + reconcile-on-read). Views are not
+        records (Q3 — a view has no tags and renaming one is not a tx concern), so a view name never
+        resolves here."""
         session = self._require(name_or_id)
         previous = session.name
         if new_name == previous:
             return session
         self._require_name_free(new_name)
-        if session.kind == Kind.VIEW and self.tmux.has_session(previous):
-            self.tmux.rename_session(previous, new_name)
         session.name = new_name
         session.attached_to = self.tmux.attached_to(
             session.tmux_name
@@ -376,7 +423,13 @@ class SessionService:
             return False
         now = time.time()
         if new_state == State.WORKING:
-            session.last_activity = now  # turn start — the C5 stuck-WORKING clock
+            # Turn start: arm the C5 stuck-WORKING clock and bump activity. Both live on
+            # LlmSession, and WORKING is an llm-only state reached only after hooks.dispatch has
+            # narrowed the session to an LlmSession — so this narrowing always holds (and fails
+            # loudly rather than silently stashing the fields on a non-llm record if it ever didn't).
+            assert isinstance(session, LlmSession)
+            session.turn_started_at = now
+            session.last_activity = now
         if new_state.is_terminal:
             session.ended_at = now
         session.attached_to = (
@@ -433,8 +486,10 @@ class SessionService:
 
     def focus_envelope(self, pane_id: str) -> str:
         """M-focus: the topology join lives in `Tmux` (one `attachment_map`); here we add the record
-        join — the firing session's and the inner session's kind/tags from the store (the old
-        `build_envelope`'s `tx-session-state` lookups, now on the v2 record). Empty when no pane."""
+        join — the firing session's and the inner session's kind/tags for the assistant envelope.
+        `session-kind` can no longer come from a record (there is no `kind` field, and the outer
+        focus session is almost always the view, which has no record at all): it is derived from a
+        live `@tx_view` read — `"view"` when marked, `"process"` otherwise. Empty when no pane."""
         attrs = self.tmux.focus_attrs(pane_id)
         if attrs is None:
             return ""
@@ -453,13 +508,19 @@ class SessionService:
     def _add_record_attrs(
         self, attrs: dict[str, str], name: str | None, kind_key: str, tag_key: str
     ) -> None:
-        """Join a session's stored kind/tags into the envelope attrs (no-op when untracked — D4)."""
+        """Join a session's kind (+ tags for a process) into the envelope attrs. A live `@tx_view`
+        session is a view — kind `"view"`, and NO tag attr (Q4: views carry no tags). Otherwise
+        resolve the store record: kind `"process"` and its tags. No-op when the name is untracked
+        (D4 — a hand-started session with no record and no marker)."""
         if not name:
+            return
+        if self.tmux.has_session(name) and self.tmux.is_view(name):
+            attrs[kind_key] = "view"
             return
         record = self._resolve(name)
         if record is None:
             return
-        attrs[kind_key] = record.kind.value
+        attrs[kind_key] = "process"
         attrs[tag_key] = ",".join(record.tags)
 
     # ----- resolution ----------------------------------------------------------------------

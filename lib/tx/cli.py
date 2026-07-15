@@ -271,25 +271,23 @@ class SpawnNvimCommand(Command):
 
 class SpawnViewCommand(Command):
     name = "spawn-view"
-    summary = "Spawn a detached view session (kind=view); --tag defaults to 'views'."
+    summary = "Spawn a detached view session (a live @tx_view tmux home, not a store record)."
 
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
         parser.add_argument("name")
-        parser.add_argument("--tag", default="views")
         parser.add_argument("--cwd")
         parser.add_argument("--cmd")
         parser.add_argument("--env", action="append", type=_env_pair)
         args = parser.parse_args(argv)
         spec = SpawnSpec.for_view(
             name=args.name,
-            tags=_split_tags(args.tag),
             cwd=args.cwd or self._default_cwd(),
             cmd=args.cmd or _default_shell(),
             env=_parse_env(args.env),
         )
-        session = self.service.spawn_view(spec)
-        print(f"Spawned view '{session.name}' (cwd={session.cwd}, tag={args.tag})")
+        name = self.service.spawn_view(spec)
+        print(f"Spawned view '{name}' (cwd={spec.cwd})")
         return 0
 
 
@@ -627,7 +625,8 @@ class KillCommand(Command):
         parser.add_argument("name")
         args = parser.parse_args(argv)
         session = self.service.kill(args.name)
-        print(f"Killed '{session.name}'")
+        # `kill` returns None when it ended a view (a live @tx_view session, not a record) — Q3.
+        print(f"Killed '{session.name if session is not None else args.name}'")
         return 0
 
 
@@ -796,7 +795,6 @@ class StartCommand(Command):
             self.service.spawn_view(
                 SpawnSpec.for_view(
                     name="Views",
-                    tags=["views"],
                     cwd=str(repo),
                     cmd=_default_shell(),
                 )
