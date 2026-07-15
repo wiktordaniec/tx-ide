@@ -49,7 +49,7 @@ from pathlib import Path
 from . import history
 from .engines import claude, registry
 from .service import NotInsideTmux, ServiceError, SessionNotFound, SessionService
-from .session import ChatRef, Engine, Origin, Session
+from .session import ChatRef, Engine, LlmSession, Origin, Session
 from .spawn import SpawnSpec
 from .storage import chat_ops_dir, history_dir, tx_ide_home
 
@@ -70,9 +70,11 @@ WATCH_TIMEOUT_SECONDS = 600.0
 
 # ----- chat selection -----------------------------------------------------------------------
 
-def active_chat(session: Session) -> ChatRef | None:
+def active_chat(session: LlmSession) -> ChatRef | None:
     """The chat a fork/handover/rollover targets: the last `ChatRef` carrying a real id, preferring
-    one still open (`ended_at is None`). Ops append in order, so the last is the live thread."""
+    one still open (`ended_at is None`). Ops append in order, so the last is the live thread. (A
+    non-llm source has no chats — its `chats` property is `[]` — so this returns None and the caller
+    reports "nothing to fork/hand over".)"""
     candidates = [chat for chat in session.chats if chat.id is not None]
     if not candidates:
         return None
@@ -80,11 +82,11 @@ def active_chat(session: Session) -> ChatRef | None:
     return (open_chats or candidates)[-1]
 
 
-def _inherited_env(session: Session) -> dict[str, str]:
+def _inherited_env(session: LlmSession) -> dict[str, str]:
     """The source session's env, inherited by a derived op's new session (fork / handover). Provenance
     no longer rides the env — each op records its own pending `ChatRef` and the hook captures the id
     from the payload (T4) — so this is a plain copy; `_spawn` overlays a fresh `TX_SESSION_ID`."""
-    return dict(session.env)
+    return dict(session.spawn_env)
 
 
 # ----- helpers shared by the ops -------------------------------------------------------------
@@ -186,7 +188,7 @@ class ChatOps:
             name=name, tags=list(source_session.tags), cwd=cwd,
             cmd=shlex.join(
                 adapter.fork_command(
-                    source_session.cmd, source_chat.id, read_only=read_only
+                    source_session.initial_cmd, source_chat.id, read_only=read_only
                 )
             ),
             env=_inherited_env(source_session), records_own_chat=True,
@@ -399,7 +401,7 @@ class ChatOps:
             )
         launch = shlex.join(
             registry.get(source.engine).seed_command(
-                source.cmd, seed, read_only=spec.read_only
+                source.initial_cmd, seed, read_only=spec.read_only
             )
         )
         worker = self.service.spawn_worker(SpawnSpec.for_process(
@@ -441,10 +443,10 @@ class ChatOps:
             )
         # The rotated pane keeps the SAME tx session, so its hook (TX_SESSION_ID) fills the pending
         # rollover ref. No chat-control env — provenance is on the ref, the id is captured (T4).
-        env = {**record.env, "TX_SESSION_ID": spec.source_txid}
+        env = {**record.spawn_env, "TX_SESSION_ID": spec.source_txid}
         command = _env_prefix(env) + shlex.join(
             registry.get(record.engine).seed_command(
-                record.cmd, seed, read_only=record.read_only
+                record.initial_cmd, seed, read_only=record.read_only
             )
         )
         command = self.service.worker_launch_command(

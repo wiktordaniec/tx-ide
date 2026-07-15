@@ -94,10 +94,16 @@ class Reconciler:
 
     def _demote_if_stuck(self, session: Session, live: _Live, threshold: float) -> bool:
         """C5: a `WORKING` llm idle past the threshold whose pane is no longer the agent has
-        crashed under a live pane — demote to IDLE so the picker stops showing a phantom turn."""
-        if session.state != State.WORKING or session.last_activity is None:
+        crashed under a live pane — demote to IDLE so the picker stops showing a phantom turn.
+
+        The clock is the llm-only `turn_started_at` (armed at turn start in `record_state`). A
+        `WORKING` session is always an `LlmSession` — WORKING is an llm-only state — and the
+        `state != WORKING` guard short-circuits before the field is read, so a non-llm record never
+        touches it. A record left `WORKING` across the split has `turn_started_at` unset (`None`) →
+        skip; it self-heals on its next turn."""
+        if session.state != State.WORKING or session.turn_started_at is None:
             return False
-        if time.time() - session.last_activity < threshold:
+        if time.time() - session.turn_started_at < threshold:
             return False
         if self._is_agent_command(live.command):
             return False

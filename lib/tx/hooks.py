@@ -4,8 +4,9 @@
 `$TX_IDE_HOME/hooks/` (`setup/engines/claude.sh`). Each shim drains the hook payload and execs
 `python3.14 -m tx hook <event>` with the dev/real home + the package on `PYTHONPATH` baked in
 (hooks run with a minimal env — C9). This module is pure dispatch over `SessionService`; all the
-state-transition rules (C3 terminal guard, C4 dirty-check, the last_activity clock) live in
-`record_state`, so the contract here is just *which event maps to which state*.
+state-transition rules (C3 terminal guard, C4 dirty-check, the C5 turn clock — `turn_started_at`
+plus `last_activity`) live in `record_state`, so the contract here is just *which event maps to
+which state*.
 
 The event→state table (tx-service-redesign.md §5 + C6), broadened to the full Claude hook set so a
 missed edge self-heals — only the three live states WORKING / WAITING / IDLE are used (§2):
@@ -63,7 +64,7 @@ import sys
 from . import history
 from .engines import registry
 from .service import SessionService
-from .session import Session, State
+from .session import LlmSession, State
 
 # The tx session id is baked into every tx-spawned session's environment (`SessionService._spawn`
 # sets `TX_SESSION_ID`), so a synchronous hook inherits it — the unambiguous key for "which record
@@ -130,13 +131,23 @@ def dispatch(service: SessionService, argv: list[str]) -> int:
     if not session_id:
         return 0  # D4: hand-started session, no id baked → tx does not track it.
 
+    # The capture + state arms below are llm-only: they read engine/chats and drive the llm
+    # activity axis (WORKING/WAITING/IDLE). Load the record once and narrow to LlmSession — a
+    # record the (dev) home never tracked loads as None (D4), and a non-llm record is not ours to
+    # drive here. This narrow also closes a latent bug: a hand-run `claude` inside a tx SHELL
+    # session that leaked its TX_SESSION_ID would otherwise drive that shell's OtherSession record
+    # to WORKING. (The role-agnostic `session-closed → reconcile` arm already returned above.)
+    session = service.store.load(session_id)
+    if not isinstance(session, LlmSession):
+        return 0
+
     # Chat-id capture (T4) — on the events that carry the payload + establish a chat (`session-start`
     # at startup, `prompt-submit` on the first turn). Runs BEFORE the state arm because `session-start`
     # drives no state (it would short-circuit below). Guarded: a hook must never fail a Claude turn —
     # the next capture event backstops a malformed/early payload.
     if event in CHAT_REF_EVENTS:
         try:
-            _capture_chat_ref(service, session_id)
+            _capture_chat_ref(service, session)
         except Exception:
             pass
 
@@ -188,21 +199,18 @@ def _read_payload() -> dict:
         return {}
 
 
-def _capture_chat_ref(service: SessionService, session_id: str) -> None:
+def _capture_chat_ref(service: SessionService, session: LlmSession) -> None:
     """Fill the firing session's pending `ChatRef` from the hook payload (the universal capture path,
     design §2/§7). Reads `(session_id, transcript_path)` off the payload via the session's engine and
-    stamps them onto the pending ref. No-op when the id isn't ours (D4); the engine's
-    `capture_session_id` raises on a malformed/empty payload, which `dispatch` swallows (a hook must
-    never fail a turn — the next capture event retries)."""
-    session = service.store.load(session_id)
-    if session is None:
-        return  # D4: not a record this home tracks.
+    stamps them onto the pending ref. `dispatch` already loaded + narrowed the record to an
+    LlmSession (so `engine`/`chats` are present), and swallows the `capture_session_id` raise on a
+    malformed/empty payload (a hook must never fail a turn — the next capture event retries)."""
     captured_id, captured_path = registry.get(session.engine).capture_session_id(_read_payload())
     _complete_pending(service, session, captured_id, captured_path)
 
 
 def _complete_pending(
-    service: SessionService, session: Session, captured_id: str, captured_path: str
+    service: SessionService, session: LlmSession, captured_id: str, captured_path: str
 ) -> None:
     """Stamp the captured `(id, transcript_path)` onto the session's latest pending `ChatRef` (id is
     None). Idempotent: skip when the id is already recorded (re-fired hook) or nothing is pending.
