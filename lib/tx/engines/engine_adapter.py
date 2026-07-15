@@ -74,14 +74,8 @@ class EngineAdapter(Protocol):
         """Make an existing chat discoverable when a continuation moves to another cwd."""
         ...
 
-    def finalize_read_only_command(
-        self, command: str, workspace: str, git_common_directory: str
-    ) -> str:
-        """Bind a read-only launch to its final checkout and shared Git metadata paths."""
-        ...
-
     def is_read_only_command(self, command: str) -> bool:
-        """Whether the command carries the required inner controls for tx read-only launch."""
+        """Validate inner read-only controls once at launch, never on hooks or messages."""
         ...
 
     # ----- transcript -----

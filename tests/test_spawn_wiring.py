@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -160,7 +162,12 @@ class FakeWorktrees:
 
     def create_unique(self, starting_directory, base_name, unavailable_names=()):
         name = self.next_name(starting_directory, base_name, unavailable_names)
-        path = Path(os.environ["TX_IDE_HOME"]) / "worktrees" / "repo-fixture" / name
+        path = (
+            Path(os.environ["TX_IDE_HOME"])
+            / "worktrees"
+            / "repo-fixture"
+            / f"repo--{name}"
+        )
         self.created.append(path)
         return name, path
 
@@ -319,8 +326,8 @@ with tempfile.TemporaryDirectory() as repository_parent:
     )
     manager = WorktreeManager()
     repository_worktrees = manager.root / manager.repository_key(str(repository))
-    expected_worktree = repository_worktrees / "worktree-worker"
-    check("tx spawn creates $TX_IDE_HOME/worktrees/<repo-key>/<session>",
+    expected_worktree = repository_worktrees / "sample-repository--worktree-worker"
+    check("tx spawn creates $TX_IDE_HOME/worktrees/<repo-key>/<repo>--<session>",
           expected_worktree.is_dir())
     check("tx spawn --worktree records the created worktree as cwd",
           session.cwd == str(expected_worktree))
@@ -336,12 +343,40 @@ with tempfile.TemporaryDirectory() as repository_parent:
           ).returncode != 0)
     check("tx spawn --worktree uses the Codex adapter command", command == CODEX_PREFIX)
 
+    # Once a worker creates its task branch, Claude must still render the same branch-free project
+    # label that Codex's built-in `project-name` field derives from the worktree-root basename.
+    subprocess.run(
+        ["git", "-C", str(expected_worktree), "switch", "-c", "feat/footer-test"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    statusline = subprocess.run(
+        ["bash", str(Path(__file__).resolve().parents[1] / "claude" / "statusline.sh")],
+        input=json.dumps({"cwd": str(expected_worktree)}),
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout
+    rendered_label = re.sub(r"\x1b\[[0-9;]*m", "", statusline).splitlines()[0]
+    check("Claude footer matches Codex's branch-free project label",
+          rendered_label == expected_worktree.name
+          and "feat/footer-test" not in rendered_label)
+
+    codex_setup = (
+        Path(__file__).resolve().parents[1] / "setup" / "engines" / "codex.sh"
+    ).read_text()
+    check("Codex footer uses project-name without git-branch",
+          'status_line = ["model", "reasoning", "project-name", "context-used"]'
+          in codex_setup)
+
     claude_session, claude_command = run_spawn(
         "claude-worktree-worker",
         ["--tag", "s", "--cwd", str(repository), "--engine", "claude"],
         real_worktrees=True,
     )
-    expected_claude_worktree = repository_worktrees / "claude-worktree-worker"
+    expected_claude_worktree = (
+        repository_worktrees / "sample-repository--claude-worktree-worker"
+    )
     check("tx spawn --worktree creates a worktree for Claude", expected_claude_worktree.is_dir())
     check("tx spawn --worktree records Claude's worktree as cwd",
           claude_session.cwd == str(expected_claude_worktree))
@@ -355,7 +390,7 @@ with tempfile.TemporaryDirectory() as repository_parent:
         ["--tag", "s", "--cwd", str(repository), "--engine", "codex"],
         real_worktrees=True,
     )
-    expected_collision_worktree = repository_worktrees / "worktree-worker-2"
+    expected_collision_worktree = repository_worktrees / "sample-repository--worktree-worker-2"
     check("writable spawn suffixes a stale worktree-path collision",
           collision_session.name == "worktree-worker-2"
           and collision_session.cwd == str(expected_collision_worktree))
@@ -366,7 +401,7 @@ with tempfile.TemporaryDirectory() as repository_parent:
          "--read-only", "--prompt", "inspect only"],
         real_worktrees=True,
     )
-    expected_read_only_claude = repository_worktrees / "readonly-claude"
+    expected_read_only_claude = repository_worktrees / "sample-repository--readonly-claude"
     check("read-only Claude gets an isolated tx-owned worktree",
           read_only_claude.cwd == str(expected_read_only_claude))
     check("read-only Claude persists TX_READ_ONLY instead of the worktree guard",
@@ -396,7 +431,7 @@ with tempfile.TemporaryDirectory() as repository_parent:
          "--read-only", "--prompt", "inspect only"],
         real_worktrees=True,
     )
-    expected_read_only_codex = repository_worktrees / "readonly-codex"
+    expected_read_only_codex = repository_worktrees / "sample-repository--readonly-codex"
     check("read-only Codex gets an isolated tx-owned worktree",
           read_only_codex.cwd == str(expected_read_only_codex) and read_only_codex.read_only)
     check("read-only Codex declares tx's external sandbox and removes the full bypass flag",

@@ -68,7 +68,6 @@ REQUIRED_METHODS = {
     "seed_command": 2,
     "distiller_command": 1,
     "prepare_chat_for_cwd": 3,
-    "finalize_read_only_command": 3,
     "is_read_only_command": 1,
     "resolve_transcript": 2,
     "iter_messages": 1,
@@ -130,12 +129,6 @@ check("claude read-only: adapter recognizes its permission controls",
 check("claude read-only: prompt remains the positional tail",
       claude_read_only[-1] == "inspect only")
 
-claude_finalized = claude.finalize_read_only_command(
-    shlex.join(claude_read_only), "/workspace", "/repository/.git"
-)
-check("claude read-only: finalization leaves path enforcement to tx's outer sandbox",
-      claude_finalized == shlex.join(claude_read_only))
-
 resume = claude.resume_command("CID-1")
 check("resume_command: binary first", resume[0] == "claude")
 check("resume_command: --resume <id>", resume[1:3] == ["--resume", "CID-1"])
@@ -148,7 +141,7 @@ check("fork_command: binary first", fork[0] == "claude")
 check("fork_command: resumes + forks the source",
       "--resume" in fork and "--fork-session" in fork and "CID-2" in fork)
 check("fork_command: inherits the source persona (--model opus)", "--model" in fork and "opus" in fork)
-promoted_fork = claude.fork_command(claude_finalized, "CID-3")
+promoted_fork = claude.fork_command(shlex.join(claude_read_only), "CID-3")
 check("claude writable fork strips inherited read-only controls",
       "--dangerously-skip-permissions" in promoted_fork
       and "--permission-mode" not in promoted_fork

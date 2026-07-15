@@ -89,7 +89,7 @@ You run as the session `tx-assistant`, tagged `tx-system`. "This session" in use
 | Subcommand | Purpose |
 |---|---|
 | `tx ls` | Plain stdout list, two sections: VIEWS, PROCESSES. Use this to answer "what's running" questions. |
-| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--engine ENGINE] [--prompt TEXT] [--read-only] [--env K=V ...]` | Spawn a detached tmux session. `--tag` is mandatory. Agents automatically launch from `$TX_IDE_HOME/worktrees/<repository-key>/<name>`; `--read-only` keeps inspection available while sandboxing repository writes. An llm session automatically records its chat. `--env` may repeat. |
+| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--engine ENGINE] [--prompt TEXT] [--read-only] [--env K=V ...]` | Spawn a detached tmux session. `--tag` is mandatory. Agents automatically launch from `$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<name>`; `--read-only` keeps inspection available while sandboxing repository writes. An llm session automatically records its chat. `--env` may repeat. |
 | `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]` | Spawn an nvim companion. `--diff` defaults `BASE` to `main` if omitted. Forces a dark colorscheme. `--env` may repeat. |
 | `tx tag <name> [tags]` | Read or set a session's tags in the durable store — the non-interactive counterpart to the picker's Ctrl-T. With `tags` (comma-separated): set them. Without: print the current tags. Resolves `<name>` via its live `@tx_id`, falling back to a store name lookup for a session no longer live. |
 | `tx send-message <target> <body>` | Peer-message another agent session. Wraps body in the `<from-agent session="...">…</from-agent>` envelope, fills your session name automatically, handles the post-send sleep. |
@@ -154,10 +154,11 @@ tx spawn <name> --tag <scope> --cwd <project-root> \
   --engine <engine> --prompt "<priming>"
 ```
 
-tx creates a detached `$TX_IDE_HOME/worktrees/<repository-key>/<name>` checkout and stamps that path
-as the session cwd before the engine starts. Writable workers receive `TX_REQUIRE_WORKTREE=1`. Use
-`--read-only` when the worker must not modify the repository; it receives its own worktree with
-tx-enforced whole-process write blocking while shell inspection remains available. A normal
+tx creates a detached `$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<name>` checkout and
+stamps that path as the session cwd before the engine starts. Its basename is the branch-free label
+shown by both Claude and Codex. Writable workers receive `TX_REQUIRE_WORKTREE=1`. Use `--read-only`
+when the worker must not modify the repository; it receives its own worktree with tx-enforced
+whole-process write blocking while shell inspection remains available. A normal
 `tx fork <read-only-session> <implementation-name>` is the promotion path: the new fork is writable
 and receives a separate worktree. Add adapter-specific model or effort overrides only when the role
 conventions or user request calls for them.

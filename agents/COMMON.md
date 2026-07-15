@@ -83,9 +83,10 @@ tx spawn <name> --tag <scope> --cwd <repository> \
   --engine <engine> --prompt "<priming>"
 ```
 
-tx creates a detached `$TX_IDE_HOME/worktrees/<repository-key>/<name>` checkout and launches the
-selected Claude or Codex engine from it. The readable repository key includes a short hash so
-same-named repositories cannot collide. Writable workers receive `TX_REQUIRE_WORKTREE=1`; the
+tx creates a detached `$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<name>` checkout and
+launches the selected Claude or Codex engine from it. The readable repository key includes a short
+hash so same-named repositories cannot collide. The checkout basename gives both engine footers the
+same branch-free `<repository>--<name>` label. Writable workers receive `TX_REQUIRE_WORKTREE=1`; the
 detached worker creates its correctly typed task branch after startup. `--worktree` remains accepted
 for compatibility but is redundant.
 

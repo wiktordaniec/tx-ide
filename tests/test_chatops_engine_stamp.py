@@ -162,6 +162,10 @@ subprocess.run(["git", "-C", WORK, "add", "README.md"], check=True)
 subprocess.run(["git", "-C", WORK, "commit", "-m", "fixture"], check=True,
                stdout=subprocess.DEVNULL)
 
+
+def worktree_label(session_name):
+    return f"{Path(WORK).name}--{session_name}"
+
 # =================================================================================================
 # 1. fork / handover / distiller stamp the SOURCE engine on the new record + its new ChatRef.
 #    Run for BOTH engines: a codex source → CODEX (the D1 fix); a claude source → CLAUDE (no regress).
@@ -183,7 +187,7 @@ for engine in (Engine.CODEX, Engine.CLAUDE):
           fork_ref is not None and fork_ref.id is None)
     check(f"fork [{tag}]: the fork ChatRef inherits engine == {tag}", fork_ref.engine == engine)
     check(f"fork [{tag}]: a new writable session gets a central tx worktree",
-          Path(forked.cwd).name == f"myfork-{tag}"
+          Path(forked.cwd).name == worktree_label(f"myfork-{tag}")
           and Path(os.environ["TX_IDE_HOME"]) / "worktrees" in Path(forked.cwd).parents
           and forked.env[REQUIRE_WORKTREE_ENV] == "1")
 
@@ -207,7 +211,7 @@ for engine in (Engine.CODEX, Engine.CLAUDE):
     check(f"handover [{tag}]: the handover ChatRef inherits engine == {tag}",
           handover_ref.engine == engine)
     check(f"handover [{tag}]: the new writable worker gets a central tx worktree",
-          Path(worker.cwd).name == f"hw-{tag}"
+          Path(worker.cwd).name == worktree_label(f"hw-{tag}")
           and Path(os.environ["TX_IDE_HOME"]) / "worktrees" in Path(worker.cwd).parents
           and worker.env[REQUIRE_WORKTREE_ENV] == "1")
 
@@ -231,7 +235,7 @@ for engine in (Engine.CODEX, Engine.CLAUDE):
     )
     check(f"fork [{tag}/read-only]: gets its own central tx worktree",
           read_only_fork.cwd != WORK
-          and Path(read_only_fork.cwd).name == f"readonly-fork-{tag}")
+          and Path(read_only_fork.cwd).name == worktree_label(f"readonly-fork-{tag}"))
     check(f"fork [{tag}/read-only]: persists the read-only marker",
           read_only_fork.read_only and read_only_fork.env[READ_ONLY_ENV] == "1")
     if engine == Engine.CLAUDE:

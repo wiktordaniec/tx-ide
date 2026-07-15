@@ -277,12 +277,6 @@ class CodexEngine(EngineAdapter):
     ) -> None:
         """Codex rollouts are global by id rather than keyed to cwd; no relocation is needed."""
 
-    def finalize_read_only_command(
-        self, command: str, workspace: str, git_common_directory: str
-    ) -> str:
-        """tx binds the externally sandboxed Codex process after placement."""
-        return command
-
     def is_read_only_command(self, command: str) -> bool:
         tokens = shlex.split(command)
         if BYPASS_APPROVALS_FLAG in tokens:

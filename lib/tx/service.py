@@ -144,15 +144,6 @@ class SessionService:
         if spec.read_only:
             engine = spec.engine or Engine.CLAUDE
             adapter = registry.get(engine)
-            try:
-                git_common_directory = self.worktrees.git_common_directory(
-                    str(worktree_directory)
-                )
-            except WorktreeError as error:
-                raise ServiceError(f"could not resolve Git metadata: {error}") from error
-            command = adapter.finalize_read_only_command(
-                command, str(worktree_directory), str(git_common_directory)
-            )
             if not adapter.is_read_only_command(command):
                 raise ServiceError(
                     f"{engine.value} command does not enforce the requested read-only mode"

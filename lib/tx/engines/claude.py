@@ -28,6 +28,7 @@ READ_ONLY_SETTING_SOURCES = "user"
 
 # ----- transcript / path internals ----------------------------------------------------------
 
+
 def claude_home() -> Path:
     return Path(os.environ.get(CLAUDE_HOME_ENV, DEFAULT_CLAUDE_HOME)).expanduser()
 
@@ -65,6 +66,7 @@ def find_transcript(chat_id: str, cwd: str) -> Path | None:
 
 # ----- history bundle layout ----------------------------------------------------------------
 
+
 def bundle_dir(tx_id: str, chat_id: str) -> Path:
     return history_dir() / tx_id / chat_id
 
@@ -86,7 +88,9 @@ def bundle_transcript_path(tx_id: str, chat_id: str) -> Path:
 # workspace placement, not persona: the successor continues in the source's resolved cwd, so
 # carrying them would relocate (or fail) the relaunch.
 _IDENTITY_VALUE_FLAGS = frozenset({"--session-id"})
-_IDENTITY_OPTIONAL_VALUE_FLAGS = frozenset({"--resume", "-r", "--from-pr", "--worktree", "-w"})
+_IDENTITY_OPTIONAL_VALUE_FLAGS = frozenset(
+    {"--resume", "-r", "--from-pr", "--worktree", "-w"}
+)
 _IDENTITY_BARE_FLAGS = frozenset({"--fork-session", "--continue", "-c", "--tmux"})
 
 # Bare claude flags — those that do NOT consume a following token, so a positional that follows one
@@ -99,14 +103,33 @@ _IDENTITY_BARE_FLAGS = frozenset({"--fork-session", "--continue", "-c", "--tmux"
 # standard worker shape (`claude <flags> "<priming>"`) that token is the baked priming, which then
 # survives the strip and rides into the successor's command beside the new seed (AND-171). Kept in
 # sync with `claude --help`.
-_BARE_FLAGS = frozenset({
-    "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--verbose",
-    "--print", "-p", "--ide", "--strict-mcp-config", "--no-session-persistence",
-    "--exclude-dynamic-system-prompt-sections", "--replay-user-messages",
-    "--include-partial-messages", "--include-hook-events", "--disable-slash-commands",
-    "--chrome", "--no-chrome",
-    "--bare", "--brief", "--safe-mode", "--mcp-debug", "--help", "-h", "--version", "-v",
-})
+_BARE_FLAGS = frozenset(
+    {
+        "--dangerously-skip-permissions",
+        "--allow-dangerously-skip-permissions",
+        "--verbose",
+        "--print",
+        "-p",
+        "--ide",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--exclude-dynamic-system-prompt-sections",
+        "--replay-user-messages",
+        "--include-partial-messages",
+        "--include-hook-events",
+        "--disable-slash-commands",
+        "--chrome",
+        "--no-chrome",
+        "--bare",
+        "--brief",
+        "--safe-mode",
+        "--mcp-debug",
+        "--help",
+        "-h",
+        "--version",
+        "-v",
+    }
+)
 
 # Persona flags with an OPTIONAL value (`-d [filter]`, `--prompt-suggestions [value]`,
 # `--remote-control [name]`) need no listing: commander consumes the next token exactly when it is
@@ -116,16 +139,27 @@ _BARE_FLAGS = frozenset({
 # Persona flags that are VARIADIC (commander `<values...>`): claude consumes every following token
 # up to the next flag as a value, so the strip mirrors that — inheriting them all keeps `--add-dir
 # /a /b` intact instead of dropping `/b` as a stray positional.
-_VARIADIC_VALUE_FLAGS = frozenset({
-    "--add-dir", "--allowedTools", "--allowed-tools", "--disallowedTools", "--disallowed-tools",
-    "--mcp-config", "--betas", "--file", "--tools",
-})
+_VARIADIC_VALUE_FLAGS = frozenset(
+    {
+        "--add-dir",
+        "--allowedTools",
+        "--allowed-tools",
+        "--disallowedTools",
+        "--disallowed-tools",
+        "--mcp-config",
+        "--betas",
+        "--file",
+        "--tools",
+    }
+)
 
 # Shell-control tokens. Once shlex surfaces one of these, the rest of a compound source `cmd` is
 # shell wrapping (separator / pipe / redirect / subshell / …), NOT claude argv. A fork/handover/
 # rollover is a FRESH claude invocation, not the source's shell pipeline, so everything from the
 # first such token on is dropped.
-_SHELL_CONTROL_TOKENS = frozenset({";", "&", "&&", "||", "|", "|&", "&>", "&>>", "(", ")", "{", "}"})
+_SHELL_CONTROL_TOKENS = frozenset(
+    {";", "&", "&&", "||", "|", "|&", "&>", "&>>", "(", ")", "{", "}"}
+)
 
 
 def _is_shell_control(token: str) -> bool:
@@ -138,8 +172,11 @@ def _takes_next_token(tokens: list[str], index: int) -> bool:
     """Whether the token after `tokens[index]` exists and would be consumed as a flag value —
     commander's rule for both optional (`[value]`) and unknown required values: a non-flag,
     non-shell-control token follows."""
-    return index + 1 < len(tokens) and not tokens[index + 1].startswith("-") \
+    return (
+        index + 1 < len(tokens)
+        and not tokens[index + 1].startswith("-")
         and not _is_shell_control(tokens[index + 1])
+    )
 
 
 def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
@@ -160,20 +197,29 @@ def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
             index += 2  # drop the identity flag and its required value
             continue
         if token in _IDENTITY_OPTIONAL_VALUE_FLAGS:
-            index += 2 if _takes_next_token(tokens, index) else 1  # drop flag + optional value
+            index += (
+                2 if _takes_next_token(tokens, index) else 1
+            )  # drop flag + optional value
             continue
         if token in _IDENTITY_BARE_FLAGS:
             index += 1  # drop — the op re-supplies its own
             continue
         if token in _BARE_FLAGS:
-            inherited.append(token)  # bare flag; any positional that follows it is the prompt (dropped)
+            inherited.append(
+                token
+            )  # bare flag; any positional that follows it is the prompt (dropped)
             index += 1
             continue
         if token in _VARIADIC_VALUE_FLAGS:
-            inherited.append(token)  # variadic: claude eats every non-flag token that follows
+            inherited.append(
+                token
+            )  # variadic: claude eats every non-flag token that follows
             index += 1
-            while index < len(tokens) and not tokens[index].startswith("-") \
-                    and not _is_shell_control(tokens[index]):
+            while (
+                index < len(tokens)
+                and not tokens[index].startswith("-")
+                and not _is_shell_control(tokens[index])
+            ):
                 inherited.append(tokens[index])
                 index += 1
             continue
@@ -181,10 +227,12 @@ def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
             # Value-flag (known, unknown, or optional-value): inherit it WITH its value when one
             # follows; never drop the value — a dangling flag would swallow the appended seed.
             if _takes_next_token(tokens, index):
-                inherited.extend(tokens[index:index + 2])
+                inherited.extend(tokens[index : index + 2])
                 index += 2
             else:
-                inherited.append(token)  # dangling flag (end of argv / next token is itself a flag)
+                inherited.append(
+                    token
+                )  # dangling flag (end of argv / next token is itself a flag)
                 index += 1
             continue
         index += 1  # a positional — the source's baked initial prompt; drop it (the op seeds its own)
@@ -368,12 +416,6 @@ class ClaudeEngine(EngineAdapter):
                 sidecar_dir(chat_id, target_cwd),
                 dirs_exist_ok=True,
             )
-
-    def finalize_read_only_command(
-        self, command: str, workspace: str, git_common_directory: str
-    ) -> str:
-        """Claude's repository boundary is applied around the whole process by tx."""
-        return command
 
     def is_read_only_command(self, command: str) -> bool:
         tokens = shlex.split(command)

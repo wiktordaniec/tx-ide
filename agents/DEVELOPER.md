@@ -46,9 +46,9 @@ for orchestrator coordination.)*
 6. **After the PR is open, spawn a `-diff` nvim companion** so the user can review the diff without context-switching — see **§ nvim companions for review**.
 
 Worktree convention: tx-managed agent checkouts live under
-`$TX_IDE_HOME/worktrees/<repository-key>/<session-name>`. The key is the readable repository name
-plus a short hash of its canonical Git directory; the worktree basename is the session name shown
-in agent footers.
+`$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<session-name>`. The key is the readable
+repository name plus a short hash of its canonical Git directory; the checkout basename is the
+shared branch-free project label shown in both Claude and Codex footers.
 
 ## Self-verify
 

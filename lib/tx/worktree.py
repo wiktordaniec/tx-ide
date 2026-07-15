@@ -141,16 +141,22 @@ class WorktreeManager:
     def _path_for(
         self, main_checkout: Path, common_directory: Path, worktree_name: str
     ) -> Path:
-        return self.root / self._repository_key(main_checkout, common_directory) / worktree_name
+        label = f"{self._repository_slug(main_checkout)}--{worktree_name}"
+        return self.root / self._repository_key(main_checkout, common_directory) / label
 
     @staticmethod
     def _repository_key(main_checkout: Path, common_directory: Path) -> str:
         # The readable prefix makes the global root browsable; hashing the canonical shared Git
         # directory keeps two unrelated repositories with the same basename collision-free.
-        slug = re.sub(r"[^A-Za-z0-9._-]+", "-", main_checkout.name).strip("-._")
-        slug = slug or "repository"
+        slug = WorktreeManager._repository_slug(main_checkout)
         digest = hashlib.sha256(str(common_directory).encode()).hexdigest()[:8]
         return f"{slug}-{digest}"
+
+    @staticmethod
+    def _repository_slug(main_checkout: Path) -> str:
+        """Filesystem-safe repository label shared by the worktree path and agent footers."""
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "-", main_checkout.name).strip("-._")
+        return slug or "repository"
 
     @staticmethod
     def _resolve_git_path(starting_directory: str, git_path: str) -> Path:
