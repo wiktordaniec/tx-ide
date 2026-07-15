@@ -182,8 +182,9 @@ for engine in (Engine.CODEX, Engine.CLAUDE):
     check(f"fork [{tag}]: a pending fork ChatRef exists (id captured later)",
           fork_ref is not None and fork_ref.id is None)
     check(f"fork [{tag}]: the fork ChatRef inherits engine == {tag}", fork_ref.engine == engine)
-    check(f"fork [{tag}]: a new writable session gets a repo--session worktree",
-          Path(forked.cwd).name == f"{Path(WORK).name}--myfork-{tag}"
+    check(f"fork [{tag}]: a new writable session gets a central tx worktree",
+          Path(forked.cwd).name == f"myfork-{tag}"
+          and Path(os.environ["TX_IDE_HOME"]) / "worktrees" in Path(forked.cwd).parents
           and forked.env[REQUIRE_WORKTREE_ENV] == "1")
 
     # --- _finish_handover() — spawns the fresh seeded worker (the D1 site driven directly) ---
@@ -205,8 +206,9 @@ for engine in (Engine.CODEX, Engine.CLAUDE):
           handover_ref is not None and handover_ref.id is None)
     check(f"handover [{tag}]: the handover ChatRef inherits engine == {tag}",
           handover_ref.engine == engine)
-    check(f"handover [{tag}]: the new writable worker gets a repo--session worktree",
-          Path(worker.cwd).name == f"{Path(WORK).name}--hw-{tag}"
+    check(f"handover [{tag}]: the new writable worker gets a central tx worktree",
+          Path(worker.cwd).name == f"hw-{tag}"
+          and Path(os.environ["TX_IDE_HOME"]) / "worktrees" in Path(worker.cwd).parents
           and worker.env[REQUIRE_WORKTREE_ENV] == "1")
 
     # --- _spawn_distiller() — a plain llm spawn; gets a pending `original` ref from `_spawn` ---
@@ -220,25 +222,26 @@ for engine in (Engine.CODEX, Engine.CLAUDE):
     check(f"distiller [{tag}]: the distiller's original ChatRef inherits engine == {tag}",
           bool(distiller.chats) and distiller.chats[0].engine == engine)
 
-    # A read-only fork is the explicit placement exception: same source checkout, safe adapter
-    # command, persistent access marker. A later ordinary fork returns to the writable default.
+    # A read-only fork gets the same isolated placement plus engine enforcement. A later ordinary
+    # fork returns to the writable default.
     service = service_over(source_session(f"src-ro-{tag}", f"src-ro-{tag}", engine,
                                           f"ROCHAT-{tag}", WORK))
     read_only_fork = ChatOps(service).fork(
         f"src-ro-{tag}", f"readonly-fork-{tag}", read_only=True
     )
-    check(f"fork [{tag}/read-only]: stays in the source checkout",
-          read_only_fork.cwd == WORK)
+    check(f"fork [{tag}/read-only]: gets its own central tx worktree",
+          read_only_fork.cwd != WORK
+          and Path(read_only_fork.cwd).name == f"readonly-fork-{tag}")
     check(f"fork [{tag}/read-only]: persists the read-only marker",
           read_only_fork.read_only and read_only_fork.env[READ_ONLY_ENV] == "1")
     if engine == Engine.CLAUDE:
         safe_command = (
-            "--permission-mode plan" in read_only_fork.cmd
+            "--permission-mode dontAsk" in read_only_fork.cmd
             and "--dangerously-skip-permissions" not in read_only_fork.cmd
         )
     else:
         safe_command = (
-            "--sandbox read-only" in read_only_fork.cmd
+            "--sandbox danger-full-access" in read_only_fork.cmd
             and "--dangerously-bypass-approvals-and-sandbox" not in read_only_fork.cmd
         )
     check(f"fork [{tag}/read-only]: uses the engine's enforced read-only command", safe_command)

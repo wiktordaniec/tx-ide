@@ -48,6 +48,11 @@ def history_dir() -> Path:
     return tx_ide_home() / "history"
 
 
+def worktrees_dir() -> Path:
+    """`$TX_IDE_HOME/worktrees/` — tx-owned linked checkouts for agent sessions."""
+    return tx_ide_home() / "worktrees"
+
+
 def chat_ops_dir() -> Path:
     """`$TX_IDE_HOME/chat-ops/` — transient op-specs `<op-id>/` for in-flight handover/rollover.
 
@@ -86,13 +91,19 @@ def hooks_dir() -> Path:
 def ensure_home() -> Path:
     """Create the `$TX_IDE_HOME` skeleton if absent (idempotent) and return the home path.
 
-    Creates the directories foundation code writes into (`sessions/`, `history/`, `user-agents/`).
-    `agents` (a symlink to the repo) and `hooks/` (baked shims) are the installer's job (S2), not
-    created here. The full installer may call this or replicate it; `python3.14 -m tx _init-home`
-    exposes it so the installer need not duplicate the layout.
+    Creates the directories foundation code writes into (`sessions/`, `history/`, `worktrees/`,
+    `user-agents/`). `agents` (a symlink to the repo) and `hooks/` (baked shims) are the installer's
+    job (S2), not created here. The full installer may call this or replicate it; `python3.14 -m tx
+    _init-home` exposes it so the installer need not duplicate the layout.
     """
     home = tx_ide_home()
-    for directory in (home, sessions_dir(), history_dir(), user_agents_dir()):
+    for directory in (
+        home,
+        sessions_dir(),
+        history_dir(),
+        worktrees_dir(),
+        user_agents_dir(),
+    ):
         directory.mkdir(parents=True, exist_ok=True)
     return home
 

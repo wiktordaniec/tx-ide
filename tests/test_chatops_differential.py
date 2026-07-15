@@ -365,6 +365,9 @@ class _FakeService:
     def spawn_internal(self, spec):
         return self.spawn(spec)
 
+    def worker_launch_command(self, command, worktree_directory, read_only):
+        return command
+
 
 def _source_session(txid, name, cmd):
     return Session(
@@ -443,7 +446,8 @@ try:
     check("dispatch/rollover: read-only marker survives the pane respawn",
           "TX_READ_ONLY=1" in read_only_command)
     check("dispatch/rollover: read-only Claude controls survive the pane respawn",
-          "--permission-mode plan" in read_only_command
+          "--permission-mode dontAsk" in read_only_command
+          and "--allowedTools Bash" in read_only_command
           and "--dangerously-skip-permissions" not in read_only_command)
 finally:
     chat_module.history.ingest_session = _orig_ingest

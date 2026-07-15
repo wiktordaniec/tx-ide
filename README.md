@@ -104,7 +104,7 @@ session, retag, message a peer. It follows `agents/TX-ASSISTANT.md`.
 
 | Command | What it does |
 |---|---|
-| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd CMD] [--engine ENGINE] [--prompt TEXT] [--read-only] [--env K=V …]` | Spawn a detached tmux session. Writable Claude/Codex agents automatically launch from a detached `.tx-ide/worktrees/<repository>--<name>` checkout. `--read-only` keeps an engine-built agent in the requested checkout with edits blocked. LLM chats are captured automatically. |
+| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd CMD] [--engine ENGINE] [--prompt TEXT] [--read-only] [--env K=V …]` | Spawn a detached tmux session. Claude/Codex agents launch from a detached `$TX_IDE_HOME/worktrees/<repository-key>/<name>` checkout. `--read-only` keeps shell inspection available while blocking repository edits. LLM chats are captured automatically. |
 | `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V …]` | Spawn a detached nvim companion. `--diff [BASE]` opens a diffview (base defaults to `main`). |
 | `tx spawn-view <name> [--tag TAGS] [--cwd DIR] [--cmd CMD] [--env K=V …]` | Spawn a detached view session (`kind=view`); `--tag` defaults to `views`. |
 
@@ -122,8 +122,8 @@ session, retag, message a peer. It follows `agents/TX-ASSISTANT.md`.
 
 | Command | What it does |
 |---|---|
-| `tx fork <source> [new_name] [--read-only]` | Fork a session's chat into a NEW session that starts with the full history. The fork is writable and gets a worktree unless explicitly read-only. |
-| `tx handover <source> <task> [new_name] [--self-catch-up] [--read-only]` | Distill a session's chat into a focused brief for a NEW worker session. The worker is writable and gets a worktree unless explicitly read-only. |
+| `tx fork <source> [new_name] [--read-only]` | Fork a session's chat into a NEW worktree-backed session that starts with the full history. The fork is writable unless explicitly read-only. |
+| `tx handover <source> <task> [new_name] [--self-catch-up] [--read-only]` | Distill a session's chat into a focused brief for a NEW worktree-backed worker session. The worker is writable unless explicitly read-only. |
 | `tx rollover [session] [--self-catch-up]` | Rotate a session onto a fresh chat in the SAME pane (context exhausted). |
 | `tx resume <id\|name> [--as NAME] [--cwd DIR]` | Re-spawn a past session and reattach its chat (`claude --resume`); collision-safe. |
 

@@ -167,7 +167,7 @@ class SpawnCommand(Command):
         parser.add_argument(
             "--read-only",
             action="store_true",
-            help="run an engine-built agent in the requested cwd with repository edits blocked",
+            help="run an engine-built agent in a tx worktree with repository edits blocked",
         )
         parser.add_argument("--env", action="append", type=_env_pair)
         args = parser.parse_args(argv)
@@ -181,8 +181,6 @@ class SpawnCommand(Command):
             )
         if args.read_only and args.cmd is not None:
             parser.error("--read-only requires an engine-built launch; it cannot enforce --cmd")
-        if args.read_only and args.worktree:
-            parser.error("--read-only and --worktree are mutually exclusive")
         command, engine = self._resolve_command(args)
         role = infer_role(command)
         if (args.worktree or args.read_only) and role != Role.LLM:
@@ -1635,7 +1633,7 @@ class ForkCommand(Command):
         parser.add_argument(
             "--read-only",
             action="store_true",
-            help="keep the new fork in the source checkout with repository edits blocked",
+            help="create the new fork in a tx worktree with repository edits blocked",
         )
         args = parser.parse_args(argv)
         new = ChatOps(self.service).fork(
@@ -1672,7 +1670,7 @@ class HandoverCommand(Command):
         parser.add_argument(
             "--read-only",
             action="store_true",
-            help="keep the new worker in the source checkout with repository edits blocked",
+            help="create the new worker in a tx worktree with repository edits blocked",
         )
         args = parser.parse_args(argv)
         worker = ChatOps(self.service).handover(

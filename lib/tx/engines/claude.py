@@ -21,7 +21,9 @@ CLAUDE_BIN = "claude"
 TRANSCRIPT_SUFFIX = ".jsonl"
 BUNDLE_TRANSCRIPT_NAME = "transcript.jsonl"
 SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
-READ_ONLY_TOOLS = ("Bash", "Edit", "Write", "NotebookEdit")
+READ_ONLY_TOOLS = ("Edit", "Write", "NotebookEdit")
+READ_ONLY_ALLOWED_TOOLS = ("Bash",)
+READ_ONLY_SETTING_SOURCES = "user"
 
 
 # ----- transcript / path internals ----------------------------------------------------------
@@ -209,7 +211,19 @@ def _strip_access_flags(command: list[str]) -> list[str]:
         if token == "--permission-mode":
             index += 2
             continue
-        if token in ("--disallowedTools", "--disallowed-tools"):
+        if (
+            token == "--setting-sources"
+            and index + 1 < len(command)
+            and command[index + 1] == READ_ONLY_SETTING_SOURCES
+        ):
+            index += 2
+            continue
+        if token in (
+            "--allowedTools",
+            "--allowed-tools",
+            "--disallowedTools",
+            "--disallowed-tools",
+        ):
             index += 1
             while index < len(command) and not command[index].startswith("-"):
                 index += 1
@@ -223,14 +237,18 @@ def _apply_access(command: list[str], read_only: bool) -> list[str]:
     command = _strip_access_flags(command)
     if not read_only:
         return _ensure_skip_permissions(command)
-    # The deny-list is variadic, so put it before the next flag; otherwise a positional initial
-    # prompt would be consumed as another tool name. Denying Bash closes the shell-write escape.
+    # Bash remains available for inspection inside tx's whole-process OS sandbox; direct editing
+    # tools stay denied. Variadic lists must be followed by another flag, not a positional prompt.
     return [
         *command,
+        "--allowedTools",
+        *READ_ONLY_ALLOWED_TOOLS,
         "--disallowedTools",
         *READ_ONLY_TOOLS,
         "--permission-mode",
-        "plan",
+        "dontAsk",
+        "--setting-sources",
+        READ_ONLY_SETTING_SOURCES,
     ]
 
 
@@ -351,6 +369,12 @@ class ClaudeEngine(EngineAdapter):
                 dirs_exist_ok=True,
             )
 
+    def finalize_read_only_command(
+        self, command: str, workspace: str, git_common_directory: str
+    ) -> str:
+        """Claude's repository boundary is applied around the whole process by tx."""
+        return command
+
     def is_read_only_command(self, command: str) -> bool:
         tokens = shlex.split(command)
         if SKIP_PERMISSIONS_FLAG in tokens:
@@ -358,13 +382,25 @@ class ClaudeEngine(EngineAdapter):
         try:
             permission_mode = tokens[tokens.index("--permission-mode") + 1]
             tools_index = tokens.index("--disallowedTools") + 1
+            allowed_index = tokens.index("--allowedTools") + 1
+            setting_sources = tokens[tokens.index("--setting-sources") + 1]
         except (ValueError, IndexError):
             return False
         denied: set[str] = set()
         while tools_index < len(tokens) and not tokens[tools_index].startswith("-"):
             denied.update(tokens[tools_index].split(","))
             tools_index += 1
-        return permission_mode == "plan" and set(READ_ONLY_TOOLS) <= denied
+        allowed: set[str] = set()
+        while allowed_index < len(tokens) and not tokens[allowed_index].startswith("-"):
+            allowed.update(tokens[allowed_index].split(","))
+            allowed_index += 1
+        return (
+            permission_mode == "dontAsk"
+            and set(READ_ONLY_TOOLS) <= denied
+            and "Bash" not in denied
+            and set(READ_ONLY_ALLOWED_TOOLS) <= allowed
+            and setting_sources == READ_ONLY_SETTING_SOURCES
+        )
 
     def iter_messages(self, transcript: Path) -> Iterator[dict]:
         # Claude's on-disk schema (Anthropic JSONL, one object per line) IS the engine-neutral form,

@@ -21,15 +21,15 @@ CODEX_MODEL = "gpt-5.5"
 CODEX_EFFORT = "high"
 REASONING_EFFORT_KEY = "model_reasoning_effort"
 
-# Bypass approvals+sandbox AND hook-trust. The hook-trust bypass is INDEPENDENTLY required: yolo alone
-# stops at the trust gate and fires NO hooks; this flag is what runs our (untrusted) hooks headlessly.
-# Kept on every op; both `resume` and `fork` accept it.
+# Writable workers bypass approvals+sandbox AND hook trust. Read-only workers deliberately avoid a
+# nested native sandbox and run inside tx's outer process sandbox; hook trust remains headless so tx
+# hooks still run. Both `resume` and `fork` accept these flags.
 BYPASS_APPROVALS_FLAG = "--dangerously-bypass-approvals-and-sandbox"
 BYPASS_HOOK_TRUST_FLAG = "--dangerously-bypass-hook-trust"
 YOLO_FLAGS = [BYPASS_APPROVALS_FLAG, BYPASS_HOOK_TRUST_FLAG]
 READ_ONLY_FLAGS = [
     "--sandbox",
-    "read-only",
+    "danger-full-access",
     "--ask-for-approval",
     "never",
     BYPASS_HOOK_TRUST_FLAG,
@@ -277,6 +277,12 @@ class CodexEngine(EngineAdapter):
     ) -> None:
         """Codex rollouts are global by id rather than keyed to cwd; no relocation is needed."""
 
+    def finalize_read_only_command(
+        self, command: str, workspace: str, git_common_directory: str
+    ) -> str:
+        """tx binds the externally sandboxed Codex process after placement."""
+        return command
+
     def is_read_only_command(self, command: str) -> bool:
         tokens = shlex.split(command)
         if BYPASS_APPROVALS_FLAG in tokens:
@@ -286,7 +292,11 @@ class CodexEngine(EngineAdapter):
             approval = tokens[tokens.index("--ask-for-approval") + 1]
         except (ValueError, IndexError):
             return False
-        return sandbox == "read-only" and approval == "never"
+        return (
+            sandbox == "danger-full-access"
+            and approval == "never"
+            and BYPASS_APPROVALS_FLAG not in tokens
+        )
 
     def iter_messages(self, transcript: Path) -> Iterator[dict]:
         """Yield each turn as an engine-neutral message dict, normalizing the OpenAI Responses-item

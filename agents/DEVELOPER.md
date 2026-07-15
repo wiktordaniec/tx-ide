@@ -45,8 +45,10 @@ for orchestrator coordination.)*
 5. Push and open a draft PR when done (`gh pr create --draft`).
 6. **After the PR is open, spawn a `-diff` nvim companion** so the user can review the diff without context-switching — see **§ nvim companions for review**.
 
-Worktree convention: `.tx-ide/worktrees/<session-name>` inside the repo. A tx-managed worker
-worktree includes the repository for footer visibility: `.tx-ide/worktrees/<repo>--<session-name>`.
+Worktree convention: tx-managed agent checkouts live under
+`$TX_IDE_HOME/worktrees/<repository-key>/<session-name>`. The key is the readable repository name
+plus a short hash of its canonical Git directory; the worktree basename is the session name shown
+in agent footers.
 
 ## Self-verify
 

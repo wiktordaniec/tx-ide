@@ -74,32 +74,37 @@ tx spawn <name> --tag <scope> --cwd <cwd> \
 - Model + effort: `--model "opus[1m]"` and `--effort max` are the defaults; don't downgrade unless asked.
 - Keep `<priming>` short and single-line — long, quoted, special-char-laden prompts crash tmux input.
 
-Every writable agent worker—including coding workers, forks, and handovers—gets a worktree before
-the process starts, so every engine records the correct workspace from its first frame:
+Every agent worker—including read-only investigations, coding workers, forks, and handovers—gets a
+tx-owned worktree before the process starts, so every engine records the correct workspace from its
+first frame:
 
 ```bash
 tx spawn <name> --tag <scope> --cwd <repository> \
   --engine <engine> --prompt "<priming>"
 ```
 
-tx creates a detached `.tx-ide/worktrees/<repository-name>--<name>` checkout, launches the selected
-Claude or Codex engine from it, and injects `TX_REQUIRE_WORKTREE=1`. The combined directory name lets
-engine status lines identify both the repository and worktree. The detached worker creates its
-correctly typed task branch after startup. `--worktree` remains accepted for compatibility but is
-redundant.
+tx creates a detached `$TX_IDE_HOME/worktrees/<repository-key>/<name>` checkout and launches the
+selected Claude or Codex engine from it. The readable repository key includes a short hash so
+same-named repositories cannot collide. Writable workers receive `TX_REQUIRE_WORKTREE=1`; the
+detached worker creates its correctly typed task branch after startup. `--worktree` remains accepted
+for compatibility but is redundant.
 
-The only placement exception is an explicitly read-only worker:
+For an explicitly read-only worker:
 
 ```bash
 tx spawn <name> --tag <scope> --cwd <repository> \
   --engine <engine> --read-only --prompt "<priming>"
 ```
 
-`--read-only` stays in the requested checkout, persists `TX_READ_ONLY=1`, and asks the engine adapter
-to block repository edits. It cannot be combined with a hand-written `--cmd`. To turn an
-investigation into implementation, fork it: `tx fork <investigation> <implementation>`. The new
-session is writable by default and gets its own worktree; pass `--read-only` to `tx fork` only when
-the fork must remain read-only. Resume and rollover preserve the source session's access mode.
+`--read-only` creates a separate worktree, persists `TX_READ_ONLY=1`, and wraps the entire agent
+process tree in tx's fail-closed OS sandbox. The boundary covers direct tools, Bash commands, hooks,
+MCP subprocesses, every registered checkout for that repository, the tx-owned worktrees, and shared
+Git metadata. Claude keeps Bash/Read/Grep/Glob available while denying direct editing tools; Codex runs
+without approval escalation inside the same outer boundary. It cannot be combined with a
+hand-written `--cmd`. To turn an investigation into implementation, fork it:
+`tx fork <investigation> <implementation>`. The new session is writable by default and gets its own
+worktree; pass `--read-only` to `tx fork` only when the fork must remain read-only. Resume and
+rollover preserve the source session's access mode.
 
 ### Worker priming
 

@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from .engines import claude, codex  # noqa: F401
 from .engines import registry
 from .events import EventLog
+from .read_only import READ_ONLY_WRAPPER_BINARIES
 from .session import Session, State
 from .storage import config_path
 from .store import SessionStore
@@ -110,7 +111,7 @@ class Reconciler:
         """Whether the live `pane_current_command` is an agent still up (C5): ANY registered engine's
         bare binary (`claude` / `codex` / …) OR a dotted version string an engine's TUI shows while
         loading (the load window before the binary name settles)."""
-        return any(
+        return command in READ_ONLY_WRAPPER_BINARIES or any(
             registry.get(engine).matches_binary(command) for engine in registry.registered()
         ) or bool(_VERSION_COMMAND.match(command))
 

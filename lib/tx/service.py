@@ -23,6 +23,7 @@ from pathlib import Path
 from .events import EventLog
 from .engines import registry
 from .messages import build_envelope
+from .read_only import ReadOnlySandboxError, wrap_read_only_command
 from .reconcile import Reconciler
 from .session import (
     READ_ONLY_ENV,
@@ -91,31 +92,23 @@ class SessionService:
     ) -> Session:
         """Apply the agent placement invariant, then launch.
 
-        Writable workers get a detached, visibly named worktree before tmux starts. Read-only
-        workers stay in the requested cwd. Resume/rollover callers may explicitly reuse a linked
-        worktree that already belongs to the continuing session.
+        Every worker gets a detached tx-owned worktree before tmux starts. Read-only workers bind
+        tx's whole-process sandbox after the checkout's final path is known. Resume callers may
+        explicitly reuse a linked worktree that already belongs to the continuing session.
         """
         if spec.role != Role.LLM:
             raise ServiceError("a worker spawn requires an agent command")
 
         environment = dict(spec.env)
         if spec.read_only:
-            engine = spec.engine or Engine.CLAUDE
-            if not registry.get(engine).is_read_only_command(spec.cmd):
-                raise ServiceError(
-                    f"{engine.value} command does not enforce the requested read-only mode"
-                )
             environment[READ_ONLY_ENV] = "1"
             environment.pop(REQUIRE_WORKTREE_ENV, None)
-            prepared = replace(spec, env=environment)
-            if before_spawn is not None:
-                before_spawn(prepared)
-            return self._spawn(prepared)
+        else:
+            environment.pop(READ_ONLY_ENV, None)
+            environment[REQUIRE_WORKTREE_ENV] = "1"
 
-        environment.pop(READ_ONLY_ENV, None)
-        environment[REQUIRE_WORKTREE_ENV] = "1"
         if reuse_existing_worktree and self.worktrees.is_linked(spec.cwd):
-            prepared = replace(spec, env=environment)
+            prepared = self._prepare_worker_access(spec, Path(spec.cwd), environment)
             if before_spawn is not None:
                 before_spawn(prepared)
             return self._spawn(prepared)
@@ -130,10 +123,10 @@ class SessionService:
             )
         except WorktreeError as error:
             raise ServiceError(f"could not create worktree: {error}") from error
-        prepared = replace(
-            spec, name=name, cwd=str(worktree_directory), env=environment
-        )
         try:
+            prepared = self._prepare_worker_access(
+                replace(spec, name=name), worktree_directory, environment
+            )
             if before_spawn is not None:
                 before_spawn(prepared)
             return self._spawn(prepared)
@@ -143,6 +136,54 @@ class SessionService:
             except WorktreeError:
                 pass
             raise
+
+    def _prepare_worker_access(
+        self, spec: SpawnSpec, worktree_directory: Path, environment: dict[str, str]
+    ) -> SpawnSpec:
+        command = spec.cmd
+        if spec.read_only:
+            engine = spec.engine or Engine.CLAUDE
+            adapter = registry.get(engine)
+            try:
+                git_common_directory = self.worktrees.git_common_directory(
+                    str(worktree_directory)
+                )
+            except WorktreeError as error:
+                raise ServiceError(f"could not resolve Git metadata: {error}") from error
+            command = adapter.finalize_read_only_command(
+                command, str(worktree_directory), str(git_common_directory)
+            )
+            if not adapter.is_read_only_command(command):
+                raise ServiceError(
+                    f"{engine.value} command does not enforce the requested read-only mode"
+                )
+        return replace(
+            spec,
+            cwd=str(worktree_directory),
+            cmd=command,
+            env=environment,
+            launch_cmd=self.worker_launch_command(
+                command, str(worktree_directory), spec.read_only
+            ),
+        )
+
+    def worker_launch_command(
+        self, command: str, worktree_directory: str, read_only: bool
+    ) -> str:
+        """Execution command for a worker; records keep the unwrapped engine command."""
+        if not read_only:
+            return command
+        try:
+            repository_worktrees = self.worktrees.repository_worktrees(worktree_directory)
+            git_common_directory = self.worktrees.git_common_directory(worktree_directory)
+            return wrap_read_only_command(
+                command,
+                worktree_directory,
+                [str(path) for path in repository_worktrees],
+                str(git_common_directory),
+            )
+        except (WorktreeError, ReadOnlySandboxError) as error:
+            raise ServiceError(f"could not enforce read-only process sandbox: {error}") from error
 
     def spawn_in_worktree(self, spec: SpawnSpec) -> Session:
         """Backward-compatible explicit form; writable workers already use this path by default."""
@@ -222,7 +263,10 @@ class SessionService:
 
         parent = self.tmux.current_session_name()
         pid = self.tmux.new_session(
-            name=tmux_name, cwd=spec.cwd, command=spec.cmd, env=launch_env
+            name=tmux_name,
+            cwd=spec.cwd,
+            command=spec.launch_cmd or spec.cmd,
+            env=launch_env,
         )
         self.tmux.set_tx_id(tmux_name, session_id)
         # C2 (revised, measured on tmux 3.6a): NO per-session `session-closed` hook is registered

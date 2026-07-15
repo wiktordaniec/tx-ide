@@ -45,8 +45,8 @@ def infer_role(command: str) -> Role:
 @dataclass
 class SpawnSpec:
     """Everything needed to bring one session into being. Built via the classmethods below; the
-    `cmd` is always the final, resolved command string that tmux will run (and that `infer_role`
-    classifies), never a shell-expansion placeholder."""
+    `cmd` is always the final, resolved engine command that is persisted (and that `infer_role`
+    classifies), never a shell-expansion placeholder. `launch_cmd`, when set, is what tmux runs."""
 
     name: str
     kind: Kind
@@ -55,8 +55,8 @@ class SpawnSpec:
     cmd: str
     tags: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
-    # New agent workers are writable by default and therefore placed in a linked worktree by
-    # SessionService.spawn_worker. The explicit read-only mode stays in the requested cwd.
+    # Every agent worker is placed in a linked tx-owned worktree by SessionService.spawn_worker.
+    # Explicit read-only mode binds tx's whole-process filesystem sandbox to repository paths.
     read_only: bool = False
     # The agent engine this session runs (v3, design §1) — set from `tx spawn --engine` and stamped
     # onto `Session.engine` by `service._spawn`. `None` means "unspecified": `_spawn` defaults an llm
@@ -69,6 +69,9 @@ class SpawnSpec:
     # post-pre-mint a handover worker's command is an ordinary `claude …`, indistinguishable from an
     # original, so the caller signals ownership explicitly.
     records_own_chat: bool = False
+    # Internal execution-only wrapper. Session.cmd persists the engine command for chat-op
+    # derivation; `_spawn` gives tmux this outer sandbox command when present.
+    launch_cmd: str | None = None
 
     @classmethod
     def for_process(

@@ -25,6 +25,7 @@ homes, so no live ~/.claude / ~/.codex / $TX_IDE_HOME is touched.
 from __future__ import annotations
 
 import inspect
+import shlex
 import sys
 from pathlib import Path
 
@@ -67,6 +68,7 @@ REQUIRED_METHODS = {
     "seed_command": 2,
     "distiller_command": 1,
     "prepare_chat_for_cwd": 3,
+    "finalize_read_only_command": 3,
     "is_read_only_command": 1,
     "resolve_transcript": 2,
     "iter_messages": 1,
@@ -119,13 +121,20 @@ claude_read_only = claude.build_launch_command(
 )
 check("claude read-only: removes the permission bypass",
       "--dangerously-skip-permissions" not in claude_read_only)
-check("claude read-only: plan mode + write-capable tools are denied",
-      "--permission-mode" in claude_read_only and "plan" in claude_read_only
-      and all(tool in claude_read_only for tool in ("Bash", "Edit", "Write", "NotebookEdit")))
-check("claude read-only: adapter recognizes its rendered command",
-      claude.is_read_only_command(" ".join(claude_read_only)))
+check("claude read-only: Bash stays available while direct editing tools are denied",
+      "--permission-mode" in claude_read_only and "dontAsk" in claude_read_only
+      and all(tool in claude_read_only for tool in ("Edit", "Write", "NotebookEdit"))
+      and "--allowedTools" in claude_read_only and "Bash" in claude_read_only)
+check("claude read-only: adapter recognizes its permission controls",
+      claude.is_read_only_command(shlex.join(claude_read_only)))
 check("claude read-only: prompt remains the positional tail",
       claude_read_only[-1] == "inspect only")
+
+claude_finalized = claude.finalize_read_only_command(
+    shlex.join(claude_read_only), "/workspace", "/repository/.git"
+)
+check("claude read-only: finalization leaves path enforcement to tx's outer sandbox",
+      claude_finalized == shlex.join(claude_read_only))
 
 resume = claude.resume_command("CID-1")
 check("resume_command: binary first", resume[0] == "claude")
@@ -139,11 +148,13 @@ check("fork_command: binary first", fork[0] == "claude")
 check("fork_command: resumes + forks the source",
       "--resume" in fork and "--fork-session" in fork and "CID-2" in fork)
 check("fork_command: inherits the source persona (--model opus)", "--model" in fork and "opus" in fork)
-promoted_fork = claude.fork_command(" ".join(claude_read_only), "CID-3")
+promoted_fork = claude.fork_command(claude_finalized, "CID-3")
 check("claude writable fork strips inherited read-only controls",
       "--dangerously-skip-permissions" in promoted_fork
       and "--permission-mode" not in promoted_fork
-      and "--disallowedTools" not in promoted_fork)
+      and "--disallowedTools" not in promoted_fork
+      and "--allowedTools" not in promoted_fork
+      and "--setting-sources" not in promoted_fork)
 
 seed = claude.seed_command("claude --model opus", "read the brief")
 check("seed_command: binary first", seed[0] == "claude")
@@ -198,13 +209,14 @@ check("codex build_launch_command: bare call has no positional prompt (ends on t
 codex_read_only = codex.build_launch_command(
     initial_prompt="inspect only", read_only=True
 )
-check("codex read-only: uses the read-only sandbox without the full bypass",
-      "--sandbox" in codex_read_only and "read-only" in codex_read_only
-      and "--dangerously-bypass-approvals-and-sandbox" not in codex_read_only)
+check("codex read-only: declares external-sandbox execution without the full bypass flag",
+      "--sandbox" in codex_read_only and "danger-full-access" in codex_read_only
+      and "--dangerously-bypass-approvals-and-sandbox" not in codex_read_only
+      and "--dangerously-bypass-hook-trust" in codex_read_only)
 check("codex read-only: never asks to escalate a blocked write",
       "--ask-for-approval" in codex_read_only and "never" in codex_read_only)
 check("codex read-only: adapter recognizes its rendered command",
-      codex.is_read_only_command(" ".join(codex_read_only)))
+      codex.is_read_only_command(shlex.join(codex_read_only)))
 check("codex read-only: prompt remains the positional tail",
       codex_read_only[-1] == "inspect only")
 
@@ -222,7 +234,7 @@ check("codex fork_command: keeps the hook-trust bypass",
       "--dangerously-bypass-hook-trust" in codex_fork)
 check("codex fork_command: inherits the source persona (-m gpt-5.5)",
       "-m" in codex_fork and "gpt-5.5" in codex_fork)
-codex_promoted_fork = codex.fork_command(" ".join(codex_read_only), "CID-3")
+codex_promoted_fork = codex.fork_command(shlex.join(codex_read_only), "CID-3")
 check("codex writable fork strips inherited read-only controls",
       "--dangerously-bypass-approvals-and-sandbox" in codex_promoted_fork
       and "--sandbox" not in codex_promoted_fork

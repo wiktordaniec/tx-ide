@@ -178,11 +178,7 @@ class ChatOps:
 
         cwd = source_chat.cwd
         base_name = new_name or f"{source_session.name}-fork"
-        name = (
-            self._unique_name(base_name)
-            if read_only
-            else self.service.next_worker_name(cwd, base_name)
-        )
+        name = self.service.next_worker_name(cwd, base_name)
 
         adapter = registry.get(source_session.engine)
 
@@ -258,11 +254,7 @@ class ChatOps:
         history.ingest_session(self.service.store, source_session.id, wait=True)
 
         base_name = new_name or f"{source_session.name}-handover"
-        worker_name = (
-            self._unique_name(base_name)
-            if read_only
-            else self.service.next_worker_name(source_chat.cwd, base_name)
-        )
+        worker_name = self.service.next_worker_name(source_chat.cwd, base_name)
         brief_path = history_dir() / source_session.id / f"handover-{_slug(task)}.md"
 
         spec = ChatOpSpec(
@@ -454,6 +446,9 @@ class ChatOps:
             registry.get(record.engine).seed_command(
                 record.cmd, seed, read_only=record.read_only
             )
+        )
+        command = self.service.worker_launch_command(
+            command, record.cwd, record.read_only
         )
         self.service.tmux.respawn_pane(spec.pane, command)
         self._record_seeded_chat(

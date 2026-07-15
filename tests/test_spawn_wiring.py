@@ -67,6 +67,7 @@ from tx.session import (  # noqa: E402
 from tx.spawn import SpawnSpec, infer_role  # noqa: E402
 from tx.storage import ensure_home  # noqa: E402
 from tx.store import SessionStore  # noqa: E402
+from tx.worktree import WorktreeManager  # noqa: E402
 
 ensure_home()
 
@@ -159,12 +160,18 @@ class FakeWorktrees:
 
     def create_unique(self, starting_directory, base_name, unavailable_names=()):
         name = self.next_name(starting_directory, base_name, unavailable_names)
-        path = Path(starting_directory) / ".tx-ide" / "worktrees" / f"repo--{name}"
+        path = Path(os.environ["TX_IDE_HOME"]) / "worktrees" / "repo-fixture" / name
         self.created.append(path)
         return name, path
 
     def is_linked(self, directory):
         return Path(directory) in self.created
+
+    def git_common_directory(self, directory):
+        return Path("/repo/.git")
+
+    def repository_worktrees(self, directory):
+        return (Path("/repo"), Path("/repo-review"))
 
     def remove(self, directory):
         pass
@@ -178,8 +185,7 @@ def spawn_service():
 
 
 def run_spawn(name, argv, *, real_worktrees=False):
-    """Drive the real `tx spawn` command object through a hermetic service; return (saved Session,
-    the captured launch command)."""
+    """Drive the real `tx spawn` command object; return its record + inner engine command."""
     tmux = CliTmux()
     service = SessionService(
         store=SessionStore(), tmux=tmux, reconciler=NoReconcile(),
@@ -188,7 +194,9 @@ def run_spawn(name, argv, *, real_worktrees=False):
     with contextlib.redirect_stdout(io.StringIO()):  # swallow the "Spawned …" line — keep gate output clean
         rc = SpawnCommand(service).run([name, *argv])
     check(f"`tx spawn {name} …` returns 0", rc == 0)
-    return max(service.store.all(), key=lambda session: session.created_at or 0), tmux.command
+    session = max(service.store.all(), key=lambda record: record.created_at or 0)
+    run_spawn.last_launch = tmux.command
+    return session, session.cmd
 
 
 # ----- 1. infer_role: any registered engine binary → LLM; codex joins claude --------------------
@@ -210,6 +218,10 @@ check("_is_agent_command: bare `codex` pane is an agent", predicate("codex") is 
 check("_is_agent_command: bare `claude` pane is an agent (unchanged)", predicate("claude") is True)
 check("_is_agent_command: a Claude load version string is an agent (preserved)", predicate("2.1.138") is True)
 check("_is_agent_command: a Codex-shaped version string is an agent (preserved)", predicate("0.137.0") is True)
+check("_is_agent_command: tx's macOS read-only wrapper is an agent load state",
+      predicate("sandbox-exec") is True)
+check("_is_agent_command: tx's Linux read-only wrapper is an agent load state",
+      predicate("bwrap") is True)
 check("_is_agent_command: a plain shell is NOT an agent", predicate("zsh") is False)
 check("_is_agent_command: an unrelated process is NOT an agent", predicate("node") is False)
 
@@ -278,9 +290,9 @@ check("tx spawn --engine codex with no --prompt builds the default codex command
       command == CODEX_PREFIX)
 check("tx spawn --engine codex (no prompt) still stamps CODEX", session.engine == Engine.CODEX)
 
-# --worktree creates the checkout BEFORE spawning, names it <repository>--<session>, records that
-# path as cwd, and injects the guard automatically. The worktree is detached so tx never invents a
-# task branch; the worker creates its correctly typed branch after launch.
+# Agent spawn creates the checkout under the global tx home BEFORE spawning, records that path as
+# cwd, and injects the guard automatically. The worktree is detached so tx never invents a task
+# branch; the worker creates its correctly typed branch after launch.
 with tempfile.TemporaryDirectory() as repository_parent:
     repository = Path(repository_parent) / "sample-repository"
     repository.mkdir()
@@ -293,16 +305,23 @@ with tempfile.TemporaryDirectory() as repository_parent:
     subprocess.run(["git", "-C", str(repository), "add", "README.md"], check=True)
     subprocess.run(["git", "-C", str(repository), "commit", "-m", "fixture"], check=True,
                    stdout=subprocess.DEVNULL)
+    external_worktree = Path(repository_parent) / "external-review"
+    subprocess.run(
+        ["git", "-C", str(repository), "worktree", "add", "--detach", str(external_worktree)],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
 
     session, command = run_spawn(
         "worktree-worker",
         ["--tag", "s", "--cwd", str(repository), "--engine", "codex"],
         real_worktrees=True,
     )
-    expected_worktree = (
-        repository / ".tx-ide" / "worktrees" / "sample-repository--worktree-worker"
-    ).resolve()
-    check("tx spawn --worktree creates <repository>--<session>", expected_worktree.is_dir())
+    manager = WorktreeManager()
+    repository_worktrees = manager.root / manager.repository_key(str(repository))
+    expected_worktree = repository_worktrees / "worktree-worker"
+    check("tx spawn creates $TX_IDE_HOME/worktrees/<repo-key>/<session>",
+          expected_worktree.is_dir())
     check("tx spawn --worktree records the created worktree as cwd",
           session.cwd == str(expected_worktree))
     check("tx spawn --worktree injects TX_REQUIRE_WORKTREE=1",
@@ -322,9 +341,7 @@ with tempfile.TemporaryDirectory() as repository_parent:
         ["--tag", "s", "--cwd", str(repository), "--engine", "claude"],
         real_worktrees=True,
     )
-    expected_claude_worktree = (
-        repository / ".tx-ide" / "worktrees" / "sample-repository--claude-worktree-worker"
-    ).resolve()
+    expected_claude_worktree = repository_worktrees / "claude-worktree-worker"
     check("tx spawn --worktree creates a worktree for Claude", expected_claude_worktree.is_dir())
     check("tx spawn --worktree records Claude's worktree as cwd",
           claude_session.cwd == str(expected_claude_worktree))
@@ -338,9 +355,7 @@ with tempfile.TemporaryDirectory() as repository_parent:
         ["--tag", "s", "--cwd", str(repository), "--engine", "codex"],
         real_worktrees=True,
     )
-    expected_collision_worktree = (
-        repository / ".tx-ide" / "worktrees" / "sample-repository--worktree-worker-2"
-    ).resolve()
+    expected_collision_worktree = repository_worktrees / "worktree-worker-2"
     check("writable spawn suffixes a stale worktree-path collision",
           collision_session.name == "worktree-worker-2"
           and collision_session.cwd == str(expected_collision_worktree))
@@ -351,16 +366,29 @@ with tempfile.TemporaryDirectory() as repository_parent:
          "--read-only", "--prompt", "inspect only"],
         real_worktrees=True,
     )
-    check("read-only Claude stays in the requested checkout",
-          read_only_claude.cwd == str(repository))
+    expected_read_only_claude = repository_worktrees / "readonly-claude"
+    check("read-only Claude gets an isolated tx-owned worktree",
+          read_only_claude.cwd == str(expected_read_only_claude))
     check("read-only Claude persists TX_READ_ONLY instead of the worktree guard",
           read_only_claude.read_only
           and read_only_claude.env[READ_ONLY_ENV] == "1"
           and REQUIRE_WORKTREE_ENV not in read_only_claude.env)
-    check("read-only Claude removes yolo and blocks shell/edit tools",
-          "--dangerously-skip-permissions" not in read_only_claude_command
-          and "--permission-mode plan" in read_only_claude_command
-          and "--disallowedTools Bash Edit Write NotebookEdit" in read_only_claude_command)
+    claude_tokens = shlex.split(read_only_claude_command)
+    check("read-only Claude keeps Bash but denies direct editing tools",
+          "--dangerously-skip-permissions" not in claude_tokens
+          and "--permission-mode" in claude_tokens
+          and claude_tokens[claude_tokens.index("--permission-mode") + 1] == "dontAsk"
+          and claude_tokens[claude_tokens.index("--setting-sources") + 1] == "user"
+          and all(tool in claude_tokens for tool in ("Edit", "Write", "NotebookEdit"))
+          and claude_tokens[claude_tokens.index("--allowedTools") + 1] == "Bash")
+    claude_launch_tokens = shlex.split(run_spawn.last_launch)
+    claude_profile = claude_launch_tokens[claude_launch_tokens.index("-p") + 1]
+    check("read-only Claude wraps the whole process tree in tx's OS sandbox",
+          run_spawn.last_launch.startswith("/usr/bin/sandbox-exec ")
+          and claude_launch_tokens[-len(claude_tokens):] == claude_tokens
+          and str(expected_read_only_claude.parent.resolve()) in claude_profile
+          and str(repository.resolve()) in claude_profile
+          and str(external_worktree.resolve()) in claude_profile)
 
     read_only_codex, read_only_codex_command = run_spawn(
         "readonly-codex",
@@ -368,11 +396,18 @@ with tempfile.TemporaryDirectory() as repository_parent:
          "--read-only", "--prompt", "inspect only"],
         real_worktrees=True,
     )
-    check("read-only Codex stays in the requested checkout",
-          read_only_codex.cwd == str(repository) and read_only_codex.read_only)
-    check("read-only Codex uses its sandbox and removes the full bypass",
-          "--sandbox read-only --ask-for-approval never" in read_only_codex_command
-          and "--dangerously-bypass-approvals-and-sandbox" not in read_only_codex_command)
+    expected_read_only_codex = repository_worktrees / "readonly-codex"
+    check("read-only Codex gets an isolated tx-owned worktree",
+          read_only_codex.cwd == str(expected_read_only_codex) and read_only_codex.read_only)
+    check("read-only Codex declares tx's external sandbox and removes the full bypass flag",
+          "--sandbox danger-full-access --ask-for-approval never" in read_only_codex_command
+          and "--dangerously-bypass-approvals-and-sandbox" not in read_only_codex_command
+          and "--dangerously-bypass-hook-trust" in read_only_codex_command)
+    codex_tokens = shlex.split(read_only_codex_command)
+    codex_launch_tokens = shlex.split(run_spawn.last_launch)
+    check("read-only Codex wraps hooks and extensions in tx's OS sandbox",
+          run_spawn.last_launch.startswith("/usr/bin/sandbox-exec ")
+          and codex_launch_tokens[-len(codex_tokens):] == codex_tokens)
 
 session, _ = run_spawn(
     "explicit-worktree", ["--tag", "s", "--cwd", "/p", "--engine", "claude", "--worktree"]
@@ -393,8 +428,6 @@ except SystemExit as exit_error:
 for invalid_argv, label in (
     (["bad-readonly-cmd", "--tag", "s", "--engine", "claude", "--read-only",
       "--cmd", "claude"], "read-only rejects a hand-written agent command"),
-    (["bad-readonly-worktree", "--tag", "s", "--engine", "claude", "--read-only",
-      "--worktree"], "read-only rejects the contradictory explicit worktree flag"),
 ):
     try:
         with contextlib.redirect_stderr(io.StringIO()):
@@ -402,6 +435,12 @@ for invalid_argv, label in (
         check(label, False)
     except SystemExit as exit_error:
         check(label, exit_error.code != 0)
+
+session, _ = run_spawn(
+    "readonly-explicit-worktree",
+    ["--tag", "s", "--cwd", "/p", "--engine", "claude", "--read-only", "--worktree"],
+)
+check("legacy --worktree is also redundant for read-only agents", session.read_only)
 
 try:
     spawn_service().spawn_worker(SpawnSpec.for_process(
@@ -518,10 +557,10 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
         ["past-readonly", "--as", "readonly-resumed", "--cwd", resume_cwd]
     )
 readonly_resumed = readonly_svc.store.find_by_name("readonly-resumed")
-check("resume preserves read-only placement in the source checkout",
-      readonly_resumed.cwd == resume_cwd and readonly_resumed.read_only)
+check("resume preserves read-only mode in a replacement worktree",
+      readonly_resumed.cwd != resume_cwd and readonly_resumed.read_only)
 check("resume preserves Claude's enforced read-only command",
-      "--permission-mode plan" in readonly_resumed.cmd
+      "--permission-mode dontAsk" in readonly_resumed.cmd
       and "--dangerously-skip-permissions" not in readonly_resumed.cmd)
 
 print(f"OK — {PASSED} checks passed")
