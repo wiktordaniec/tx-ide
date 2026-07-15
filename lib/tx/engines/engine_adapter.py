@@ -8,6 +8,16 @@ from typing import Protocol, runtime_checkable
 from ..session import State
 
 
+DEFAULT_EFFORT = 3
+EFFORT_LEVELS = {
+    1: "low",
+    2: "medium",
+    3: "high",
+    4: "xhigh",
+    5: "max",
+}
+
+
 class StateSource(str, Enum):
     # Where an engine's turn-done → WAITING transition comes from. Claude/Codex emit a Stop hook
     # event; an engine without one (e.g. Gemini) is polled via its statusline agent_state.
@@ -39,7 +49,7 @@ class EngineAdapter(Protocol):
         self,
         *,
         model: str | None = None,
-        effort: str | None = None,
+        effort: int | None = None,
         initial_prompt: str | None = None,
         read_only: bool = False,
     ) -> list[str]:

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..session import Engine, State
 from . import codex_rollout
-from .engine_adapter import EngineAdapter, StateSource
+from .engine_adapter import DEFAULT_EFFORT, EFFORT_LEVELS, EngineAdapter, StateSource
 from .registry import registry
 
 # Codex's own home (where it writes rollouts), honoring $CODEX_HOME like the CLI does. NOT $TX_IDE_HOME.
@@ -18,7 +18,7 @@ CODEX_BIN = "codex"
 
 # Codex defaults. Effort is rendered as a `-c` config override, not a flag: `-c model_reasoning_effort=`.
 CODEX_MODEL = "gpt-5.6-sol"
-CODEX_EFFORT = "high"
+CODEX_EFFORT = DEFAULT_EFFORT
 REASONING_EFFORT_KEY = "model_reasoning_effort"
 
 # Writable workers bypass approvals+sandbox AND hook trust. Read-only workers deliberately avoid a
@@ -217,16 +217,17 @@ class CodexEngine(EngineAdapter):
         self,
         *,
         model: str | None = None,
-        effort: str | None = None,
+        effort: int | None = None,
         initial_prompt: str | None = None,
         read_only: bool = False,
     ) -> list[str]:
         """Argv for a fresh session. A positional prompt auto-submits in the interactive TUI, so the
         seed needs no send-keys."""
+        selected_effort = effort if effort is not None else CODEX_EFFORT
         command = [
             CODEX_BIN,
             "-m", model or CODEX_MODEL,
-            "-c", f"{REASONING_EFFORT_KEY}={effort or CODEX_EFFORT}",
+            "-c", f"{REASONING_EFFORT_KEY}={EFFORT_LEVELS[selected_effort]}",
         ]
         command = _apply_access(command, read_only)
         if initial_prompt:

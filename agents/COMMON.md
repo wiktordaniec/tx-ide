@@ -33,7 +33,7 @@ Use `tx spawn` (bare) and `tx spawn-nvim` (nvim companion). Both require `--tag`
 
 ```bash
 tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
-tx spawn <name> --tag TAGS --cwd DIR --engine ENGINE [--read-only] [--prompt TEXT]
+tx spawn <name> --tag TAGS --cwd DIR --engine ENGINE [--model MODEL] [--effort {1,2,3,4,5}] [--read-only] [--prompt TEXT]
 tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--open FILE] [--env K=V ...]
 ```
 
@@ -65,13 +65,15 @@ When you need to delegate work — coding, scoping, planning, or research/explor
 
 ```bash
 tx spawn <name> --tag <scope> --cwd <cwd> \
-  --engine claude --model "opus[1m]" --effort max --prompt "<priming>"
+  --engine claude --model "opus[1m]" --effort 5 --prompt "<priming>"
 ```
 
 - `<name>` — short, descriptive (`orchestrator-cleanup`, `auth-review`).
 - `<scope>` — the single work-scope tag (`wrangler-p1`, `PR-1840`, `cleanup`); no role. An nvim companion takes the **same** scope.
 - `<cwd>` — the project root the worker operates in.
-- Model + effort: `--model "opus[1m]"` and `--effort max` are the defaults; don't downgrade unless asked.
+- Recommended workers use `--model "opus[1m]"` and `--effort 5`; don't downgrade unless asked.
+- Effort is engine-neutral: `1=low`, `2=medium`, `3=high`, `4=xhigh`, `5=max`. An engine-built
+  launch without `--effort` defaults to `3`.
 - Keep `<priming>` short and single-line — long, quoted, special-char-laden prompts crash tmux input.
 
 Every agent worker—including read-only investigations, coding workers, forks, and handovers—gets a

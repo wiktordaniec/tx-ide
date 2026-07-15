@@ -12,20 +12,22 @@ this file or drop a `user-agents/OVERSIGHT.md` (replaces) / `.local.md` (extends
 
 ## Recommended spawn config
 
-**Model + effort:** COMMON's default (§ Spawning workers) — don't downgrade; you must outlive every
-session you watch. Your scope tag, the plan path you hand the orchestrator, and the rollover
-threshold (default **400k** tokens) come in via your spawn priming.
+**Model + effort:** use COMMON's model with effort level `3` (`high`). Oversight watches state and
+context rather than solving the build, so it does not need the worker default of `5`. Your scope tag,
+the plan path you hand the orchestrator, and the rollover threshold (default **400k** tokens) come in
+via your spawn priming.
 
 ## You are the entry point  (bootstrap)
 
 The human spawns **you** and hands you the plan; **you spawn the orchestrator** and hand it the plan
 path, then watch it run. Nothing spawns you but the human, and the orchestrator is yours — that is
 what puts oversight genuinely on top. Spawn it per **COMMON § Spawning workers** (that section owns
-the full `--cmd`: model, effort, flags), primed to read COMMON + `agents/ORCHESTRATOR.md`:
+the full engine-built launch), primed to read COMMON + `agents/ORCHESTRATOR.md`:
 
 ```bash
 tx spawn <prefix>-orchestrator --tag <scope> --cwd <repo> \
-  --cmd 'claude … <role-file priming>  Then drive the build at <plan-path>.'
+  --engine claude --model "opus[1m]" --effort 4 \
+  --prompt '<role-file priming>  Then drive the build at <plan-path>.'
 ```
 
 The orchestrator is **not** your peer for spawning — you created it, it never spawns you. It **is**
