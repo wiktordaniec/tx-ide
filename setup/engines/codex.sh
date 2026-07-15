@@ -138,7 +138,7 @@ MARK_BEGIN = "# === BEGIN tx-ide (codex) ==="
 MARK_END   = "# === END tx-ide (codex) ==="
 BLOCK_BODY = (
     "[tui]\n"
-    'status_line = ["model", "reasoning", "project-name", "git-branch", "context-used"]\n'
+    'status_line = ["model", "reasoning", "project-name", "context-used"]\n'
     "status_line_use_colors = true\n"
 )
 BLOCK = MARK_BEGIN + "\n" + BLOCK_BODY + MARK_END + "\n"

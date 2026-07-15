@@ -51,6 +51,7 @@ from .storage import (
     sessions_dir,
     tx_ide_home,
     user_agents_dir,
+    worktrees_dir,
 )
 from .store import SessionStore
 from .tmux import Tmux, TmuxError
@@ -93,4 +94,5 @@ __all__ = [
     "sessions_dir",
     "tx_ide_home",
     "user_agents_dir",
+    "worktrees_dir",
 ]

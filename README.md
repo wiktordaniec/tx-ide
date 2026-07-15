@@ -104,7 +104,7 @@ session, retag, message a peer. It follows `agents/TX-ASSISTANT.md`.
 
 | Command | What it does |
 |---|---|
-| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd CMD] [--env K=V …]` | Spawn a detached tmux session. `--tag` is mandatory; `--cwd` defaults to the firing pane's path; `--cmd` to your shell. An llm command (`claude …`) automatically gets a chat id minted and `--session-id`-injected, so its transcript is tracked and resumable — no flag needed. |
+| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd CMD] [--engine ENGINE] [--prompt TEXT] [--read-only] [--env K=V …]` | Spawn a detached tmux session. Claude/Codex agents launch from a detached `$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<name>` checkout. Both footers show `<repository>--<name>` without a branch. `--read-only` keeps shell inspection available while blocking repository edits. LLM chats are captured automatically. |
 | `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V …]` | Spawn a detached nvim companion. `--diff [BASE]` opens a diffview (base defaults to `main`). |
 | `tx spawn-view <name> [--tag TAGS] [--cwd DIR] [--cmd CMD] [--env K=V …]` | Spawn a detached view session (`kind=view`); `--tag` defaults to `views`. |
 
@@ -122,8 +122,8 @@ session, retag, message a peer. It follows `agents/TX-ASSISTANT.md`.
 
 | Command | What it does |
 |---|---|
-| `tx fork <source> [new_name]` | Fork a session's chat into a NEW session that starts with the full history. |
-| `tx handover <source> <task> [new_name] [--self-catch-up]` | Distill a session's chat into a focused brief for a NEW worker session. |
+| `tx fork <source> [new_name] [--read-only]` | Fork a session's chat into a NEW worktree-backed session that starts with the full history. The fork is writable unless explicitly read-only. |
+| `tx handover <source> <task> [new_name] [--self-catch-up] [--read-only]` | Distill a session's chat into a focused brief for a NEW worktree-backed worker session. The worker is writable unless explicitly read-only. |
 | `tx rollover [session] [--self-catch-up]` | Rotate a session onto a fresh chat in the SAME pane (context exhausted). |
 | `tx resume <id\|name> [--as NAME] [--cwd DIR]` | Re-spawn a past session and reattach its chat (`claude --resume`); collision-safe. |
 
@@ -301,7 +301,7 @@ Every worker-spawn prompt reads `$TX_IDE_HOME/agents/<ROLE>.md` followed by both
 
 - macOS (the iTerm2 palette/key integration is macOS-only; the core CLI is portable).
 - `tmux`, `fzf` (≥ 0.63 — the picker uses the `footer` color element), and `python3.14` (the session store runs under 3.14; the package is stdlib-only).
-- Claude Code (the sessions tx spawns and whose hooks drive session state).
+- Claude Code and/or Codex (the agent engines tx spawns and whose hooks drive session state).
 
 ## License
 

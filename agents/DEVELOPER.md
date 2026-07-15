@@ -35,14 +35,20 @@ for orchestrator coordination.)*
 
 ## Git workflow
 
-1. **Create a git worktree as the first action** — never work in the main checkout.
-2. Branch naming: `<type>/<short-description>` (e.g., `feat/orchestrator-cleanup`).
+1. **Worktree-check as the first action** — if the launcher already placed you in a linked
+   worktree, use it; otherwise create one. Never work in the main checkout or create a nested
+   worktree inside the provided one.
+2. Create/check out a branch named `<type>/<short-description>` (e.g.,
+   `feat/orchestrator-cleanup`). A launcher-provided detached worktree needs this before edits.
 3. Never commit directly to main/master.
 4. Make atomic commits with descriptive messages.
 5. Push and open a draft PR when done (`gh pr create --draft`).
 6. **After the PR is open, spawn a `-diff` nvim companion** so the user can review the diff without context-switching — see **§ nvim companions for review**.
 
-Worktree convention: `.tx-ide/worktrees/<session-name>` inside the repo.
+Worktree convention: tx-managed agent checkouts live under
+`$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<session-name>`. The key is the readable
+repository name plus a short hash of its canonical Git directory; the checkout basename is the
+shared branch-free project label shown in both Claude and Codex footers.
 
 ## Self-verify
 
@@ -99,4 +105,4 @@ The companion's `nvim` role is derived from its launch command — it is never a
 
 ## Spawning sub-workers
 
-You are not limited to the nvim companions above — you may spawn your own agent workers to parallelize independent parts of a plan (a coding worker per subsystem). For answering an unknown, see **§ Experiment explorer** above. Follow **COMMON § Spawning workers** for the recipe: the `tx spawn … --cmd 'claude …'` pattern (Claude by default), the `--env TX_REQUIRE_WORKTREE=1` for coding sub-workers, and the role-file priming string that makes a sub-worker load these same conventions. Always prime — a bare agent spawn gets you a worker that ignores all of this.
+You are not limited to the nvim companions above — you may spawn your own agent workers to parallelize independent parts of a plan (a coding worker per subsystem). For answering an unknown, see **§ Experiment explorer** above. Follow **COMMON § Spawning workers** for the recipe: use the engine-built `tx spawn … --prompt …` form for coding sub-workers (tx creates their worktrees automatically) and include the role-file priming string that makes a sub-worker load these same conventions. Always prime — a bare agent spawn gets you a worker that ignores all of this.

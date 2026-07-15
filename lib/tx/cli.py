@@ -159,6 +159,11 @@ class SpawnCommand(Command):
         parser.add_argument(
             "--effort", help="reasoning-effort override for an --engine agent spawn"
         )
+        parser.add_argument(
+            "--read-only",
+            action="store_true",
+            help="run an engine-built agent in a tx worktree with repository edits blocked",
+        )
         parser.add_argument("--env", action="append", type=_env_pair)
         args = parser.parse_args(argv)
         tags = _split_tags(args.tag)
@@ -169,16 +174,29 @@ class SpawnCommand(Command):
                 "--prompt/--model/--effort build a launch command and cannot be combined "
                 "with --cmd (the full hand-written command)"
             )
+        if args.read_only and args.cmd is not None:
+            parser.error(
+                "--read-only requires an engine-built launch; it cannot enforce --cmd"
+            )
         command, engine = self._resolve_command(args)
+        role = infer_role(command)
+        if args.read_only and role != Role.LLM:
+            parser.error("--read-only requires an agent launch")
+        environment = _parse_env(args.env)
         spec = SpawnSpec.for_process(
             name=args.name,
             tags=tags,
             cwd=args.cwd or self._default_cwd(),
             cmd=command,
-            env=_parse_env(args.env),
+            env=environment,
             engine=engine,
+            read_only=args.read_only,
         )
-        session = self.service.spawn(spec)
+        session = (
+            self.service.spawn_worker(spec)
+            if role == Role.LLM
+            else self.service.spawn(spec)
+        )
         print(f"Spawned '{session.name}' (cwd={session.cwd}, tag={args.tag})")
         return 0
 
@@ -200,7 +218,10 @@ class SpawnCommand(Command):
             engine = requested or Engine.CLAUDE
             command = shlex.join(
                 engines.registry.get(engine).build_launch_command(
-                    model=args.model, effort=args.effort, initial_prompt=args.prompt
+                    model=args.model,
+                    effort=args.effort,
+                    initial_prompt=args.prompt,
+                    read_only=args.read_only,
                 )
             )
             return command, engine
@@ -483,7 +504,10 @@ class ResumeCommand(Command):
                 file=sys.stderr,
             )
 
-        resume_cmd = shlex.join(engines.registry.get(record.engine).resume_command(chat.id))
+        adapter = engines.registry.get(record.engine)
+        resume_cmd = shlex.join(
+            adapter.resume_command(chat.id, read_only=record.read_only)
+        )
         # Stamp the source engine on the resumed record so a resumed codex session stays codex
         # (resolving its rollout) instead of defaulting to Claude — set-at-spawn, read-thereafter.
         spec = SpawnSpec.for_process(
@@ -494,11 +518,18 @@ class ResumeCommand(Command):
             env=dict(record.env),
             records_own_chat=True,
             engine=record.engine,
+            read_only=record.read_only,
         )
-        new = self.service.spawn(spec)
-        self._attach_resumed_chat(new, chat, cwd)
+        new = self.service.spawn_worker(
+            spec,
+            reuse_existing_worktree=name == record.name,
+            before_spawn=lambda prepared: adapter.prepare_chat_for_cwd(
+                chat.id, chat.cwd, prepared.cwd
+            ),
+        )
+        self._attach_resumed_chat(new, chat, new.cwd)
         print(
-            f"Resumed '{record.name}' as '{new.name}' (chat {chat.id[:8]}, cwd={cwd})"
+            f"Resumed '{record.name}' as '{new.name}' (chat {chat.id[:8]}, cwd={new.cwd})"
         )
         return 0
 
@@ -1600,8 +1631,15 @@ class ForkCommand(Command):
         parser.add_argument(
             "new_name", nargs="?", help="name for the fork (default <source>-fork)"
         )
+        parser.add_argument(
+            "--read-only",
+            action="store_true",
+            help="create the new fork in a tx worktree with repository edits blocked",
+        )
         args = parser.parse_args(argv)
-        new = ChatOps(self.service).fork(args.source, args.new_name)
+        new = ChatOps(self.service).fork(
+            args.source, args.new_name, read_only=args.read_only
+        )
         forked = chat.active_chat(new)
         chat_label = forked.id[:8] if forked and forked.id else "pending"
         print(
@@ -1630,9 +1668,18 @@ class HandoverCommand(Command):
             action="store_true",
             help="skip the distiller — the worker reads the source bundle itself (CHD1)",
         )
+        parser.add_argument(
+            "--read-only",
+            action="store_true",
+            help="create the new worker in a tx worktree with repository edits blocked",
+        )
         args = parser.parse_args(argv)
         worker = ChatOps(self.service).handover(
-            args.source, args.task, args.new_name, self_catch_up=args.self_catch_up
+            args.source,
+            args.task,
+            args.new_name,
+            self_catch_up=args.self_catch_up,
+            read_only=args.read_only,
         )
         how = "self-catch-up" if args.self_catch_up else "distilling brief"
         print(

@@ -89,7 +89,7 @@ You run as the session `tx-assistant`, tagged `tx-system`. "This session" in use
 | Subcommand | Purpose |
 |---|---|
 | `tx ls` | Plain stdout list, two sections: VIEWS, PROCESSES. Use this to answer "what's running" questions. |
-| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]` | Spawn a detached tmux session. `--tag` is mandatory. `--cwd` defaults to the firing pane's path. `--cmd` defaults to the user's shell. An llm command automatically gets a chat id recorded, so its transcript is tracked and resumable — no flag needed. `--env` may repeat to pass env vars into the session. |
+| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--engine ENGINE] [--prompt TEXT] [--read-only] [--env K=V ...]` | Spawn a detached tmux session. `--tag` is mandatory. Agents automatically launch from `$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<name>`; `--read-only` keeps inspection available while sandboxing repository writes. An llm session automatically records its chat. `--env` may repeat. |
 | `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]` | Spawn an nvim companion. `--diff` defaults `BASE` to `main` if omitted. Forces a dark colorscheme. `--env` may repeat. |
 | `tx tag <name> [tags]` | Read or set a session's tags in the durable store — the non-interactive counterpart to the picker's Ctrl-T. With `tags` (comma-separated): set them. Without: print the current tags. Resolves `<name>` via its live `@tx_id`, falling back to a store name lookup for a session no longer live. |
 | `tx send-message <target> <body>` | Peer-message another agent session. Wraps body in the `<from-agent session="...">…</from-agent>` envelope, fills your session name automatically, handles the post-send sleep. |
@@ -138,10 +138,30 @@ The schema is open — unknown keys are ignored. If the user names a knob you do
 
 ## Spawning workers
 
-When the user asks for a worker, follow **COMMON § Spawning workers** for the recipe: the `tx spawn … --cmd 'claude …'` pattern, the model/effort defaults, the `--env TX_REQUIRE_WORKTREE=1` for coding workers, and the role-file priming string. Two things are yours as the assistant, layered on that recipe:
+When the user asks for a worker, follow **COMMON § Spawning workers** for the engine-built launch,
+the automatic worktree placement for writable workers, any adapter-specific model/effort conventions, and
+the role-file priming string. Two things are yours as the assistant, layered on that recipe:
 
 - `<cwd>` — if the user said "here", use `pane-path` / `inner-pane-path` from the focus envelope; otherwise resolve the project root they named.
 - After spawning, tell the user the attach command: `tx attach`, filtered by the scope tag.
+
+When the user asks for a **coding worker**, always use tx's engine-built worktree form for both
+Claude and Codex—never launch the agent in the source checkout and ask it to create a worktree after
+startup:
+
+```bash
+tx spawn <name> --tag <scope> --cwd <project-root> \
+  --engine <engine> --prompt "<priming>"
+```
+
+tx creates a detached `$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<name>` checkout and
+stamps that path as the session cwd before the engine starts. Its basename is the branch-free label
+shown by both Claude and Codex. Writable workers receive `TX_REQUIRE_WORKTREE=1`. Use `--read-only`
+when the worker must not modify the repository; it receives its own worktree with tx-enforced
+whole-process write blocking while shell inspection remains available. A normal
+`tx fork <read-only-session> <implementation-name>` is the promotion path: the new fork is writable
+and receives a separate worktree. Add adapter-specific model or effort overrides only when the role
+conventions or user request calls for them.
 
 ## Peer messaging
 

@@ -30,8 +30,6 @@ format_tokens() {
   fi
 }
 
-branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null)
-
 # Returns colored "label:N%" string; empty if pct is missing.
 format_rate_limit() {
   local label="$1" pct="$2" resets_at="$3"
@@ -77,40 +75,19 @@ push_anthropic_usage() {
 # Colors matching p10k theme. Model + tokens + rate limits use DIM so line 2 stays
 # muted under the colorful line 1.
 DIR_COLOR="\033[38;5;31m"
-BRANCH_COLOR="\033[38;5;76m"
-WORKTREE_COLOR="\033[38;5;173m"
 DIM="\033[38;2;169;177;214m"            # dim_fg #a9b1d6 — keep in sync with DIM_FG_HEX in shared/palette.sh
 RESET="\033[0m"
 
-# --- Line 1: repo [worktree] branch ---
+# --- Line 1: project label (the same cwd-root basename Codex calls `project-name`) ---
 line1=""
 
 if [ -n "$cwd" ]; then
   git_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
   if [ -n "$git_root" ]; then
-    common_dir=$(git -C "$cwd" rev-parse --git-common-dir 2>/dev/null)
-    git_dir=$(git -C "$cwd" rev-parse --git-dir 2>/dev/null)
-    if [ "$git_dir" != "$common_dir" ] 2>/dev/null; then
-      # In a worktree: show main repo name + worktree name.
-      # git worktree list first line is always the main repo, with absolute path.
-      main_root=$(git -C "$cwd" worktree list 2>/dev/null | awk 'NR==1{print $1}')
-      repo_name=$(basename "$main_root")
-      worktree_name=$(basename "$git_root")
-      line1="\033[1m${DIR_COLOR}${repo_name}${RESET} \033[1m${WORKTREE_COLOR}${worktree_name}${RESET}"
-    else
-      repo_name=$(basename "$git_root")
-      line1="\033[1m${DIR_COLOR}${repo_name}${RESET}"
-    fi
+    project_name=$(basename "$git_root")
+    line1="\033[1m${DIR_COLOR}${project_name}${RESET}"
   else
     line1="\033[1m${DIR_COLOR}$(basename "$cwd")${RESET}"
-  fi
-fi
-
-if [ -n "$branch" ]; then
-  if [ -n "$line1" ]; then
-    line1="${line1} ${BRANCH_COLOR}${branch}${RESET}"
-  else
-    line1="${BRANCH_COLOR}${branch}${RESET}"
   fi
 fi
 

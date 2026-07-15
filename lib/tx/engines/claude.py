@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
@@ -19,9 +20,14 @@ DEFAULT_CLAUDE_HOME = "~/.claude"
 CLAUDE_BIN = "claude"
 TRANSCRIPT_SUFFIX = ".jsonl"
 BUNDLE_TRANSCRIPT_NAME = "transcript.jsonl"
+SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
+READ_ONLY_TOOLS = ("Edit", "Write", "NotebookEdit")
+READ_ONLY_ALLOWED_TOOLS = ("Bash",)
+READ_ONLY_SETTING_SOURCES = "user"
 
 
 # ----- transcript / path internals ----------------------------------------------------------
+
 
 def claude_home() -> Path:
     return Path(os.environ.get(CLAUDE_HOME_ENV, DEFAULT_CLAUDE_HOME)).expanduser()
@@ -60,6 +66,7 @@ def find_transcript(chat_id: str, cwd: str) -> Path | None:
 
 # ----- history bundle layout ----------------------------------------------------------------
 
+
 def bundle_dir(tx_id: str, chat_id: str) -> Path:
     return history_dir() / tx_id / chat_id
 
@@ -81,7 +88,9 @@ def bundle_transcript_path(tx_id: str, chat_id: str) -> Path:
 # workspace placement, not persona: the successor continues in the source's resolved cwd, so
 # carrying them would relocate (or fail) the relaunch.
 _IDENTITY_VALUE_FLAGS = frozenset({"--session-id"})
-_IDENTITY_OPTIONAL_VALUE_FLAGS = frozenset({"--resume", "-r", "--from-pr", "--worktree", "-w"})
+_IDENTITY_OPTIONAL_VALUE_FLAGS = frozenset(
+    {"--resume", "-r", "--from-pr", "--worktree", "-w"}
+)
 _IDENTITY_BARE_FLAGS = frozenset({"--fork-session", "--continue", "-c", "--tmux"})
 
 # Bare claude flags — those that do NOT consume a following token, so a positional that follows one
@@ -94,14 +103,33 @@ _IDENTITY_BARE_FLAGS = frozenset({"--fork-session", "--continue", "-c", "--tmux"
 # standard worker shape (`claude <flags> "<priming>"`) that token is the baked priming, which then
 # survives the strip and rides into the successor's command beside the new seed (AND-171). Kept in
 # sync with `claude --help`.
-_BARE_FLAGS = frozenset({
-    "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--verbose",
-    "--print", "-p", "--ide", "--strict-mcp-config", "--no-session-persistence",
-    "--exclude-dynamic-system-prompt-sections", "--replay-user-messages",
-    "--include-partial-messages", "--include-hook-events", "--disable-slash-commands",
-    "--chrome", "--no-chrome",
-    "--bare", "--brief", "--safe-mode", "--mcp-debug", "--help", "-h", "--version", "-v",
-})
+_BARE_FLAGS = frozenset(
+    {
+        "--dangerously-skip-permissions",
+        "--allow-dangerously-skip-permissions",
+        "--verbose",
+        "--print",
+        "-p",
+        "--ide",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--exclude-dynamic-system-prompt-sections",
+        "--replay-user-messages",
+        "--include-partial-messages",
+        "--include-hook-events",
+        "--disable-slash-commands",
+        "--chrome",
+        "--no-chrome",
+        "--bare",
+        "--brief",
+        "--safe-mode",
+        "--mcp-debug",
+        "--help",
+        "-h",
+        "--version",
+        "-v",
+    }
+)
 
 # Persona flags with an OPTIONAL value (`-d [filter]`, `--prompt-suggestions [value]`,
 # `--remote-control [name]`) need no listing: commander consumes the next token exactly when it is
@@ -111,16 +139,27 @@ _BARE_FLAGS = frozenset({
 # Persona flags that are VARIADIC (commander `<values...>`): claude consumes every following token
 # up to the next flag as a value, so the strip mirrors that — inheriting them all keeps `--add-dir
 # /a /b` intact instead of dropping `/b` as a stray positional.
-_VARIADIC_VALUE_FLAGS = frozenset({
-    "--add-dir", "--allowedTools", "--allowed-tools", "--disallowedTools", "--disallowed-tools",
-    "--mcp-config", "--betas", "--file", "--tools",
-})
+_VARIADIC_VALUE_FLAGS = frozenset(
+    {
+        "--add-dir",
+        "--allowedTools",
+        "--allowed-tools",
+        "--disallowedTools",
+        "--disallowed-tools",
+        "--mcp-config",
+        "--betas",
+        "--file",
+        "--tools",
+    }
+)
 
 # Shell-control tokens. Once shlex surfaces one of these, the rest of a compound source `cmd` is
 # shell wrapping (separator / pipe / redirect / subshell / …), NOT claude argv. A fork/handover/
 # rollover is a FRESH claude invocation, not the source's shell pipeline, so everything from the
 # first such token on is dropped.
-_SHELL_CONTROL_TOKENS = frozenset({";", "&", "&&", "||", "|", "|&", "&>", "&>>", "(", ")", "{", "}"})
+_SHELL_CONTROL_TOKENS = frozenset(
+    {";", "&", "&&", "||", "|", "|&", "&>", "&>>", "(", ")", "{", "}"}
+)
 
 
 def _is_shell_control(token: str) -> bool:
@@ -133,8 +172,11 @@ def _takes_next_token(tokens: list[str], index: int) -> bool:
     """Whether the token after `tokens[index]` exists and would be consumed as a flag value —
     commander's rule for both optional (`[value]`) and unknown required values: a non-flag,
     non-shell-control token follows."""
-    return index + 1 < len(tokens) and not tokens[index + 1].startswith("-") \
+    return (
+        index + 1 < len(tokens)
+        and not tokens[index + 1].startswith("-")
         and not _is_shell_control(tokens[index + 1])
+    )
 
 
 def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
@@ -155,20 +197,29 @@ def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
             index += 2  # drop the identity flag and its required value
             continue
         if token in _IDENTITY_OPTIONAL_VALUE_FLAGS:
-            index += 2 if _takes_next_token(tokens, index) else 1  # drop flag + optional value
+            index += (
+                2 if _takes_next_token(tokens, index) else 1
+            )  # drop flag + optional value
             continue
         if token in _IDENTITY_BARE_FLAGS:
             index += 1  # drop — the op re-supplies its own
             continue
         if token in _BARE_FLAGS:
-            inherited.append(token)  # bare flag; any positional that follows it is the prompt (dropped)
+            inherited.append(
+                token
+            )  # bare flag; any positional that follows it is the prompt (dropped)
             index += 1
             continue
         if token in _VARIADIC_VALUE_FLAGS:
-            inherited.append(token)  # variadic: claude eats every non-flag token that follows
+            inherited.append(
+                token
+            )  # variadic: claude eats every non-flag token that follows
             index += 1
-            while index < len(tokens) and not tokens[index].startswith("-") \
-                    and not _is_shell_control(tokens[index]):
+            while (
+                index < len(tokens)
+                and not tokens[index].startswith("-")
+                and not _is_shell_control(tokens[index])
+            ):
                 inherited.append(tokens[index])
                 index += 1
             continue
@@ -176,10 +227,12 @@ def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
             # Value-flag (known, unknown, or optional-value): inherit it WITH its value when one
             # follows; never drop the value — a dangling flag would swallow the appended seed.
             if _takes_next_token(tokens, index):
-                inherited.extend(tokens[index:index + 2])
+                inherited.extend(tokens[index : index + 2])
                 index += 2
             else:
-                inherited.append(token)  # dangling flag (end of argv / next token is itself a flag)
+                inherited.append(
+                    token
+                )  # dangling flag (end of argv / next token is itself a flag)
                 index += 1
             continue
         index += 1  # a positional — the source's baked initial prompt; drop it (the op seeds its own)
@@ -189,9 +242,62 @@ def _strip_identity(source_cmd: str) -> tuple[str, list[str]]:
 def _ensure_skip_permissions(command: list[str]) -> list[str]:
     """Guarantee --dangerously-skip-permissions — else a forked/seeded session stalls on a
     permission prompt and its initial prompt never runs."""
-    if "--dangerously-skip-permissions" not in command:
-        command.append("--dangerously-skip-permissions")
+    if SKIP_PERMISSIONS_FLAG not in command:
+        command.append(SKIP_PERMISSIONS_FLAG)
     return command
+
+
+def _strip_access_flags(command: list[str]) -> list[str]:
+    """Drop tx's writable/read-only controls before applying the destination session's mode."""
+    stripped: list[str] = []
+    index = 0
+    while index < len(command):
+        token = command[index]
+        if token == SKIP_PERMISSIONS_FLAG:
+            index += 1
+            continue
+        if token == "--permission-mode":
+            index += 2
+            continue
+        if (
+            token == "--setting-sources"
+            and index + 1 < len(command)
+            and command[index + 1] == READ_ONLY_SETTING_SOURCES
+        ):
+            index += 2
+            continue
+        if token in (
+            "--allowedTools",
+            "--allowed-tools",
+            "--disallowedTools",
+            "--disallowed-tools",
+        ):
+            index += 1
+            while index < len(command) and not command[index].startswith("-"):
+                index += 1
+            continue
+        stripped.append(token)
+        index += 1
+    return stripped
+
+
+def _apply_access(command: list[str], read_only: bool) -> list[str]:
+    command = _strip_access_flags(command)
+    if not read_only:
+        return _ensure_skip_permissions(command)
+    # Bash remains available for inspection inside tx's whole-process OS sandbox; direct editing
+    # tools stay denied. Variadic lists must be followed by another flag, not a positional prompt.
+    return [
+        *command,
+        "--allowedTools",
+        *READ_ONLY_ALLOWED_TOOLS,
+        "--disallowedTools",
+        *READ_ONLY_TOOLS,
+        "--permission-mode",
+        "dontAsk",
+        "--setting-sources",
+        READ_ONLY_SETTING_SOURCES,
+    ]
 
 
 # ----- the adapter --------------------------------------------------------------------------
@@ -241,6 +347,7 @@ class ClaudeEngine(EngineAdapter):
         model: str | None = None,
         effort: str | None = None,
         initial_prompt: str | None = None,
+        read_only: bool = False,
     ) -> list[str]:
         # A positional prompt auto-submits in interactive mode (measured).
         command = [CLAUDE_BIN]
@@ -248,27 +355,31 @@ class ClaudeEngine(EngineAdapter):
             command += ["--model", model]
         if effort:
             command += ["--effort", effort]
-        command.append("--dangerously-skip-permissions")
+        command = _apply_access(command, read_only)
         if initial_prompt:
             command.append(initial_prompt)
         return command
 
-    def resume_command(self, chat_id: str) -> list[str]:
-        return [CLAUDE_BIN, "--resume", chat_id, "--dangerously-skip-permissions"]
+    def resume_command(self, chat_id: str, *, read_only: bool = False) -> list[str]:
+        return _apply_access([CLAUDE_BIN, "--resume", chat_id], read_only)
 
-    def fork_command(self, source_cmd: str, chat_id: str) -> list[str]:
+    def fork_command(
+        self, source_cmd: str, chat_id: str, *, read_only: bool = False
+    ) -> list[str]:
         """Branch a chat onto its full history, inheriting the source persona (incl. unknown
         value-flags) with the identity flags swapped for this fork's own. The fork mints its own id."""
         binary, inherited = _strip_identity(source_cmd)
-        return _ensure_skip_permissions(
-            [binary, "--resume", chat_id, "--fork-session", *inherited]
+        return _apply_access(
+            [binary, "--resume", chat_id, "--fork-session", *inherited], read_only
         )
 
-    def seed_command(self, source_cmd: str, seed: str) -> list[str]:
+    def seed_command(
+        self, source_cmd: str, seed: str, *, read_only: bool = False
+    ) -> list[str]:
         """A fresh session inheriting the source persona (no identity flag) with `seed` as the
         initial-prompt positional. The positional auto-submits, so no send-keys."""
         binary, inherited = _strip_identity(source_cmd)
-        command = _ensure_skip_permissions([binary, *inherited])
+        command = _apply_access([binary, *inherited], read_only)
         command.append(seed)
         return command
 
@@ -284,6 +395,54 @@ class ClaudeEngine(EngineAdapter):
 
     def resolve_transcript(self, chat_id: str, cwd: str) -> Path:
         return transcript_path(chat_id, cwd)
+
+    def prepare_chat_for_cwd(
+        self, chat_id: str, source_cwd: str, target_cwd: str
+    ) -> None:
+        """Copy Claude's cwd-keyed chat files so resume/fork can start in a new worktree."""
+        if Path(source_cwd).resolve() == Path(target_cwd).resolve():
+            return
+        source_transcript = transcript_path(chat_id, source_cwd)
+        if not source_transcript.is_file():
+            return
+        target_transcript = transcript_path(chat_id, target_cwd)
+        target_transcript.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_transcript, target_transcript)
+
+        source_sidecars = sidecar_dir(chat_id, source_cwd)
+        if source_sidecars.is_dir():
+            shutil.copytree(
+                source_sidecars,
+                sidecar_dir(chat_id, target_cwd),
+                dirs_exist_ok=True,
+            )
+
+    def is_read_only_command(self, command: str) -> bool:
+        tokens = shlex.split(command)
+        if SKIP_PERMISSIONS_FLAG in tokens:
+            return False
+        try:
+            permission_mode = tokens[tokens.index("--permission-mode") + 1]
+            tools_index = tokens.index("--disallowedTools") + 1
+            allowed_index = tokens.index("--allowedTools") + 1
+            setting_sources = tokens[tokens.index("--setting-sources") + 1]
+        except (ValueError, IndexError):
+            return False
+        denied: set[str] = set()
+        while tools_index < len(tokens) and not tokens[tools_index].startswith("-"):
+            denied.update(tokens[tools_index].split(","))
+            tools_index += 1
+        allowed: set[str] = set()
+        while allowed_index < len(tokens) and not tokens[allowed_index].startswith("-"):
+            allowed.update(tokens[allowed_index].split(","))
+            allowed_index += 1
+        return (
+            permission_mode == "dontAsk"
+            and set(READ_ONLY_TOOLS) <= denied
+            and "Bash" not in denied
+            and set(READ_ONLY_ALLOWED_TOOLS) <= allowed
+            and setting_sources == READ_ONLY_SETTING_SOURCES
+        )
 
     def iter_messages(self, transcript: Path) -> Iterator[dict]:
         # Claude's on-disk schema (Anthropic JSONL, one object per line) IS the engine-neutral form,
