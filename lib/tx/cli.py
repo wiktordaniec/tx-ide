@@ -157,7 +157,11 @@ class SpawnCommand(Command):
             "--model", help="model override for an --engine agent spawn"
         )
         parser.add_argument(
-            "--effort", help="reasoning-effort override for an --engine agent spawn"
+            "--effort",
+            type=int,
+            choices=range(1, 6),
+            metavar="{1,2,3,4,5}",
+            help="reasoning-effort tier for an --engine agent spawn (default: 3)",
         )
         parser.add_argument(
             "--read-only",

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ..session import Engine, State
 from ..storage import history_dir
-from .engine_adapter import EngineAdapter, StateSource
+from .engine_adapter import DEFAULT_EFFORT, EFFORT_LEVELS, EngineAdapter, StateSource
 from .registry import registry
 
 # Claude's own home (where it writes transcripts), honoring $CLAUDE_CONFIG_DIR like the CLI —
@@ -345,7 +345,7 @@ class ClaudeEngine(EngineAdapter):
         self,
         *,
         model: str | None = None,
-        effort: str | None = None,
+        effort: int | None = None,
         initial_prompt: str | None = None,
         read_only: bool = False,
     ) -> list[str]:
@@ -353,8 +353,8 @@ class ClaudeEngine(EngineAdapter):
         command = [CLAUDE_BIN]
         if model:
             command += ["--model", model]
-        if effort:
-            command += ["--effort", effort]
+        selected_effort = effort if effort is not None else DEFAULT_EFFORT
+        command += ["--effort", EFFORT_LEVELS[selected_effort]]
         command = _apply_access(command, read_only)
         if initial_prompt:
             command.append(initial_prompt)
@@ -387,7 +387,7 @@ class ClaudeEngine(EngineAdapter):
         # Fixed per-engine command (no source persona): claude → opus at medium effort, the quality
         # hinge of the distillation. Seed appended unconditionally (not via build_launch_command's
         # truthy filter).
-        command = self.build_launch_command(model="opus", effort="medium")
+        command = self.build_launch_command(model="opus", effort=2)
         command.append(seed)
         return command
 
