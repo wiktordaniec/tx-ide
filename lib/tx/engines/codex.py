@@ -17,7 +17,7 @@ DEFAULT_CODEX_HOME = "~/.codex"
 CODEX_BIN = "codex"
 
 # Codex defaults. Effort is rendered as a `-c` config override, not a flag: `-c model_reasoning_effort=`.
-CODEX_MODEL = "gpt-5.5"
+CODEX_MODEL = "gpt-5.6-sol"
 CODEX_EFFORT = "high"
 REASONING_EFFORT_KEY = "model_reasoning_effort"
 

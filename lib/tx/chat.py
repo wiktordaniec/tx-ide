@@ -54,7 +54,7 @@ from .spawn import SpawnSpec
 from .storage import chat_ops_dir, history_dir, tx_ide_home
 
 # The throwaway distiller's command is a FIXED per-engine command from the source's engine adapter
-# (`registry.get(record.engine).distiller_command(seed)` — claude→opus/medium, codex→gpt-5.5/high),
+# (`registry.get(record.engine).distiller_command(seed)` — claude→opus/medium, codex→gpt-5.6-sol/high),
 # not a claude-hardcoded constant. The distillation is the quality hinge of a handover/rollover, so
 # each engine picks a model worth its judgement even though the mechanics are a read→write (T8b).
 DISTILLER_TAG = "temporary"  # plus the op kind (handover|rollover) so the in-flight helper is visible
@@ -569,7 +569,7 @@ class ChatOps:
     def _spawn_distiller(self, name: str, kind: str, cwd: str, seed: str, engine: Engine) -> Session:
         """Spawn the temporary distiller with its instructions baked in as the initial prompt (no
         send-keys). The command is the SOURCE engine's fixed distiller (`distiller_command(seed)` —
-        claude→opus/medium, codex→gpt-5.5/high; design §5), dispatched on the source's `engine`.
+        claude→opus/medium, codex→gpt-5.6-sol/high; design §5), dispatched on the source's `engine`.
         Tagged `temporary` + the op kind so the in-flight helper is visible in `tx ls`. A plain llm
         spawn, so `_spawn` gives it a pending `original` ChatRef captured from its first hook (T4);
         the throwaway bundle is harmless."""
