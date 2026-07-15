@@ -124,9 +124,11 @@ Append a short imperative after the role-file instruction telling the worker wha
 
 ## Session metadata
 
-Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` holding its `name`, `kind`, `role`, `tags`, `cwd`, `cmd`, `env`, `parent`, `pid`, and `chats`. One tmux pointer, `@tx_id` (set once at spawn), links the live session to its record, so the record survives a `kill-session` or a tmux restart. Spawning exports `TX_SESSION_ID` into the session; an llm spawn also records a chat id for the session, so every llm session's transcript is tracked and resumable (`tx resume`) with no extra ceremony — there is no `--chat` flag.
+Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` holding its `name`, `role`, `tags`, `cwd`, `cmd`, `env`, `parent`, `pid`, and (for an llm session) `chats`. One tmux pointer, `@tx_id` (set once at spawn), links the live session to its record, so the record survives a `kill-session` or a tmux restart. Spawning exports `TX_SESSION_ID` into the session; an llm spawn also records a chat id for the session, so every llm session's transcript is tracked and resumable (`tx resume`) with no extra ceremony — there is no `--chat` flag.
 
-Tags, kind, and role live in the record, not tmux options — read them by resolving `@tx_id`, and change tags through `tx tag <name> [tags]` (or the picker's Ctrl-T), never `tmux set @tag`/`@kind`. `role` (`llm` / `nvim` / `shell` / `other`) is derived from the launch command at spawn — there is no role tag and nothing to set by hand.
+Tags and role live in the record, not tmux options — read them by resolving `@tx_id`, and change tags through `tx tag <name> [tags]` (or the picker's Ctrl-T), never `tmux set @tag`. `role` (`llm` / `nvim` / `shell` / `other`) is derived from the launch command at spawn — there is no role tag and nothing to set by hand.
+
+**Views are not records.** A view (a home-base session you nest work into) is a live tmux session marked by the `@tx_view` option — that marker is its whole durable identity (it dies with the tmux server and is recreated by `tx spawn-view`). A view carries no tags, and its only tx lifecycle verbs are `tx spawn-view` (create) and `tx kill` (end): it cannot be tagged or renamed through tx.
 
 ## Inter-session communication
 
