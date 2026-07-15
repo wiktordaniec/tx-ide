@@ -1343,25 +1343,30 @@ class SelfCheckCommand(Command):
 
 
 # ----- schema migration ----------------------------------------------------------------------
-# `tx migrate` (the v2 → v3 migrator) lives in tx.migrations; this command is a thin wrapper.
+# `tx migrate` (the v3 → v4 migrator) lives in tx.migrations; this command is a thin wrapper.
 
 
 class MigrateCommand(Command):
     name = "migrate"
-    summary = "Upgrade $TX_IDE_HOME session records to the current schema (idempotent v2 → v3)."
+    summary = "Upgrade $TX_IDE_HOME session records to the current schema (idempotent v3 → v4)."
 
     def run(self, argv: list[str]) -> int:
         # No flags: the target is $TX_IDE_HOME/sessions, so a sandbox run is `TX_IDE_HOME=<tmp> tx
-        # migrate` (T0 §4 — the v3 code must never migrate the live v2 home). Explicit + idempotent.
+        # migrate` (the v4 code must never migrate the live v3 home). Explicit + idempotent. The live
+        # tmux server is needed to stamp @tx_view onto view sessions as their records are retired.
         self._parser().parse_args(argv)  # reject stray args; serve `-h`
-        migrated, skipped = migrate_sessions(sessions_dir())
+        migrated, views_removed, skipped = migrate_sessions(
+            sessions_dir(), self.service.tmux
+        )
         for name in migrated:
             print(f"  migrated {name} → v{SCHEMA_VERSION}")
+        for name in views_removed:
+            print(f"  view     {name} → stamped @tx_view, record removed")
         for name, reason in skipped:
             print(f"  skipped  {name} ({reason})")
         print(
             f"migrated {len(migrated)} record(s) to v{SCHEMA_VERSION}; "
-            f"left {len(skipped)} untouched."
+            f"retired {len(views_removed)} view record(s); left {len(skipped)} untouched."
         )
         return 0
 
