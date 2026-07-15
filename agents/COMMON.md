@@ -87,8 +87,7 @@ tx creates a detached `$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<na
 launches the selected Claude or Codex engine from it. The readable repository key includes a short
 hash so same-named repositories cannot collide. The checkout basename gives both engine footers the
 same branch-free `<repository>--<name>` label. Writable workers receive `TX_REQUIRE_WORKTREE=1`; the
-detached worker creates its correctly typed task branch after startup. `--worktree` remains accepted
-for compatibility but is redundant.
+detached worker creates its correctly typed task branch after startup.
 
 For an explicitly read-only worker:
 

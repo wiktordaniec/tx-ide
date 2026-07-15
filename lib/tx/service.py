@@ -176,10 +176,6 @@ class SessionService:
         except (WorktreeError, ReadOnlySandboxError) as error:
             raise ServiceError(f"could not enforce read-only process sandbox: {error}") from error
 
-    def spawn_in_worktree(self, spec: SpawnSpec) -> Session:
-        """Backward-compatible explicit form; writable workers already use this path by default."""
-        return self.spawn_worker(replace(spec, read_only=False))
-
     def next_worker_name(self, starting_directory: str, base_name: str) -> str:
         """Resolve the display/worktree name before an asynchronous handover is scheduled."""
         self.reconcile()

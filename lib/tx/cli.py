@@ -160,11 +160,6 @@ class SpawnCommand(Command):
             "--effort", help="reasoning-effort override for an --engine agent spawn"
         )
         parser.add_argument(
-            "--worktree",
-            action="store_true",
-            help="explicit compatibility flag; writable agents already get a worktree by default",
-        )
-        parser.add_argument(
             "--read-only",
             action="store_true",
             help="run an engine-built agent in a tx worktree with repository edits blocked",
@@ -180,11 +175,13 @@ class SpawnCommand(Command):
                 "with --cmd (the full hand-written command)"
             )
         if args.read_only and args.cmd is not None:
-            parser.error("--read-only requires an engine-built launch; it cannot enforce --cmd")
+            parser.error(
+                "--read-only requires an engine-built launch; it cannot enforce --cmd"
+            )
         command, engine = self._resolve_command(args)
         role = infer_role(command)
-        if (args.worktree or args.read_only) and role != Role.LLM:
-            parser.error("--worktree/--read-only require an agent launch")
+        if args.read_only and role != Role.LLM:
+            parser.error("--read-only requires an agent launch")
         environment = _parse_env(args.env)
         spec = SpawnSpec.for_process(
             name=args.name,
@@ -195,7 +192,11 @@ class SpawnCommand(Command):
             engine=engine,
             read_only=args.read_only,
         )
-        session = self.service.spawn_worker(spec) if role == Role.LLM else self.service.spawn(spec)
+        session = (
+            self.service.spawn_worker(spec)
+            if role == Role.LLM
+            else self.service.spawn(spec)
+        )
         print(f"Spawned '{session.name}' (cwd={session.cwd}, tag={args.tag})")
         return 0
 

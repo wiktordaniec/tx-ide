@@ -1,4 +1,10 @@
-"""Fail-closed OS boundary for an entire read-only agent process tree."""
+"""Fail-closed OS boundary for an entire read-only agent process tree.
+
+This stays separate from lifecycle orchestration in ``service.py`` and engine-specific permission
+flags in ``engines/`` because it is a security-sensitive, engine-neutral platform boundary. The
+reconciler also imports the wrapper binary names; putting them in ``service.py`` would create a
+``service`` -> ``reconcile`` -> ``service`` cycle.
+"""
 
 from __future__ import annotations
 
@@ -64,11 +70,17 @@ def wrap_read_only_command(
 
 def _minimal_boundaries(*paths: Path) -> list[Path]:
     """Canonical non-overlapping paths; denying a parent already denies every child."""
-    resolved = sorted({path.resolve() for path in paths}, key=lambda path: len(path.parts))
+    resolved = sorted(
+        {path.resolve() for path in paths}, key=lambda path: len(path.parts)
+    )
     if Path("/") in resolved:
-        raise ReadOnlySandboxError("refusing to apply a read-only boundary to filesystem root")
+        raise ReadOnlySandboxError(
+            "refusing to apply a read-only boundary to filesystem root"
+        )
     return [
         path
         for path in resolved
-        if not any(path != parent and path.is_relative_to(parent) for parent in resolved)
+        if not any(
+            path != parent and path.is_relative_to(parent) for parent in resolved
+        )
     ]
