@@ -1288,7 +1288,7 @@ function timeCell(epoch, rel) {
 // fields lib/tx/session.py Session.matches searches — name / role / state / kind / cwd / tags.
 function matchesQuery(record, query) {
   if (!query) return true;
-  const haystack = [record.name, record.role, record.state, record.kind, record.cwd, ...record.tags].join(" ").toLowerCase();
+  const haystack = [record.name, record.role, record.state, record.cwd, ...record.tags].join(" ").toLowerCase();
   return haystack.includes(query);
 }
 
@@ -2110,11 +2110,11 @@ function refreshDrawer() {
   $("dName").textContent = record.name;
   $("dState").textContent = record.state + (derived.needs_attention ? " · needs you" : "");
   $("dSub").innerHTML =
-    `<span><b>${record.role}</b> · ${record.kind}</span>` +
+    `<span><b>${record.role}</b></span>` +
     `<span>started <b>${derived.started_rel}</b> ago</span>` +
     `<span>idle <b>${derived.idle_rel}</b></span>` +
     `<span>pid <b>${record.pid ?? "—"}</b></span>` +
-    `<span>${record.chats.length} chat(s)</span>`;
+    `<span>${(record.chats || []).length} chat(s)</span>`;
   $("json").innerHTML = highlightJson(entry.json);
 }
 function closeDrawer() { selectedId = null; selectedMessage = null; paintActive(); }

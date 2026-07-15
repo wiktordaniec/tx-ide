@@ -92,11 +92,15 @@ agent_up = working_llm(NOW - 5000)
 check("C5: an agent still up in the pane is not demoted",
       rec._demote_if_stuck(agent_up, _Live(name="w", command="claude"), THRESHOLD) is False)
 
-# The safety property: a non-llm OtherSession has no turn_started_at, but the state!=WORKING guard
-# short-circuits before that field is read — so this must return False, not AttributeError.
+# The safety property: a non-llm OtherSession has no turn_started_at. The isinstance guard leads,
+# so this returns False without AttributeError-ing on the missing field — both for a normal ALIVE
+# shell AND for a hand-edited/corrupt record stamped WORKING (which would otherwise brick the sweep).
 shell = OtherSession(id="s", name="s", state=State.ALIVE, role=Role.SHELL, created_at=NOW - 5000)
-check("C5: a non-llm session is never touched (no crash on the missing llm field)",
+check("C5: a normal non-llm session is skipped (no crash on the missing llm field)",
       rec._demote_if_stuck(shell, _Live(name="s", command="zsh"), THRESHOLD) is False)
+corrupt = OtherSession(id="c", name="c", state=State.WORKING, role=Role.SHELL, created_at=NOW - 5000)
+check("C5: a corrupt non-llm record stamped WORKING is skipped, not a crash (robustness)",
+      rec._demote_if_stuck(corrupt, _Live(name="c", command="zsh"), THRESHOLD) is False)
 
 # ----- 2/3/4. render_ls + picker: processes-only, activity_at sort, IDLE cells -------------------
 llm = LlmSession(id="l", name="auth", state=State.WAITING, cwd="/x", initial_cmd="claude",

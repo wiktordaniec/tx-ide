@@ -27,7 +27,7 @@ from .engines import claude, codex  # noqa: F401
 from .engines import registry
 from .events import EventLog
 from .read_only import READ_ONLY_WRAPPER_BINARIES
-from .session import Session, State
+from .session import LlmSession, Session, State
 from .storage import config_path
 from .store import SessionStore
 from .tmux import Tmux
@@ -96,12 +96,13 @@ class Reconciler:
         """C5: a `WORKING` llm idle past the threshold whose pane is no longer the agent has
         crashed under a live pane — demote to IDLE so the picker stops showing a phantom turn.
 
-        The clock is the llm-only `turn_started_at` (armed at turn start in `record_state`). A
-        `WORKING` session is always an `LlmSession` — WORKING is an llm-only state — and the
-        `state != WORKING` guard short-circuits before the field is read, so a non-llm record never
-        touches it. A record left `WORKING` across the split has `turn_started_at` unset (`None`) →
+        The clock is the llm-only `turn_started_at` (armed at turn start in `record_state`). Only an
+        `LlmSession` is ever demoted — WORKING is an llm-only state — so the isinstance guard leads,
+        keeping the sweep robust even against a hand-edited/corrupt non-llm record stamped WORKING
+        (it returns False instead of AttributeError-ing on the missing field and bricking every
+        reconcile). A record left `WORKING` across the split has `turn_started_at` unset (`None`) →
         skip; it self-heals on its next turn."""
-        if session.state != State.WORKING or session.turn_started_at is None:
+        if not isinstance(session, LlmSession) or session.state != State.WORKING or session.turn_started_at is None:
             return False
         if time.time() - session.turn_started_at < threshold:
             return False
