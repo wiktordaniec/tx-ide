@@ -780,9 +780,13 @@ class StartCommand(Command):
         tmux = self.service.tmux
         repo = _repo_root()
 
-        if args.restart and tmux.has_session("tx-assistant"):
-            tmux.kill_session("tx-assistant")
-        if tmux.has_session("tx-assistant"):
+        assistant = self.service.get("tx-assistant")
+        assistant_target = (
+            assistant.tmux_name if assistant is not None else "tx-assistant"
+        )
+        if args.restart and tmux.has_session(assistant_target):
+            tmux.kill_session(assistant_target)
+        if tmux.has_session(assistant_target):
             print("tx-assistant already running.")
         else:
             subprocess.run([str(repo / "bin" / "tx-assistant"), "--warm"])
