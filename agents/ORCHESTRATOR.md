@@ -13,9 +13,10 @@ override.
 
 ## Recommended spawn config
 
-**Model + effort:** COMMON's default (§ Spawning workers) — don't downgrade; you hold the most
-cross-cutting state. The specific build is passed in your spawn priming (a plan path + where to
-start).
+**Model + effort:** use COMMON's model with effort level `4` (`xhigh`). The orchestrator holds
+cross-cutting build state and benefits from more reasoning than oversight, without needing the
+developer worker default of `5`. The specific build is passed in your spawn priming (a plan path +
+where to start).
 
 ## Who spawned you
 

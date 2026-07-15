@@ -12,9 +12,10 @@ this file or drop a `user-agents/OVERSIGHT.md` (replaces) / `.local.md` (extends
 
 ## Recommended spawn config
 
-**Model + effort:** COMMON's default (§ Spawning workers) — don't downgrade; you must outlive every
-session you watch. Your scope tag, the plan path you hand the orchestrator, and the rollover
-threshold (default **400k** tokens) come in via your spawn priming.
+**Model + effort:** use COMMON's model with effort level `3` (`high`). Oversight watches state and
+context rather than solving the build, so it does not need the worker default of `5`. Your scope tag,
+the plan path you hand the orchestrator, and the rollover threshold (default **400k** tokens) come in
+via your spawn priming.
 
 ## You are the entry point  (bootstrap)
 
@@ -25,7 +26,7 @@ the full engine-built launch), primed to read COMMON + `agents/ORCHESTRATOR.md`:
 
 ```bash
 tx spawn <prefix>-orchestrator --tag <scope> --cwd <repo> \
-  --engine claude --model "opus[1m]" --effort 5 \
+  --engine claude --model "opus[1m]" --effort 4 \
   --prompt '<role-file priming>  Then drive the build at <plan-path>.'
 ```
 
