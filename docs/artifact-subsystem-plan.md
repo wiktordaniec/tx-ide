@@ -59,8 +59,12 @@ structured annotations — review comments are plain text in the content (see Op
   `current`. Editing a rev file directly is corruption (write discipline — see Enforcement).
 - Rev and `current` writes use the same temp-file + `os.replace` atomicity as the record.
 - **The record is authoritative.** A crash between rev-write and record-save leaves an orphan rev
-  file: ignored on read (the record's `history` defines what exists) and overwritten by the next
-  `modify`. `tx artifact doctor` reports orphans.
+  file: ignored on read (the record's `history` defines what exists). A claimed rev slot is
+  **never silently overwritten** — at claim time a live in-flight writer is indistinguishable from
+  crash debris, so a `modify` hitting a claimed slot always gets the conflict error. `tx artifact
+  doctor` reports orphans; its fix mode removes them so the retried `modify` succeeds. (Amended
+  after QA: the earlier "overwritten by the next modify" convenience was unsound — it let a
+  concurrent loser destroy the winner's snapshot.)
 - Content policy: **accept any bytes** — no type or size gate; fix it when it hurts (settled). The
   record itself stays utf-8 JSON, so metadata is always LLM-readable regardless of content.
 - No-op guard: a `modify` with content identical to the last rev is skipped — no rev, no touch, a
