@@ -204,7 +204,8 @@ check("bind_artifact sets the back-link", bound.artifact_id == "artifact-xyz" an
 check("bind_artifact logs a line", "bind-artifact" in log_types())
 
 # ----- 4. tx artifact open -------------------------------------------------------------------
-# 4a. outside tx: bare `artifact` tag; opens current.<ext>; bound; rooted in the artifact dir.
+# 4a. outside tx ($TMUX unset): bare `artifact` tag; opens current.<ext>; bound; rooted in the dir.
+os.environ.pop("TMUX", None)
 svc = make_service(current=None)
 artifact = ArtifactService().create("sess-A", b"# plan\nalpha\n", title="Plan", filename="plan.md")
 code = open_quietly(ArtifactCommand(svc), [artifact.id])
@@ -217,7 +218,8 @@ check("open roots the view in the artifact's dir", cwd.endswith(artifact.id))
 check("open outside tx tags the view bare `artifact`", opened_session.tags == ["artifact"])
 check("open logs an artifact-open line", "artifact-open" in log_types())
 
-# 4b. inside tx: inherit the invoking session's tags.
+# 4b. inside tx ($TMUX set): inherit the invoking session's tags.
+os.environ["TMUX"] = "/private/tmp/tmux-501/default,1,0"
 svc = make_service(current="inv")
 invoker = OtherSession(id="inv", name="inv", state=State.ALIVE, cwd="/x", initial_cmd="zsh", role=Role.SHELL, tags=["auth", "p1"], created_at=1.0)
 svc.store.save(invoker)

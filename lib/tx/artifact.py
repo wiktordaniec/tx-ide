@@ -35,6 +35,15 @@ ARTIFACT_SCHEMA_VERSION = 1
 # `tx artifact` call from a plain terminal (C1/C2). A first-class provenance value, not a gap.
 USER_ACTOR = "user"
 
+# The EXACT on-disk key set for each record type. The strict boundary tolerates NO unknown fields
+# (Schema/versioning: any field added / removed / re-meaned bumps the version), so `from_dict`
+# rejects a record whose keys are not exactly these — extras mean "not ours / a newer shape without a
+# version bump", missing keys mean "malformed".
+_ARTIFACT_KEYS = frozenset(
+    {"artifact_schema_version", "id", "title", "filename", "created_at", "history"}
+)
+_TOUCH_KEYS = frozenset({"session_id", "at", "rev", "changes"})
+
 
 class UnsupportedArtifactError(Exception):
     """A persisted record is not a current (v1) artifact record — the `from_dict` boundary guard
@@ -69,6 +78,7 @@ class Touch:
 
     @classmethod
     def from_dict(cls, data: dict) -> Touch:
+        _require_exact_keys(data, _TOUCH_KEYS, "a history entry")
         return cls(
             session_id=data["session_id"],
             at=data["at"],
@@ -135,6 +145,7 @@ class Artifact:
                 f"record artifact_schema_version={version!r} is unsupported (expected "
                 f"{ARTIFACT_SCHEMA_VERSION}); tx-ide does not back-migrate older artifact records"
             )
+        _require_exact_keys(data, _ARTIFACT_KEYS, f"artifact {data.get('id')!r}")
         history = [Touch.from_dict(entry) for entry in data["history"]]
         _validate_history(history, data["id"])
         return cls(
@@ -145,6 +156,22 @@ class Artifact:
             history=history,
             artifact_schema_version=version,
         )
+
+
+def _require_exact_keys(data: dict, expected: frozenset[str], what: str) -> None:
+    """Enforce that `data` carries EXACTLY `expected` keys (the strict boundary tolerates no unknown
+    fields — Schema/versioning). A persistence boundary, so this is real validation: extras mean the
+    record is not ours (or a newer shape shipped without a version bump), missing keys mean it is
+    malformed. Either raises `UnsupportedArtifactError` naming what failed and how."""
+    keys = set(data)
+    if keys == expected:
+        return
+    parts = []
+    if unexpected := keys - expected:
+        parts.append(f"unexpected {sorted(unexpected)}")
+    if missing := expected - keys:
+        parts.append(f"missing {sorted(missing)}")
+    raise UnsupportedArtifactError(f"{what} has an invalid key set: {'; '.join(parts)}")
 
 
 def _validate_history(history: list[Touch], artifact_id: str) -> None:

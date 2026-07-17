@@ -144,12 +144,11 @@ class ArtifactContent:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
 
-    def overwrite_rev(self, artifact: Artifact, rev: int, content: bytes) -> None:
-        """Overwrite a rev slot unconditionally (temp file + `os.replace`) — used ONLY to reclaim a
-        crash orphan: a rev file the authoritative record does not reference. Never used on a
-        committed rev; `claim_rev` guards the concurrent-writer path."""
-        self.revs_dir(artifact).mkdir(parents=True, exist_ok=True)
-        self._atomic_write(self.rev_path(artifact, rev), content)
+    def remove_rev(self, artifact: Artifact, rev: int) -> None:
+        """Unlink a rev file — used ONLY by orphan repair (`ArtifactService.repair_orphans`) on a rev
+        the authoritative record does not reference (crash debris). Never called on a committed rev;
+        a claimed slot is never overwritten (B2, amended after QA), only repaired out of band."""
+        self.rev_path(artifact, rev).unlink(missing_ok=True)
 
     def orphan_revs(self, artifact: Artifact) -> list[int]:
         """Rev files on disk that the record's history does NOT reference — crash orphans (a rev

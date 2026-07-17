@@ -110,12 +110,17 @@ check("create defaults the filename to the source basename", created.filename ==
 check("create prints the new id", created.id in out)
 check("create wrote the content", ArtifactService().content(created.id) == b"# plan\nalpha\n")
 
-# ----- 2. actor resolution: env -> tmux @tx_id -> user ----------------------------------------
+# ----- 2. actor resolution: TX_SESSION_ID -> tmux-only-if-inside -> user (QA P1) ---------------
 del os.environ["TX_SESSION_ID"]
+os.environ.pop("TMUX", None)  # start from a known plain-terminal state
+# inside tmux ($TMUX set): resolve the current session's @tx_id.
+os.environ["TMUX"] = "/private/tmp/tmux-501/default,1,0"
 run(command(FakeTmux(current="Views", tx_ids={"Views": "sess-from-tmux"})), ["create", write("a.md", "a\n"), "--title", "via-tmux"])
-check("actor falls back to the current session's @tx_id", only(lambda a: a.title == "via-tmux").history[0].session_id == "sess-from-tmux")
-run(command(FakeTmux(current=None)), ["create", write("b.md", "b\n"), "--title", "via-user"])
-check("actor falls back to the user sentinel outside tx", only(lambda a: a.title == "via-user").history[0].session_id == "user")
+check("inside tmux, actor is the current session's @tx_id", only(lambda a: a.title == "via-tmux").history[0].session_id == "sess-from-tmux")
+# P1: a plain terminal ($TMUX unset) must NOT consult tmux — even with a live server it stays `user`.
+os.environ.pop("TMUX", None)
+run(command(FakeTmux(current="Views", tx_ids={"Views": "sess-from-tmux"})), ["create", write("p.md", "p\n"), "--title", "plain-terminal"])
+check("outside tmux ($TMUX unset), actor is the user sentinel, never a live server session", only(lambda a: a.title == "plain-terminal").history[0].session_id == "user")
 os.environ["TX_SESSION_ID"] = "sess-1"
 
 # ----- 3. modify: file, no-file (working copy), no-op -----------------------------------------
@@ -158,7 +163,7 @@ code, out = run(command(), ["diff", created.id, "0", "1"])
 check("diff of an explicit pair is a unified diff", code == 0 and out.startswith("--- rev0") and "+beta\n" in out)
 code, out_default = run(command(), ["diff", created.id])
 check("diff default is the last two revs", "--- rev1" in out_default and "+++ rev2" in out_default)
-single = only(lambda a: a.title == "via-user")
+single = only(lambda a: a.title == "plain-terminal")
 try:
     run(command(), ["diff", single.id])
     check("diff of a single-rev artifact refuses", False)
@@ -171,13 +176,15 @@ try:
 except SystemExit as bail:
     check("diff with one rev is rejected", bail.code == 2)
 
-# ----- 7. doctor ------------------------------------------------------------------------------
+# ----- 7. doctor + --repair -------------------------------------------------------------------
 code, out = run(command(), ["doctor"])
 check("doctor is clean and exits 0", code == 0 and "clean" in out)
 (artifacts_dir() / created.id / "revs" / "9.md").write_bytes(b"planted orphan\n")
 code, out = run(command(), ["doctor"])
 check("doctor reports the orphan and exits 1", code == 1 and "orphan rev file 9" in out)
-(artifacts_dir() / created.id / "revs" / "9.md").unlink()
+code, out = run(command(), ["doctor", "--repair"])
+check("doctor --repair removes the orphan and exits clean", code == 0 and "removed orphan rev file 9" in out and "clean" in out)
+check("the orphan file is gone after --repair", not (artifacts_dir() / created.id / "revs" / "9.md").exists())
 
 # ----- 8. id resolution (isolated store so bare records don't pollute doctor above) ------------
 iso = ArtifactService(store=ArtifactStore(Path(tempfile.mkdtemp())))

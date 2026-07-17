@@ -723,22 +723,32 @@ class ArtifactCommand(Command):
             ("show <id>", "metadata + the full touch/version log"),
             ("diff <id> [<revA> <revB>]", "difflib diff between two revisions (default: last two)"),
             ("open <id> [--tag T] [--cwd D]", "open the working copy in an nvim view bound to the artifact"),
-            ("doctor", "check store invariants (orphan/missing revs, dirty working copies)"),
+            ("doctor [--repair]", "check store invariants; --repair removes orphan rev files"),
         ):
             print(f"  {usage:<40} {summary}")
 
     def _sub_parser(self, sub: str) -> argparse.ArgumentParser:
         return argparse.ArgumentParser(prog=f"tx artifact {sub}")
 
+    def _current_tmux_session(self) -> str | None:
+        """The current tmux session name (`#S`), or None when we are not inside a tmux session.
+        Gated on `$TMUX`: `tmux display-message -p '#S'` from a plain terminal resolves the DEFAULT
+        server session, so consulting tmux without `$TMUX` set would misattribute a plain-terminal
+        operation to an unrelated session (QA P1). No `$TMUX` ⇒ not inside tmux ⇒ don't ask."""
+        if not os.environ.get("TMUX"):
+            return None
+        return self.service.tmux.current_session_name()
+
     def _actor(self) -> str:
         """The session id to stamp on a touch: `$TX_SESSION_ID` (exported into every tx session),
-        else the `@tx_id` of the current tmux session, else the `USER_ACTOR` sentinel (a plain
-        terminal / a manual edit). Never passed by hand (plan CLI surface); artifact commands never
-        hard-fail on missing session context — they fall back to the sentinel."""
+        else the `@tx_id` of the current tmux session (only when actually inside tmux), else the
+        `USER_ACTOR` sentinel (a plain terminal / a manual edit). Never passed by hand (plan CLI
+        surface); artifact commands never hard-fail on missing session context — they fall back to
+        the sentinel."""
         env_id = os.environ.get("TX_SESSION_ID")
         if env_id:
             return env_id
-        current = self.service.tmux.current_session_name()
+        current = self._current_tmux_session()
         if current is not None:
             tx_id = self.service.tmux.get_tx_id(current)
             if tx_id:
@@ -860,14 +870,22 @@ class ArtifactCommand(Command):
 
     def _invoker_session(self) -> Session | None:
         """The store record for the session invoking `open`, or None outside tx — resolves the
-        current tmux session name (`#S`, the id for a process) back to its record."""
-        current = self.service.tmux.current_session_name()
-        if current is None:
-            return None
-        return self.service.get(current)
+        current tmux session name (`#S`, the id for a process) back to its record. Gated on `$TMUX`
+        (see `_current_tmux_session`) so an `open` from a plain terminal inherits no stray tags."""
+        current = self._current_tmux_session()
+        return self.service.get(current) if current is not None else None
 
     def _doctor(self, argv: list[str]) -> int:
-        self._sub_parser("doctor").parse_args(argv)
+        parser = self._sub_parser("doctor")
+        parser.add_argument(
+            "--repair",
+            action="store_true",
+            help="remove orphan rev files so a retried modify can claim the slot (run when quiescent)",
+        )
+        args = parser.parse_args(argv)
+        if args.repair:
+            for line in self.artifacts.repair_orphans():
+                print(f"  {line}")
         problems = self.artifacts.doctor()
         if not problems:
             print("artifacts: clean")

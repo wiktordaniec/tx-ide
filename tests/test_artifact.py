@@ -50,6 +50,7 @@ from tx.artifact_service import (  # noqa: E402
     ArtifactService,
 )
 from tx.artifact_store import ArtifactContent, ArtifactStore  # noqa: E402
+from tx.events import EventLog  # noqa: E402
 from tx.storage import artifacts_dir, ensure_home  # noqa: E402
 
 ensure_home()
@@ -145,6 +146,9 @@ for mutate, label in (
     (lambda d: {**d, "artifact_schema_version": 2}, "bad version rejected"),
     (lambda d: {**d, "history": []}, "empty history rejected"),
     (lambda d: {**d, "history": [d["history"][0], {**d["history"][1], "rev": 7}]}, "non-contiguous revs rejected"),
+    (lambda d: {**d, "unexpected": 1}, "an unexpected top-level key is rejected (strict boundary)"),
+    (lambda d: {k: v for k, v in d.items() if k != "title"}, "a missing top-level key is rejected"),
+    (lambda d: {**d, "history": [{**d["history"][0], "junk": 9}, *d["history"][1:]]}, "an unexpected key inside a history entry is rejected"),
 ):
     try:
         Artifact.from_dict(mutate(good))
@@ -173,28 +177,45 @@ noext = service.create("sess-A", b"Makefile body\n", filename="Makefile")
 check("an extensionless source names revs bare (revs/0)", (content_dir(noext.id) / "revs" / "0").is_file())
 check("extensionless artifact reports empty extension", noext.extension == "")
 
-# ----- 6b. concurrency: two racing modifys ----------------------------------------------------
+# ----- 6b. concurrency: two racing modifys — the loser ALWAYS conflicts ------------------------
 race = service.create("s", b"v0\n", filename="race.txt")
 copy_one = service.store.load(race.id)
 copy_two = service.store.load(race.id)
 service._apply_modify(copy_one, "s1", b"v1-winner\n", None)  # commits rev1
 try:
     service._apply_modify(copy_two, "s2", b"v1-loser\n", None)  # stale -> collides on rev1
-    check("the losing racer gets a conflict", False)
+    check("the losing racer gets a conflict (record advanced)", False)
 except ArtifactConflict:
-    check("the losing racer gets a conflict", True)
+    check("the losing racer gets a conflict (record advanced)", True)
 check("the winner's content stands", service.content(race.id, rev=1) == b"v1-winner\n")
-check("exactly one touch was committed for the race", len(service.store.load(race.id).history) == 2)
+check("exactly one touch committed for the race", len(service.store.load(race.id).history) == 2)
 
-# ----- 6c. crash orphan: ignored on read, flagged by doctor, overwritten by next modify -------
+# The adversarial window (QA P0): a rev linked but its record NOT yet saved must ALSO conflict — a
+# live in-flight claimer is indistinguishable from crash debris, so `modify` NEVER overwrites it.
+windowed = service.create("s", b"w0\n", filename="window.txt")
+(content_dir(windowed.id) / "revs" / "1.txt").write_bytes(b"in-flight\n")  # a claimer's link, unrecorded
+try:
+    service.modify(windowed.id, "s2", b"w1-loser\n")  # record still 1 entry -> must conflict
+    check("a collision on an unrecorded rev conflicts, never overwrites", False)
+except ArtifactConflict:
+    check("a collision on an unrecorded rev conflicts, never overwrites", True)
+check("the in-flight rev is left untouched", (content_dir(windowed.id) / "revs" / "1.txt").read_bytes() == b"in-flight\n")
+
+# ----- 6c. crash orphan: ignored on read, flagged by doctor, reclaimed by repair (B2, amended) -
 orphaned = service.create("s", b"o0\n", filename="orphan.txt")
 (content_dir(orphaned.id) / "revs" / "1.txt").write_bytes(b"orphan-bytes\n")  # a crash left this
 check("orphan ignored on read (content is still v0)", service.content(orphaned.id) == b"o0\n")
-problems = service.doctor()
-check("doctor flags the orphan rev", any("orphan rev file 1" in p and orphaned.id in p for p in problems))
-reclaimed = service.modify(orphaned.id, "s", b"o1\n")  # targets rev1 -> overwrites the orphan
-check("next modify overwrites the orphan and commits", reclaimed.latest_rev == 1 and service.content(orphaned.id, rev=1) == b"o1\n")
-check("doctor is clean about that artifact after reclaim", not any("orphan" in p and orphaned.id in p for p in service.doctor()))
+check("doctor flags the orphan rev", any("orphan rev file 1" in p and orphaned.id in p for p in service.doctor()))
+try:
+    service.modify(orphaned.id, "s", b"o1\n")  # slot 1 occupied -> conflict, NOT overwrite
+    check("modify conflicts on an orphan-occupied slot (never overwrites)", False)
+except ArtifactConflict:
+    check("modify conflicts on an orphan-occupied slot (never overwrites)", True)
+removed = service.repair_orphans()
+check("repair removes the orphan", any("removed orphan rev file 1" in r and orphaned.id in r for r in removed))
+check("doctor is clean about that artifact after repair", not any("orphan" in p and orphaned.id in p for p in service.doctor()))
+reclaimed = service.modify(orphaned.id, "s", b"o1\n")  # slot now free -> succeeds
+check("modify succeeds once the orphan is repaired", reclaimed.latest_rev == 1 and service.content(orphaned.id, rev=1) == b"o1\n")
 
 # ----- 6d. dirty working copy is a visible state, not an error --------------------------------
 files = ArtifactContent()
@@ -223,5 +244,26 @@ check("content read logs artifact-read", "artifact-read" in types)
 check("diff logs artifact-diff", "artifact-diff" in types)
 create_line = next(e for e in log_lines() if e["type"] == "artifact-create")
 check("create log line carries the actor", create_line["actor"] == "sess-A")
+
+# ----- 6g. doctor detection contract: recordless dir + mutation<->log (isolated store) --------
+iso_home = Path(tempfile.mkdtemp())
+iso = ArtifactService(
+    store=ArtifactStore(iso_home),
+    content=ArtifactContent(iso_home),
+    log=EventLog(iso_home / "log.jsonl"),
+)
+iso_artifact = iso.create("s", b"body\n", filename="iso.md")
+check("a healthy isolated store is doctor-clean", iso.doctor() == [])
+# a content directory under artifacts/ with no record = out-of-band creation (report-only)
+(iso_home / "recordless" / "revs").mkdir(parents=True)
+(iso_home / "recordless" / "revs" / "0.md").write_bytes(b"planted out of band\n")
+check("doctor flags a recordless content dir", any("recordless" in p and "no record" in p for p in iso.doctor()))
+# a history touch with no matching EventLog line = suspected bypass (a truncated log is legitimate)
+(iso_home / "log.jsonl").write_text("")
+suspicions = iso.doctor()
+check(
+    "doctor flags a touch with no EventLog line as suspicion",
+    any(iso_artifact.id in p and "no matching EventLog" in p and "suspected" in p for p in suspicions),
+)
 
 print(f"OK — {PASSED} checks passed")

@@ -21,6 +21,7 @@ list reads, like `tx ls`.
 from __future__ import annotations
 
 import difflib
+import json
 import time
 import uuid
 
@@ -130,23 +131,21 @@ class ArtifactService:
         return artifact
 
     def _write_next_rev(self, artifact: Artifact, rev: int, content: bytes) -> None:
-        """Claim `revs/<rev>` exclusively; on collision, distinguish a lost race from a crash orphan.
-        `claim_rev` fails `FileExistsError` when the slot is taken. Reloading the authoritative
-        record tells the two apart: if it has advanced to reference `rev`, a concurrent modify
-        committed here -> `ArtifactConflict`; if it is unchanged, the file is an orphan a crash left
-        (the record never referenced it) -> overwrite it and proceed (plan test 6, both branches).
-        The residual window — a live concurrent claimer that has linked but not yet saved — is the
-        accepted 'concurrent editing stays rare' tradeoff the plan makes; the record-save follows the
-        claim immediately, so the window is microseconds."""
+        """Claim `revs/<rev>` exclusively as the linearity lock. `claim_rev` fails `FileExistsError`
+        when the slot is already taken — which ALWAYS means this modify lost, so it ALWAYS raises
+        `ArtifactConflict` and NEVER overwrites (no record-reload heuristic, B2 amended after QA). At
+        claim time a live in-flight writer is indistinguishable from crash debris, so overwriting
+        either would be unsafe — overwriting a live claim is a lost touch (the P0). A genuine crash
+        orphan is reclaimed OUT OF BAND by `tx artifact doctor --repair` (an explicit, non-racing
+        step) which frees the slot, after which a re-read + retry claims it and succeeds."""
         try:
             self.files.claim_rev(artifact, rev, content)
         except FileExistsError:
-            head = self.store.load(artifact.id)
-            if head is not None and head.latest_rev >= rev:
-                raise ArtifactConflict(
-                    f"artifact {artifact.id} moved on (rev {rev} already committed) — re-read and retry"
-                )
-            self.files.overwrite_rev(artifact, rev, content)
+            raise ArtifactConflict(
+                f"artifact {artifact.id}: rev {rev} is already claimed — the artifact moved on (a "
+                "concurrent write), or a crashed write left an orphan (`tx artifact doctor --repair` "
+                "clears an orphan). Re-read and retry."
+            )
 
     # ----- reads ---------------------------------------------------------------------------
 
@@ -207,23 +206,86 @@ class ArtifactService:
     # ----- diagnostics ---------------------------------------------------------------------
 
     def doctor(self) -> list[str]:
-        """Invariant check across the store (backs `tx artifact doctor`, run in tests). The record is
-        authoritative, so this flags out-of-band drift: orphan rev files not in `history` (crash
-        orphans — ignored on read), history revs missing their file, and a working copy that differs
-        from the last snapshot (a dirty `current` — a visible state, not an error). Returns
-        human-readable problem lines; an empty list means clean."""
+        """Invariant check across the store (backs `tx artifact doctor`, read-only). The record is
+        authoritative, so this is the Enforcement detection layer — it flags out-of-band drift:
+          - orphan rev files not in `history` (crash debris — ignored on read; they BLOCK the next
+            modify of that slot until `--repair`, since a claimed slot is never overwritten);
+          - history revs whose file is missing on disk;
+          - a dirty working copy (`current` differs from the last snapshot — a visible state);
+          - a content directory under `artifacts/` with no record (out-of-band creation);
+          - a history touch with no matching EventLog mutation line (a SUSPECTED bypass — a truncated
+            log is a legitimate cause too, so it is worded as suspicion, not proof).
+        Returns human-readable problem lines; an empty list means clean. Reclaim (orphan removal) is
+        the separate `repair_orphans` — `doctor` itself never mutates."""
         problems: list[str] = []
-        for artifact in self.store.all():
+        artifacts = self.store.all()
+        record_ids = {artifact.id for artifact in artifacts}
+        logged = self._logged_mutations()
+        for artifact in artifacts:
             for rev in self.files.orphan_revs(artifact):
                 problems.append(
                     f"{artifact.id}: orphan rev file {rev} not in history "
-                    "(crash orphan — ignored on read, overwritten by the next modify)"
+                    "(crash debris — ignored on read; blocks that slot until `doctor --repair`)"
                 )
             missing = self.files.missing_revs(artifact)
             for rev in missing:
                 problems.append(f"{artifact.id}: history rev {rev} has no file on disk")
             problems.extend(self._current_health(artifact, missing))
+            for touch in artifact.history:
+                if self._mutation_signature(artifact.id, touch.rev) not in logged:
+                    problems.append(
+                        f"{artifact.id}: rev {touch.rev} touch has no matching EventLog mutation line "
+                        "(suspected out-of-band write — a truncated log is also possible)"
+                    )
+        if self.store.directory.exists():
+            for entry in sorted(self.store.directory.iterdir()):
+                if entry.is_dir() and entry.name not in record_ids:
+                    problems.append(
+                        f"{entry.name}: content directory under artifacts/ has no record "
+                        "(out-of-band creation — the record is authoritative)"
+                    )
         return problems
+
+    def repair_orphans(self) -> list[str]:
+        """Remove every orphan rev file — a rev on disk the authoritative record does not reference
+        (crash debris). Backs `tx artifact doctor --repair`: it frees an orphaned slot so the next
+        `modify` (which would otherwise conflict on it forever) can claim it. An EXPLICIT maintenance
+        step — run it when QUIESCENT; it must not race a live `modify` that has just claimed a slot it
+        has not yet recorded (which is indistinguishable from an orphan). Returns the removed lines."""
+        removed: list[str] = []
+        for artifact in self.store.all():
+            for rev in self.files.orphan_revs(artifact):
+                self.files.remove_rev(artifact, rev)
+                removed.append(f"{artifact.id}: removed orphan rev file {rev}")
+        return removed
+
+    def _mutation_signature(self, artifact_id: str, rev: int) -> tuple:
+        """The EventLog signature a touch at `rev` should carry: a create (rev 0) or a modify (rev n).
+        `doctor` cross-checks each `history` touch against `_logged_mutations`."""
+        return ("create", artifact_id) if rev == 0 else ("modify", artifact_id, rev)
+
+    def _logged_mutations(self) -> set:
+        """The set of mutation signatures present in the EventLog — `("create", id)` from an
+        `artifact-create` line and `("modify", id, rev)` from an `artifact-modify` line. Tolerant of
+        a truncated / malformed log: a diagnostic must not itself crash on the very corruption it
+        looks for, so an unparsable line is skipped."""
+        signatures: set = set()
+        if not self.log.path.exists():
+            return signatures
+        for line in self.log.path.read_text().splitlines():
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            kind, fields = entry.get("type"), entry.get("msg", "").split()
+            if kind == "artifact-create" and fields:
+                signatures.add(("create", fields[0]))
+            elif kind == "artifact-modify" and len(fields) >= 2 and fields[1].startswith("rev"):
+                try:
+                    signatures.add(("modify", fields[0], int(fields[1][3:])))
+                except ValueError:
+                    continue
+        return signatures
 
     def _current_health(self, artifact: Artifact, missing_revs: list[int]) -> list[str]:
         """The working-copy line for `doctor`: dirty (differs from the last snapshot), or a missing
