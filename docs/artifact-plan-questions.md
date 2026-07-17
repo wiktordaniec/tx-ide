@@ -74,10 +74,10 @@ Bare `revs/<n>` breaks nvim filetype detection and renderer mime.
 - notes:
 
 ### D2 — binary & size policy
-- [x] v1 is text-only: refuse binary on `create`/`modify` (utf-8 decode check), no size cap
+- [ ] v1 is text-only: refuse binary on `create`/`modify` (utf-8 decode check), no size cap
 - [ ] accept binary; `diff` refuses on binary; no cap
-- [?] other cap/policy — notes: we should accept anything, if it becomes a problem I will try to fix
-  it then.
+- [x] other (user's pick, overrides the original pre-check): accept anything — no type or size
+  gate; `diff` refuses non-utf-8; "if it becomes a problem I will try to fix it then."
 
 ### D3 — encoding
 - [x] utf-8 required (implied by D2 text-only)
