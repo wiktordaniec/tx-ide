@@ -67,8 +67,11 @@ structured annotations — review comments are plain text in the content (see Op
   concurrent loser destroy the winner's snapshot.)
 - Content policy: **accept any bytes** — no type or size gate; fix it when it hurts (settled). The
   record itself stays utf-8 JSON, so metadata is always LLM-readable regardless of content.
-- No-op guard: a `modify` with content identical to the last rev is skipped — no rev, no touch, a
-  printed notice.
+- No-op guard: a `modify` whose content is identical to the **last rev** is skipped — no rev, no
+  touch, and `current` is left untouched (a dirty working copy is never destroyed or reset by a
+  no-op). The notice states exactly that comparison — "supplied content identical to rev N,
+  skipped" — and additionally flags when the working copy holds unsnapshotted changes, so it never
+  claims a dirty `current` is identical to anything.
 - To *show* what changed between two revisions, compute on demand with stdlib `difflib` — we store
   versions, not diffs. `diff` refuses (cleanly) when either rev does not decode as utf-8.
 - **Reversible:** the `history[]` schema is identical if the snapshot backing is ever swapped for a
