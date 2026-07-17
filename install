@@ -108,11 +108,15 @@ I will:
       (Claude's hook events → baked shims under $TX_IDE_DIR/hooks/claude, the
        global tmux session-closed hook, all tracked by a _tx_ide_managed marker)
   - move the statusline under $TX_IDE_DIR and point settings.json at it
+  - optionally ([y/N] confirm) symlink ~/.config/nvim to the tx-ide default
+      nvim config (existing config backed up, never deleted; flip later with
+      setup/nvim.sh install|remove)
   - configure iTerm: keyboard map + import tokyonight-night color preset,
       with a [Y/n] confirm to also apply it to your Default profile
       (only if iTerm is installed and currently quit)
 
 I will NOT touch:
+  - your ~/.config/nvim, unless you opt in to the tx-ide config ([y/N], backed up)
   - any settings.json entry the marker did not add (permissions, theme,
       plugins, peon-ping / require-worktree / other hooks)
   - ~/.claude/CLAUDE.md
@@ -374,7 +378,21 @@ print(f"  {G}→{X} statusLine.command → {status_command}  {D}(marker mode={mo
 print(f"  {D}backup: {real}.bak.{stamp}{X}")
 PY
 
-# === 7: iTerm (keymap + tokyonight-night colors) ===
+# === 7: nvim config (optional, per-machine toggle) ===
+# tx-ide ships a full LazyVim config under $REPO/nvim — everything spawn-nvim
+# relies on (tokyonight, diffview.nvim, gitsigns diff keymaps, keylog telemetry).
+# Linking is opt-in per machine; flip later any time with setup/nvim.sh install|remove.
+header "Nvim config (optional)"
+if [[ -L "${XDG_CONFIG_HOME:-$HOME_DIR/.config}/nvim" && \
+  "$(readlink "${XDG_CONFIG_HOME:-$HOME_DIR/.config}/nvim")" == "$REPO/nvim" ]]; then
+  ok "~/.config/nvim" "already linked to tx-ide"
+elif confirm "Use tx-ide's default nvim config (~/.config/nvim → repo; existing config backed up)?" N; then
+  "$REPO/setup/nvim.sh" install
+else
+  info "Skipped. Opt in later with: $REPO/setup/nvim.sh install"
+fi
+
+# === 8: iTerm (keymap + tokyonight-night colors) ===
 header "iTerm setup"
 if [[ "${TERM_PROGRAM:-}" == "iTerm.app" ]]; then
   if pgrep -x iTerm2 >/dev/null 2>&1; then
@@ -397,7 +415,7 @@ else
   warn "iTerm" "TERM_PROGRAM='${TERM_PROGRAM:-unknown}' — skipping (iTerm only)"
 fi
 
-# === 8: reload tmux (only if a server is already running) ===
+# === 9: reload tmux (only if a server is already running) ===
 header "Reload tmux"
 if tmux info >/dev/null 2>&1; then
   if tmux source-file "$HOME_DIR/.tmux.conf" 2>&1 | sed 's/^/  → /'; then

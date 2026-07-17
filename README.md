@@ -105,7 +105,7 @@ session, retag, message a peer. It follows `agents/TX-ASSISTANT.md`.
 | Command | What it does |
 |---|---|
 | `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd CMD] [--engine ENGINE] [--prompt TEXT] [--model MODEL] [--effort {1,2,3,4,5}] [--read-only] [--env K=V …]` | Spawn a detached tmux session. Claude/Codex agents launch from a detached `$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<name>` checkout. Both footers show `<repository>--<name>` without a branch. Engine-built launches translate effort as `1=low`, `2=medium`, `3=high`, `4=xhigh`, and `5=max`; omission defaults to `3`. `--read-only` keeps shell inspection available while blocking repository edits. LLM chats are captured automatically. |
-| `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V …]` | Spawn a detached nvim companion. `--diff [BASE]` opens a diffview (base defaults to `main`). |
+| `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V …]` | Spawn a detached nvim companion. `--diff [BASE]` opens a diffview (base defaults to `main`). The plugins this relies on (diffview.nvim, gitsigns, tokyonight) ship in the repo's `nvim/` config — provision it with `setup/nvim.sh install` (or the installer's nvim prompt). |
 | `tx spawn-view <name> [--tag TAGS] [--cwd DIR] [--cmd CMD] [--env K=V …]` | Spawn a detached view session (`kind=view`); `--tag` defaults to `views`. |
 
 ### Inspect
@@ -217,6 +217,18 @@ The model mirrors how Claude Code itself installs: the **cloned repo is the sour
 - registers those hooks in `~/.claude/settings.json` via the unified engine installer
   `setup/engines/install.sh` (Claude by default; Codex is opt-in via `--engine codex`), behind a
   self-describing marker so re-runs and uninstall are exact and your other hooks are left untouched.
+
+It also offers (per-machine, `[y/N]`) to **provision the bundled nvim config**: the repo ships a
+complete LazyVim setup under `nvim/` — tokyonight, diffview.nvim, gitsigns with inline-diff
+keymaps, and keymap-usage telemetry (`keylog.jsonl`) — i.e. everything `tx spawn-nvim --diff`
+relies on. Opting in symlinks `~/.config/nvim → <repo>/nvim` (an existing config is moved to
+`nvim.bak.<stamp>`, never deleted). Flip the choice any time:
+
+```bash
+setup/nvim.sh install   # use tx-ide's nvim config on this machine
+setup/nvim.sh remove    # unlink, restore the most recent backup
+setup/nvim.sh status    # show what ~/.config/nvim currently is
+```
 
 Re-run any time to update or reconcile drift. After it finishes:
 

@@ -59,6 +59,8 @@ priming never reads these conventions.
 
 Both inject `COLORTERM=truecolor` and `TERM=xterm-256color`. `spawn-nvim` also forces `colorscheme tokyonight-moon` via `+CMD` because `tmux new-session -d` strips the OSC11 background hint and nvim's auto-mode would land on the light variant.
 
+The plugins `spawn-nvim` relies on (tokyonight, diffview.nvim, gitsigns) ship in the repo's `nvim/` config. On a machine where `--diff` fails with unknown-command errors, the config isn't provisioned — run `setup/nvim.sh install` (per-machine opt-in; `remove` reverts).
+
 ## Spawning workers
 
 When you need to delegate work — coding, scoping, planning, or research/exploration — spawn an agent worker. The mechanics are `tx spawn` above; what turns a bare agent CLI into a *worker* is the **priming prompt** passed through `--cmd`. Spawn one with no priming and it never reads these conventions — it has no role, no standards, no worktree discipline.
