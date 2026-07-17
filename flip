@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # ./flip — the S9 cutover from the live bash tx + mailbox to the new Python tx (install-flip.md §5).
 #
+# ⚠️  RETIRED — do NOT run. This drives `tx _flip-rederive`, which was removed with the
+# session-record v4 split (the v1→v2 cutover is long complete; every live record is now v3/v4).
+# Kept only for historical reference; running it will error on the missing verb. This whole spent
+# v1→v2 apparatus (this script + install-flip.md) can be deleted in a follow-up.
+#
 #   ./flip [--dry-run]
 #
 # The ONE destructive, hands-on, user-gated stage. NOT an AI worker. Run it yourself, with the

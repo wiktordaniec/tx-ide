@@ -29,6 +29,8 @@ If the outer pane is nest-attached to an inner session (typical for Views), thes
 
 A pane ssh-attached to a remote tmux carries `inner-remote="1"` plus `inner-session-name`. Treat the inner attributes as informational — do not try to operate on the remote.
 
+`session-kind` / `inner-session-kind` is `view` or `process` — a view is a home-base session you nest into (marked live by the `@tx_view` tmux option, not a record). A view carries **no** `session-tag` (views have no tags); a process carries its scope tags.
+
 Phrase mapping:
 
 - "this session" / "the current session" → `inner-session-name` if present, else `session-name`. When the user is inside a View nest-attached to a worker, "this" almost always means the worker.
@@ -57,16 +59,13 @@ Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.
 
 - `tags` — comma-separated **scope** chips rendered by the `tx` picker. Scope only — never a role.
 - `role` — what runs in the session (`llm` / `nvim` / `shell` / `other`), derived from the launch command at spawn and shown as its own ROLE column in `tx attach`. Not set by hand, and not a tag.
-- `kind` — a structural label (`view` vs `process`); `view` marks the home-base sessions filtered out of the picker.
 
-These are **fields in the record**, not tmux options — resolve the session's `@tx_id` to read them, change `tags` through `tx tag` (never `tmux set @tag`/`@kind`); `kind` and `role` are set at spawn, not edited. The record outlives a `kill-session` and a tmux restart.
+These are **fields in the record**, not tmux options — resolve the session's `@tx_id` to read them, change `tags` through `tx tag` (never `tmux set @tag`); `role` is set at spawn, not edited. The record outlives a `kill-session` and a tmux restart. (Views are the exception — they are **not** records; see below.)
 
 ### Views vs Processes
 
-`tx ls` splits the world into two buckets:
-
-- **Views** (record `kind=view`) — home-base outer sessions the user lives in. They nest-attach inner sessions (`TMUX= tmux attach -t <inner>`) and act as a stable surface. Views are filtered out of the `tx attach` picker.
-- **Processes** — everything else. The tx-assistant itself, AI workers (role `llm`), nvim companions (role `nvim`), ad-hoc shells. These are what the user picks from in `tx attach`.
+- **Views** — home-base outer sessions the user lives in. A view is **not a record**: it is a live tmux session marked by the `@tx_view` option, which is its whole durable identity (it dies with the tmux server and is recreated by `tx spawn-view`). They nest-attach inner sessions (`TMUX= tmux attach -t <inner>`) and act as a stable surface. A view carries no tags, and is not listed by `tx ls` or the `tx attach` picker — it is visible in tmux itself. Its only tx lifecycle verbs are `tx spawn-view` (create) and `tx kill <view>` (end); it cannot be tagged or renamed through tx.
+- **Processes** — everything with a record. The tx-assistant itself, AI workers (role `llm`), nvim companions (role `nvim`), ad-hoc shells. `tx ls` is a single processes listing, and these are what the user picks from in `tx attach`.
 
 ### Tag convention
 
@@ -88,7 +87,7 @@ You run as the session `tx-assistant`, tagged `tx-system`. "This session" in use
 
 | Subcommand | Purpose |
 |---|---|
-| `tx ls` | Plain stdout list, two sections: VIEWS, PROCESSES. Use this to answer "what's running" questions. |
+| `tx ls` | Plain stdout list of live processes (views are live tmux objects, not records, so they are not listed). Use this to answer "what's running" questions. |
 | `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--engine ENGINE] [--prompt TEXT] [--model MODEL] [--effort {1,2,3,4,5}] [--read-only] [--env K=V ...]` | Spawn a detached tmux session. `--tag` is mandatory. Engine-built effort maps `1=low`, `2=medium`, `3=high`, `4=xhigh`, and `5=max`, defaulting to `3` when omitted. Agents automatically launch from `$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<name>`; `--read-only` keeps inspection available while sandboxing repository writes. An llm session automatically records its chat. `--env` may repeat. |
 | `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V ...]` | Spawn an nvim companion. `--diff` defaults `BASE` to `main` if omitted. Forces a dark colorscheme. `--env` may repeat. |
 | `tx tag <name> [tags]` | Read or set a session's tags in the durable store — the non-interactive counterpart to the picker's Ctrl-T. With `tags` (comma-separated): set them. Without: print the current tags. Resolves `<name>` via its live `@tx_id`, falling back to a store name lookup for a session no longer live. |
@@ -106,7 +105,7 @@ Mandatory flag on both spawn commands: `--tag`. They refuse without it.
 - `tmux select-window -t <session>:<window>` / `tmux select-pane -t <pane-id>` — navigate within a session.
 - `tmux kill-session -t <name>` — terminate. See **Guarded sessions** below.
 - `tmux rename-session -t <old> <new>` — rename in place.
-- Tags/kind are not tmux options — set tags at spawn via `--tag`, non-interactively with `tx tag <name> "<tags>"`, or via the picker's Ctrl-T (`tx attach`); never `tmux set @tag`. `tmux show-options -vqt <session> @tx_id` resolves a session to its record.
+- Tags are a record field, not a tmux option — set them at spawn via `--tag`, non-interactively with `tx tag <name> "<tags>"`, or via the picker's Ctrl-T (`tx attach`); never `tmux set @tag`. (A view is the exception: it has no record and is marked by the `@tx_view` tmux option.) `tmux show-options -vqt <session> @tx_id` resolves a process to its record.
 - `tmux display-message -p '#{...}'` — read pane/session attributes.
 - `tmux send-keys -t <target> -l -- "<line>"` followed by `sleep 0.3` then `tmux send-keys -t <target> Enter` — send a line to a session's active pane. The sleep is required because the agent's input box drops Enter if it arrives too fast.
 

@@ -1,7 +1,8 @@
 """Domain entities for tx-ide — the data model the interface-freeze locks (stage S0).
 
-`Session`, `ChatRef`, `Origin`, `Location`, and the `Kind` / `Role` / `State` enums are
-consumed by *every* later stage, so the shapes here are contracts. References:
+`Session` (with its `LlmSession` / `OtherSession` subtypes), `ChatRef`, `Origin`, `Location`, and
+the `Role` / `State` enums are consumed by *every* later stage, so the shapes here are contracts.
+References:
 
   - tx-service-redesign.md §1 (object model) + §2 (per-role state model, D3/F2)
   - attachment-topology.md §2 (`Location` / `attached_to` — FROZEN, no `remote` field)
@@ -21,8 +22,10 @@ from enum import Enum
 
 # Bumped only when the on-disk record shape changes. There is NO back-migration (§9): the loader
 # refuses any other version at the boundary (OPEN-0b) rather than silently mis-reading an older
-# record. v3 added the explicit `engine` field (design §1); `tx migrate` upgrades v2 records in place.
-SCHEMA_VERSION = 3
+# record. v4 split the one record shape into role-discriminated types and took views out of the
+# store: it drops the dead `kind` key, drops the non-llm `engine`/`chats`/`last_activity` keys, and
+# deletes view records. `tx migrate` upgrades v3 records in place.
+SCHEMA_VERSION = 4
 
 # Access-mode markers live in the already-persisted session environment, so v3 records remain
 # readable across this additive behavior change. An absent marker is the writable default.
@@ -31,19 +34,12 @@ REQUIRE_WORKTREE_ENV = "TX_REQUIRE_WORKTREE"
 
 
 class UnsupportedRecordError(Exception):
-    """A persisted record is not a current (v3) tx-ide record (OPEN-0b boundary guard).
+    """A persisted record is not a current (v4) tx-ide record (OPEN-0b boundary guard).
 
     Raised by `Session.from_dict` on a `schema_version` mismatch. `SessionStore.all()` skips such
     records (one stale older-version file must not crash `ls`); `SessionStore.load()` lets it
     propagate (the caller asked for that specific record).
     """
-
-
-class Kind(str, Enum):
-    """Structural classification of a tmux session (§1)."""
-
-    VIEW = "view"  # an outer "Views" home the user lives in; hosts nested sessions
-    PROCESS = "process"  # a normal worker/agent/shell session
 
 
 class Role(str, Enum):
@@ -225,40 +221,52 @@ class ChatRef:
 
 @dataclass
 class Session:
-    """A tx-managed tmux session — the central entity (§1). The record file is `<id>.json`.
+    """A tx-managed tmux session — the shared **base** of the role-discriminated hierarchy (§1).
+    The record file is `<id>.json`. Only the work fields every consumer reads uniformly live here;
+    the llm-only axis (`engine` / `chats` / `last_activity` / `turn_started_at`) lives on
+    `LlmSession`, and `role` is supplied by each subtype (a read-only `Role.LLM` property on
+    `LlmSession`, a plain field on `OtherSession`) so a uniform reader can duck-type `session.role`.
 
-    `pid` is spawn provenance only: liveness is tmux `has-session` (C1), never a pid check. The
-    `engine` field names the agent CLI of an llm session (schema v3, revisiting D9 — `None` for a
-    non-llm session, and `None` on an llm record until T1 wires spawn to populate it). `state` is
-    role-dependent (D3); `attached_to` is the frozen `Location` list (S6 fills it, S0 freezes it).
+    The base is abstract by convention — `from_dict` and `_spawn` only ever build a concrete
+    subtype. Reading `self.role` (or `self.chats`) on a bare base instance is a loud
+    `AttributeError`, which is the point: the split makes the llm axis structurally unreachable off
+    a non-llm session instead of a silent `None`.
+
+    `pid` is spawn provenance only: liveness is tmux `has-session` (C1), never a pid check. `state`
+    is role-dependent (D3); `attached_to` is the frozen `Location` list (S6 fills it, S0 freezes
+    it). Every record is a process — views are no longer persisted (they are live `@tx_view` tmux
+    objects), so `tmux_name` is always the id.
     """
 
     id: str  # uuid, primary key (the record file name)
-    name: str  # human display name; tmux names a PROCESS by `id` (see tmux_name), D7
-    kind: Kind
-    role: Role
+    name: str  # human display name; tmux always names a session by `id` (see tmux_name), D7
     state: State
     cwd: str = ""
-    cmd: str = ""
-    engine: Engine | None = (
-        None  # the session's agent engine, if it has one (v3); None for non-llm
-    )
+    initial_cmd: str = ""  # the resolved engine/launch command (JSON key stays "cmd")
     tags: list[str] = field(default_factory=list)  # free-form scope chips
-    env: dict[str, str] = field(default_factory=dict)
+    spawn_env: dict[str, str] = field(
+        default_factory=dict
+    )  # spawn-time environment (JSON key stays "env")
     parent: str | None = None
     pid: int | None = None  # provenance only (C1)
     attached_to: list[Location] = field(default_factory=list)
     created_at: float | None = None
     ended_at: float | None = None
-    last_activity: float | None = None
-    chats: list[ChatRef] = field(default_factory=list)
     schema_version: int = SCHEMA_VERSION
 
     # ----- behavior -------------------------------------------------------------------------
 
     @property
     def tmux_name(self) -> str:
-        return self.id if self.kind == Kind.PROCESS else self.name
+        """Every record is a process, and a process is tmux-named by its id (D7)."""
+        return self.id
+
+    @property
+    def activity_at(self) -> float:
+        """Uniform recency key for every sort/tiebreak across both subtypes. The base has no
+        activity signal, so it falls back to spawn time; `LlmSession` overrides this to prefer its
+        real `last_activity`. Always a float (never `None`) so callers can sort without guarding."""
+        return self.created_at or 0.0
 
     def is_alive(self) -> bool:
         """Whether the *record* is in a non-terminal state. NOTE: this reflects recorded state,
@@ -268,14 +276,15 @@ class Session:
 
     @property
     def needs_attention(self) -> bool:
-        """The picker's "needs you" signal (§2): a WAITING llm session. Gated on role so a
-        non-llm session never lights up."""
+        """The picker's "needs you" signal (§2): a WAITING llm session. Role-gated (via the
+        subtype's `role`) so a non-llm session never lights up. Stays on the base because
+        `sessions-graph`'s `session_payload` reads it on every session before the llm filter."""
         return self.role == Role.LLM and self.state == State.WAITING
 
     @property
     def read_only(self) -> bool:
         """Whether this agent was launched in the explicit repository read-only mode."""
-        return self.role == Role.LLM and self.env.get(READ_ONLY_ENV) == "1"
+        return self.role == Role.LLM and self.spawn_env.get(READ_ONLY_ENV) == "1"
 
     def transition_to(self, new_state: State) -> bool:
         """Apply a state transition, honoring C3: terminal states (EXITED / ARCHIVED) are
@@ -293,8 +302,8 @@ class Session:
         return True
 
     def matches(self, query: str) -> bool:
-        """Case-insensitive substring match over the fields a user filters on (name, role, kind,
-        state, tags, cwd). Backs `SessionStore` text search / the picker's `-f` prefill."""
+        """Case-insensitive substring match over the fields a user filters on (name, role, state,
+        tags, cwd). Backs `SessionStore` text search / the picker's `-f` prefill."""
         if not query:
             return True
         needle = query.lower()
@@ -302,7 +311,6 @@ class Session:
             [
                 self.name,
                 self.role.value,
-                self.kind.value,
                 self.state.value,
                 "read-only" if self.read_only else "writable",
                 self.cwd,
@@ -314,54 +322,52 @@ class Session:
     # ----- persistence ----------------------------------------------------------------------
 
     def to_dict(self) -> dict:
-        """Serialize to the v3 on-disk shape. Enums → their string values (an unset `engine` → the
-        JSON `null`, not a string); nested dataclasses → dicts. Carries the `engine` field
-        (D9-revised)."""
+        """Serialize the shared work fields to the v4 on-disk shape. `role` comes from the subtype;
+        the attribute renames keep their legacy JSON keys (`initial_cmd` → `"cmd"`, `spawn_env` →
+        `"env"`). Subtypes extend this: `LlmSession` adds the llm axis, `OtherSession` adds
+        nothing (no `kind`/`engine`/`chats`/`last_activity` keys)."""
         return {
             "schema_version": self.schema_version,
             "id": self.id,
             "name": self.name,
-            "kind": self.kind.value,
             "role": self.role.value,
             "state": self.state.value,
             "cwd": self.cwd,
-            "cmd": self.cmd,
-            "engine": self.engine.value if self.engine is not None else None,
+            "cmd": self.initial_cmd,
             "tags": list(self.tags),
-            "env": dict(self.env),
+            "env": dict(self.spawn_env),
             "parent": self.parent,
             "pid": self.pid,
             "attached_to": [location.to_dict() for location in self.attached_to],
             "created_at": self.created_at,
             "ended_at": self.ended_at,
-            "last_activity": self.last_activity,
-            "chats": [chat.to_dict() for chat in self.chats],
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> Session:
-        """Deserialize a persisted record. This is a system boundary (persisted data), so it
-        validates the schema version here (OPEN-0b) — a non-v3 record raises a clear
-        `UnsupportedRecordError`, never a raw `TypeError`/`KeyError`. Within a v3 record the shape
-        is ours, so fields are read directly (no defensive defaults — DEVELOPER standard)."""
+        """Deserialize a persisted record — the role-dispatching **factory** for the hierarchy.
+        This is a system boundary (persisted data), so it validates the schema version here
+        (OPEN-0b): a non-v4 record raises a clear `UnsupportedRecordError`, never a raw
+        `TypeError`/`KeyError`. `role == "llm"` builds an `LlmSession` (`engine`/`chats`/
+        `last_activity` are guaranteed present on such records; `turn_started_at` is read via
+        `.get()` because a v4 record written before the session's first post-split turn lacks it);
+        every other role builds an `OtherSession`. Within a v4 record the shape is ours, so fields
+        are read directly (no defensive defaults — DEVELOPER standard)."""
         version = data.get("schema_version")
         if version != SCHEMA_VERSION:
             raise UnsupportedRecordError(
                 f"record schema_version={version!r} is unsupported (expected {SCHEMA_VERSION}); "
                 "tx-ide does not back-migrate older records on load (§9) — run `tx migrate` to "
-                "upgrade v2 records to v3"
+                "upgrade older records"
             )
-        return cls(
+        common = dict(
             id=data["id"],
             name=data["name"],
-            kind=Kind(data["kind"]),
-            role=Role(data["role"]),
             state=State(data["state"]),
             cwd=data["cwd"],
-            cmd=data["cmd"],
-            engine=Engine(data["engine"]) if data["engine"] is not None else None,
+            initial_cmd=data["cmd"],
             tags=list(data["tags"]),
-            env=dict(data["env"]),
+            spawn_env=dict(data["env"]),
             parent=data["parent"],
             pid=data["pid"],
             attached_to=[
@@ -369,7 +375,64 @@ class Session:
             ],
             created_at=data["created_at"],
             ended_at=data["ended_at"],
-            last_activity=data["last_activity"],
-            chats=[ChatRef.from_dict(chat) for chat in data["chats"]],
             schema_version=version,
         )
+        if data["role"] == Role.LLM.value:
+            return LlmSession(
+                **common,
+                engine=Engine(data["engine"]),
+                chats=[ChatRef.from_dict(chat) for chat in data["chats"]],
+                last_activity=data["last_activity"],
+                turn_started_at=data.get("turn_started_at"),
+            )
+        return OtherSession(**common, role=Role(data["role"]))
+
+
+@dataclass
+class LlmSession(Session):
+    """A session driven by a coding-agent CLI (`role == llm`). Carries the llm-only axis the
+    engine / chat / hook machinery reads unconditionally, so the split makes those reads
+    structurally safe: `engine` is the agent CLI (non-optional — every llm record has one), `chats`
+    is the conversation-provenance list, `last_activity` is the last recorded turn time, and
+    `turn_started_at` is the C5 stuck-`WORKING` clock (armed when a turn starts, read by the
+    Reconciler)."""
+
+    engine: Engine = Engine.CLAUDE  # non-optional; a real engine is always passed at spawn/load
+    chats: list[ChatRef] = field(default_factory=list)
+    last_activity: float | None = None
+    turn_started_at: float | None = None  # C5 clock; None on a record written before its first turn
+
+    @property
+    def role(self) -> Role:
+        """Fixed by type — an `LlmSession` is always `llm`. A read-only property (not a field) so
+        the generated `__init__` never accepts or overwrites it: a same-named dataclass field would
+        collide with a data descriptor and break construction."""
+        return Role.LLM
+
+    @property
+    def activity_at(self) -> float:
+        """Prefer the real last-turn time; fall back to spawn time when no turn has run yet."""
+        return self.last_activity or self.created_at or 0.0
+
+    def to_dict(self) -> dict:
+        data = super().to_dict()
+        data["engine"] = self.engine.value
+        data["last_activity"] = self.last_activity
+        data["chats"] = [chat.to_dict() for chat in self.chats]
+        data["turn_started_at"] = self.turn_started_at
+        return data
+
+
+@dataclass
+class OtherSession(Session):
+    """A non-llm work session (nvim / shell / other). It uses none of the llm axis: `role` is a
+    plain field set from disk (immutable by convention — nothing mutates it, so there is no setter
+    to remove), and `chats` is a read-only empty property so the uniform picker/ls loops that read
+    `len(session.chats)` stay branch-free."""
+
+    role: Role = Role.OTHER  # nvim / shell / other, set from disk at load
+
+    @property
+    def chats(self) -> list[ChatRef]:
+        """Non-llm sessions host no chats; a read-only `[]` keeps uniform readers branch-free."""
+        return []

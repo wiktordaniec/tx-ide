@@ -25,7 +25,7 @@ import sys
 import tempfile
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from . import chat, engines, history, hooks, palette, sync
@@ -46,7 +46,7 @@ from .session import (
     SCHEMA_VERSION,
     ChatRef,
     Engine,
-    Kind,
+    LlmSession,
     Origin,
     Role,
     Session,
@@ -271,25 +271,23 @@ class SpawnNvimCommand(Command):
 
 class SpawnViewCommand(Command):
     name = "spawn-view"
-    summary = "Spawn a detached view session (kind=view); --tag defaults to 'views'."
+    summary = "Spawn a detached view session (a live @tx_view tmux home, not a store record)."
 
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
         parser.add_argument("name")
-        parser.add_argument("--tag", default="views")
         parser.add_argument("--cwd")
         parser.add_argument("--cmd")
         parser.add_argument("--env", action="append", type=_env_pair)
         args = parser.parse_args(argv)
         spec = SpawnSpec.for_view(
             name=args.name,
-            tags=_split_tags(args.tag),
             cwd=args.cwd or self._default_cwd(),
             cmd=args.cmd or _default_shell(),
             env=_parse_env(args.env),
         )
-        session = self.service.spawn_view(spec)
-        print(f"Spawned view '{session.name}' (cwd={session.cwd}, tag={args.tag})")
+        name = self.service.spawn_view(spec)
+        print(f"Spawned view '{name}' (cwd={spec.cwd})")
         return 0
 
 
@@ -298,7 +296,7 @@ class SpawnViewCommand(Command):
 
 class LsCommand(Command):
     name = "ls"
-    summary = "List current (live) sessions in VIEWS / PROCESSES sections."
+    summary = "List current (live) sessions (a single PROCESSES listing; views live in tmux)."
 
     def run(self, argv: list[str]) -> int:
         self._parser().parse_args(argv)  # no args; honors -h
@@ -416,7 +414,7 @@ class HistoryCommand(Command):
             return False
         if cwd is not None and cwd not in session.cwd:
             return False
-        ended = session.ended_at or session.last_activity or 0
+        ended = session.ended_at or session.activity_at
         if since is not None and ended < since:
             return False
         if until is not None and ended > until:
@@ -519,7 +517,7 @@ class ResumeCommand(Command):
             tags=list(record.tags),
             cwd=cwd,
             cmd=resume_cmd,
-            env=dict(record.env),
+            env=dict(record.spawn_env),
             records_own_chat=True,
             engine=record.engine,
             read_only=record.read_only,
@@ -627,7 +625,8 @@ class KillCommand(Command):
         parser.add_argument("name")
         args = parser.parse_args(argv)
         session = self.service.kill(args.name)
-        print(f"Killed '{session.name}'")
+        # `kill` returns None when it ended a view (a live @tx_view session, not a record) — Q3.
+        print(f"Killed '{session.name if session is not None else args.name}'")
         return 0
 
 
@@ -796,7 +795,6 @@ class StartCommand(Command):
             self.service.spawn_view(
                 SpawnSpec.for_view(
                     name="Views",
-                    tags=["views"],
                     cwd=str(repo),
                     cmd=_default_shell(),
                 )
@@ -873,9 +871,7 @@ class AttachCommand(Command):
         # Size the NAME column once (terminal width + longest live name) and export it so each
         # reload-sync subshell (`tx _list`) renders at the same width as the initial paint.
         self.service.reconcile()
-        live = [
-            s for s in self.service.store.all() if s.is_alive() and s.kind != Kind.VIEW
-        ]
+        live = [s for s in self.service.store.all() if s.is_alive()]
         namew = picker_namew(
             detect_term_cols(), max((len(s.name) for s in live), default=0)
         )
@@ -1112,12 +1108,13 @@ class AttachCommand(Command):
         return True
 
     def _is_view_session(self, name: str) -> bool:
-        """Whether `name` is recorded with kind=view — gates the nest-attach (only a Views pane
-        hosts nested sessions). Port of `is_view_session`, resolved through the service."""
+        """Whether `name` is a live view — gates the nest-attach (only a Views pane hosts nested
+        sessions). A view is not a record now: it is a live tmux session carrying the `@tx_view`
+        marker, so this is one direct option read (no store/service resolution, and no dependence on
+        the archived-record quirk the old record lookup relied on)."""
         if not name:
             return False
-        session = self.service.get(name)
-        return session is not None and session.kind == Kind.VIEW
+        return self.service.tmux.is_view(name)
 
 
 def _prompt_with_default(prompt: str, default: str) -> str | None:
@@ -1186,12 +1183,13 @@ class FocusEnvelopeCommand(Command):
         return 0
 
 
-# ----- pane-border fast readers (F5 — the v2-aware shell-reader seams) ----------------------
-# bin/tmux-pane-session-name (pane-border-format) and tmux/tx-ide.tmux (after-new-window) used to
-# read the v1 store via `lib/tx-session-state get <id> <field>`. Post-Flip the records are v2, which
-# the v1 reader cannot parse, so those readers call these tiny verbs instead — one v2 read each,
-# reusing the real SessionStore + $TX_IDE_HOME resolution. Both run on a tmux render path, so they
-# print empty + exit 0 for an absent / unreadable record rather than failing the border.
+# ----- pane-border fast reader (F5 — the shell-reader seam) ---------------------------------
+# bin/tmux-pane-session-name (pane-border-format) used to read the v1 store via `lib/tx-session-state
+# get <id> <field>`; that v1 reader cannot parse the current record shape, so it calls the `_pane-info`
+# verb instead — one read, reusing the real SessionStore + $TX_IDE_HOME resolution. It runs on a tmux
+# render path, so it prints empty + exit 0 for an absent / unreadable record rather than failing the
+# border. (tmux/tx-ide.tmux's after-new-window hook no longer needs a Python reader — it checks the
+# `@tx_view` option directly.)
 
 
 def _pane_record(service: SessionService, session_id: str) -> Session | None:
@@ -1222,21 +1220,6 @@ class PaneInfoCommand(Command):
         record = _pane_record(self.service, args.session_id)
         print(record.name if record is not None else "")
         print(",".join(record.tags) if record is not None else "")
-        return 0
-
-
-class PaneKindCommand(Command):
-    name = "_pane-kind"
-    summary = (
-        "Internal: kind value (view/process) for a record id (after-new-window reader)."
-    )
-
-    def run(self, argv: list[str]) -> int:
-        parser = self._parser()
-        parser.add_argument("session_id")
-        args = parser.parse_args(argv)
-        record = _pane_record(self.service, args.session_id)
-        print(record.kind.value if record is not None else "")
         return 0
 
 
@@ -1296,14 +1279,13 @@ class SelfCheckCommand(Command):
         session_id = str(uuid.uuid4())
         now = time.time()
         cwd = str(tx_ide_home())
-        demo = Session(
+        demo = LlmSession(
             id=session_id,
             name="s1a-selfcheck",
-            kind=Kind.PROCESS,
-            role=Role.LLM,
             state=State.initial_for(Role.LLM),
             cwd=cwd,
-            cmd="claude --dangerously-skip-permissions",
+            initial_cmd="claude --dangerously-skip-permissions",
+            engine=Engine.CLAUDE,
             tags=["s1a", "selfcheck"],
             created_at=now,
             last_activity=now,
@@ -1315,6 +1297,7 @@ class SelfCheckCommand(Command):
                     transcript_path="",
                     origin=Origin(how="spawn", session_id=session_id, chat_id=None),
                     started_at=now,
+                    engine=Engine.CLAUDE,
                 )
             ],
         )
@@ -1358,267 +1341,32 @@ class SelfCheckCommand(Command):
         return 0
 
 
-# ----- Flip cutover (S9) -------------------------------------------------------------------
-# The D2 staged re-derivation (install-flip.md §5 step B / §6): build a fresh v2 record for every
-# live tmux session into a STAGING dir, reading the OLD v1 records (raw JSON — SessionStore skips
-# v1) for provenance and refreshing the live fields from tmux. Net-new + idempotent: nothing in the
-# real store is touched, so an abort before the destructive Flip steps loses nothing. `./flip`
-# invokes this; it is also runnable into a throwaway dir for a dry inspection.
-
-
-def _split_role_tags(
-    old_tags: list[str], pane_command: str | None
-) -> tuple[Role, list[str]]:
-    """§6: the v1 leading tag encoded the role. When it maps to a `Role` value (llm/nvim/shell/
-    other) that is the role and the rest are the free-form tags; otherwise the leading tag was never
-    a role (e.g. a view's `views`), so infer the role from the live pane command and keep all tags."""
-    role_values = {role.value for role in Role}
-    if old_tags and old_tags[0] in role_values:
-        return Role(old_tags[0]), old_tags[1:]
-    return _pane_command_role(pane_command), old_tags
-
-
-def _pane_command_role(pane_command: str | None) -> Role:
-    """§6 inference fallback from the live `pane_current_command`: an agent version string (shown
-    while it loads) → LLM, else `infer_role` (any registered engine — claude / codex — → LLM, nvim →
-    NVIM, a shell → SHELL, else OTHER). `infer_role` is the shared mapping spawn uses, so a re-derived
-    role matches a re-spawn — and it recognizes codex panes for free now that it asks every engine."""
-    command = pane_command or ""
-    if _looks_like_version(command):
-        return Role.LLM
-    return infer_role(command)
-
-
-def _looks_like_version(command: str) -> bool:
-    """A dotted-numeric command like `2.1.138` — an agent TUI (Claude Code is the measured case)
-    reports its version in `pane_current_command` while loading. Engine-neutral (any version-shaped
-    command), mirroring tmux/tx-ide.tmux's agent-scroll matcher."""
-    parts = command.split(".")
-    return len(parts) >= 2 and all(part.isdigit() for part in parts)
-
-
-def _iso_to_epoch(created_at: object, fallback: float) -> float:
-    """Convert a v1 `created_at` (ISO-8601 `2026-05-31T13:14:26Z`) to v2 float epoch seconds. A
-    number is already epoch; a missing or unparseable value falls back to `fallback` (now)."""
-    if isinstance(created_at, (int, float)):
-        return float(created_at)
-    if isinstance(created_at, str) and created_at:
-        try:
-            return (
-                datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ")
-                .replace(tzinfo=timezone.utc)
-                .timestamp()
-            )
-        except ValueError:
-            return fallback
-    return fallback
-
-
-class FlipRederiveCommand(Command):
-    name = "_flip-rederive"
-    summary = (
-        "Internal: stage v2 records for every live @tx_id tmux session (Flip D2 / §6)."
-    )
-
-    def run(self, argv: list[str]) -> int:
-        parser = self._parser()
-        parser.add_argument(
-            "--staging",
-            required=True,
-            metavar="DIR",
-            help="output dir for the staged v2 records (created if absent)",
-        )
-        args = parser.parse_args(argv)
-        staging = Path(args.staging).expanduser()
-        staging.mkdir(parents=True, exist_ok=True)
-        staged = SessionStore(directory=staging)
-        source = sessions_dir()  # the OLD v1 records: $TX_IDE_HOME/sessions
-        now = time.time()
-
-        rederived: list[tuple[Session, str]] = []
-        skipped: list[tuple[str, str]] = []
-        for name, tx_id in self._live_tmux_sessions():
-            if not tx_id:
-                skipped.append((name, "no @tx_id — not adopted (D4)"))
-                continue
-            try:
-                session, origin = self._rederive(name, tx_id, source, now)
-            except (
-                OSError,
-                ValueError,
-                KeyError,
-            ) as error:  # a malformed/unreadable v1 record
-                skipped.append((name, f"{type(error).__name__}: {error}"))
-                continue
-            if session is None:
-                skipped.append((name, "no v1 record and no live pane — skipped"))
-                continue
-            staged.save(session)
-            rederived.append((session, origin))
-
-        self._report(staging, rederived, skipped)
-        return 0
-
-    def _live_tmux_sessions(self) -> list[tuple[str, str]]:
-        """(name, @tx_id) for every live tmux session; @tx_id is "" when the session carries none."""
-        rows = self.service.tmux.list_sessions("#{session_name}\t#{@tx_id}")
-        sessions = []
-        for row in rows:
-            name, _, tx_id = row.partition("\t")
-            sessions.append((name, tx_id))
-        return sessions
-
-    def _live_fields(self, name: str) -> tuple[int | None, str | None, str | None]:
-        """(pid, cwd, pane_command) from the session's active pane (§6 live refresh); all None when
-        the session has already vanished."""
-        line = self.service.tmux.display_message(
-            "#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}", target=name
-        )
-        if line is None:
-            return None, None, None
-        pid_text, _, rest = line.partition("\t")
-        cwd, _, pane_command = rest.partition("\t")
-        pid = int(pid_text) if pid_text.isdigit() else None
-        return pid, cwd or None, pane_command or None
-
-    def _rederive(
-        self, name: str, tx_id: str, source: Path, now: float
-    ) -> tuple[Session | None, str]:
-        """Build one v2 record. With a v1 record present (the §6 path) it is authoritative for
-        provenance, refreshed with the live name/pid/cwd. Without one — a coexistence session whose
-        record lives in the dev home (discarded at Flip), not the old store — re-derive from tmux
-        alone (the §6 pane-heuristic), which needs a live pane."""
-        old: dict | None = None
-        v1_path = source / f"{tx_id}.json"
-        if v1_path.exists():
-            with open(v1_path) as handle:
-                old = json.load(
-                    handle
-                )  # raw v1 — NOT via SessionStore, which skips v1 records
-        pid, cwd, pane_command = self._live_fields(name)
-
-        if old is None:
-            if pid is None:
-                return None, ""
-            role = _pane_command_role(pane_command)
-            return Session(
-                id=tx_id,
-                name=name,
-                kind=Kind.PROCESS,
-                role=role,
-                state=State.initial_for(role),
-                cwd=cwd or "",
-                cmd="",
-                tags=[],
-                env={},
-                parent=None,
-                pid=pid,
-                created_at=now,
-                last_activity=now,
-                chats=[],
-            ), "tmux-only"
-
-        role, tags = _split_role_tags(list(old.get("tags") or []), pane_command)
-        kind = Kind.VIEW if old.get("kind") == Kind.VIEW.value else Kind.PROCESS
-        # Live #S is the human name during the historical Flip; but a re-run AFTER the id-naming
-        # cutover sees a PROCESS whose #S IS its id — fall back to the v1 record's stored name so the
-        # human display label is never overwritten with the uuid.
-        display_name = old.get("name", name) if name == tx_id else name
-        session = Session(
-            id=tx_id,  # same uuid → @tx_id pointer stays valid
-            name=display_name,  # refreshed live #S (v1 name if id-named)
-            kind=kind,
-            role=role,
-            state=State.initial_for(role),  # IDLE if llm else ALIVE (D3)
-            cwd=cwd or old.get("cwd", ""),  # refreshed pane_current_path
-            cmd=old.get("cmd", ""),  # preserved
-            tags=tags,
-            env=dict(old.get("env") or {}),  # preserved
-            parent=(old.get("parent") or None),
-            pid=pid if pid is not None else old.get("pid"),
-            created_at=_iso_to_epoch(
-                old.get("created_at"), now
-            ),  # ISO string → float epoch
-            ended_at=None,
-            last_activity=now,
-            chats=[],  # v1 chats not migrated (re-ingest on Stop)
-        )
-        return session, "v1"
-
-    def _report(
-        self,
-        staging: Path,
-        rederived: list[tuple[Session, str]],
-        skipped: list[tuple[str, str]],
-    ) -> None:
-        print(f"re-derived {len(rederived)} session(s) into {staging}:")
-        for session, origin in rederived:
-            tags = ",".join(session.tags) or "-"
-            print(
-                f"  {session.name:<24} role={session.role.value:<6} kind={session.kind.value:<8} "
-                f"state={session.state.value:<6} tags={tags:<22} [{origin}]"
-            )
-        if skipped:
-            print(f"skipped {len(skipped)}:")
-            for name, reason in skipped:
-                print(f"  {name:<24} {reason}")
-
-
-class MigrateTmuxNamesCommand(Command):
-    name = "_migrate-tmux-names"
-    summary = "Internal: rename live PROCESS tmux sessions to their id (one-time id-naming cutover)."
-
-    def run(self, argv: list[str]) -> int:
-        # One-time cutover for the id-naming switch. Before it, a PROCESS tmux session was named by
-        # its human name; after, by its id (Session.tmux_name). Sessions live ACROSS the upgrade
-        # still carry the old human tmux name, so lifecycle ops — now keyed on the id — would miss
-        # them. Rename each live process tmux session over to its id (the human name lives on as the
-        # store's display label; `@tx_id` rides along rename-session, so the record link is intact).
-        # Idempotent (a session already id-named is skipped); VIEWs are left human-named. Only @tx_id
-        # sessions are touched (D4 — never a hand-started session tx does not own).
-        renamed: list[tuple[str, str]] = []
-        for name, tx_id in self._live_tx_sessions():
-            if not tx_id or name == tx_id:
-                continue
-            record = _pane_record(self.service, tx_id)
-            if record is None or record.kind != Kind.PROCESS:
-                continue
-            self.service.tmux.rename_session(name, tx_id)
-            renamed.append((name, tx_id))
-        for old, new in renamed:
-            print(f"  {old} → {new}")
-        print(f"renamed {len(renamed)} process session(s) to id-naming.")
-        return 0
-
-    def _live_tx_sessions(self) -> list[tuple[str, str]]:
-        rows = self.service.tmux.list_sessions("#{session_name}\t#{@tx_id}")
-        out: list[tuple[str, str]] = []
-        for row in rows:
-            name, _, tx_id = row.partition("\t")
-            out.append((name, tx_id))
-        return out
-
 
 # ----- schema migration ----------------------------------------------------------------------
-# `tx migrate` (the v2 → v3 migrator) lives in tx.migrations; this command is a thin wrapper.
+# `tx migrate` (the v3 → v4 migrator) lives in tx.migrations; this command is a thin wrapper.
 
 
 class MigrateCommand(Command):
     name = "migrate"
-    summary = "Upgrade $TX_IDE_HOME session records to the current schema (idempotent v2 → v3)."
+    summary = "Upgrade $TX_IDE_HOME session records to the current schema (idempotent v3 → v4)."
 
     def run(self, argv: list[str]) -> int:
         # No flags: the target is $TX_IDE_HOME/sessions, so a sandbox run is `TX_IDE_HOME=<tmp> tx
-        # migrate` (T0 §4 — the v3 code must never migrate the live v2 home). Explicit + idempotent.
+        # migrate` (the v4 code must never migrate the live v3 home). Explicit + idempotent. The live
+        # tmux server is needed to stamp @tx_view onto view sessions as their records are retired.
         self._parser().parse_args(argv)  # reject stray args; serve `-h`
-        migrated, skipped = migrate_sessions(sessions_dir())
+        migrated, views_removed, skipped = migrate_sessions(
+            sessions_dir(), self.service.tmux
+        )
         for name in migrated:
             print(f"  migrated {name} → v{SCHEMA_VERSION}")
+        for name in views_removed:
+            print(f"  view     {name} → stamped @tx_view, record removed")
         for name, reason in skipped:
             print(f"  skipped  {name} ({reason})")
         print(
             f"migrated {len(migrated)} record(s) to v{SCHEMA_VERSION}; "
-            f"left {len(skipped)} untouched."
+            f"retired {len(views_removed)} view record(s); left {len(skipped)} untouched."
         )
         return 0
 
@@ -1786,13 +1534,10 @@ HIDDEN_COMMANDS: list[type[Command]] = [
     EditTagCommand,
     FocusEnvelopeCommand,
     PaneInfoCommand,
-    PaneKindCommand,
     TmuxNameCommand,
     HookCommand,
     InitHomeCommand,
     SelfCheckCommand,
-    FlipRederiveCommand,
-    MigrateTmuxNamesCommand,
     ChatOpFinishCommand,
     ChatOpWatchCommand,
 ]

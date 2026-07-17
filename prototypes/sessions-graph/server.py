@@ -41,7 +41,7 @@ from tx.engines import claude as claude_engine  # noqa: E402
 from tx.messages import collect_messages, source_signature  # noqa: E402
 from tx.palette import tag_cube          # noqa: E402  — path is set on the line above
 from tx.render import reltime            # noqa: E402
-from tx.session import ChatRef, Kind, Role, Session, State  # noqa: E402
+from tx.session import ChatRef, Role, Session, State  # noqa: E402
 from tx.storage import sessions_dir, tx_ide_home   # noqa: E402
 from tx.store import SessionStore        # noqa: E402
 from tx.tmux import Tmux                 # noqa: E402
@@ -93,7 +93,7 @@ def session_payload(session: Session, now: float) -> dict:
             "needs_attention": session.needs_attention,
             "is_terminal": session.state.is_terminal,
             "started_rel": reltime(session.created_at, now),
-            "idle_rel": reltime(session.last_activity, now),
+            "idle_rel": reltime(session.activity_at, now),
             "tag_colors": {tag: cube_to_hex(tag_cube(tag)) for tag in session.tags},
         },
         "json": json.dumps(record, indent=2),
@@ -105,7 +105,7 @@ def build_feed() -> dict:
     recency ordering — the page seeds newcomers into the force layout in this order)."""
     now = time.time()
     sessions = sorted(
-        SessionStore().all(), key=lambda session: session.last_activity or 0, reverse=True
+        SessionStore().all(), key=lambda session: session.activity_at, reverse=True
     )
     # Attachment is compute-on-read (attachment-topology §4): a record's on-disk `attached_to` is
     # stamped only on an actual mutation (spawn / rename / state change), so it goes stale on a plain
@@ -324,7 +324,7 @@ def build_inbox_feed() -> dict:
             continue
         transcript = _transcript_of(session)
         entries = _tail_entries(transcript) if transcript else []
-        turns = _dialogue_turns(entries, session.cmd or "")
+        turns = _dialogue_turns(entries, session.initial_cmd or "")
         blocked = _blocked_on(entries) if session.state == State.WAITING else None
         if session.state == State.WAITING:
             reason = "blocked" if blocked else "ready"
@@ -333,7 +333,7 @@ def build_inbox_feed() -> dict:
         agent_turns = [turn for turn in turns if turn["who"] == "agent"]
         preview = agent_turns[-1]["text"].split("\n", 1)[0] if agent_turns else ""
         turn_ts = max((turn["ts"] for turn in turns), default=0.0)
-        last_ts = max(turn_ts, session.last_activity or 0.0, session.created_at or 0.0)
+        last_ts = max(turn_ts, session.activity_at, session.created_at or 0.0)
         items.append({
             "id": session.id,
             "name": session.name,
@@ -685,10 +685,9 @@ hub = FeedHub()
 
 
 def _tmux_name(session: Session) -> str:
-    """The live tmux session name: the UUID `id` for a process session, the display `name`
-    otherwise — process sessions live in tmux under their id. (Mirrors the newer
-    `Session.tmux_name`; replicated inline because this prototype pins an older `lib/tx`.)"""
-    return session.id if session.kind == Kind.PROCESS else session.name
+    """The live tmux session name — always the UUID `id`: every record is a process now (views left
+    the store), so a session always lives in tmux under its id. (Mirrors `Session.tmux_name`.)"""
+    return session.id
 
 
 def compute_focused_id() -> str | None:
@@ -759,7 +758,7 @@ def _describe_target(target: Session) -> str:
     assistant's own `tx` calls target the right record despite the two-records-by-name collision."""
     tags = ",".join(target.tags) or "-"
     return (
-        f'id={target.id} name="{target.name}" kind={target.kind.value} '
+        f'id={target.id} name="{target.name}" '
         f'role={target.role.value} state={target.state.value} tags={tags} '
         f'cwd={target.cwd} parent={target.parent or "-"}'
     )

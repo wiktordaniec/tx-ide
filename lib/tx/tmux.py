@@ -126,6 +126,19 @@ class Tmux:
     def set_tx_id(self, name: str, session_id: str) -> None:
         self.set_option(name, "@tx_id", session_id)
 
+    def set_tx_view(self, name: str) -> None:
+        """Mark a live session as a view — a home base the user lives in and nests other sessions
+        into. Views are NOT store records: this `@tx_view` option is their entire durable identity
+        (checked by the picker's nest-attach, the after-new-window border hook, the focus envelope,
+        and `kill`'s view fallback). Like every tmux option it dies with the server, so a view is
+        recreated cheaply by `tx spawn-view` after a restart."""
+        self.set_option(name, "@tx_view", "1")
+
+    def is_view(self, name: str) -> bool:
+        """Whether the live session `name` carries the `@tx_view` marker (raw `@tx_view` reads live
+        in the tmux config's border/nest hooks — this is the Python side of the same signal)."""
+        return self.show_option(name, "@tx_view") == "1"
+
     def switch_client(self, name: str) -> None:
         self._run(["switch-client", "-t", name])
 

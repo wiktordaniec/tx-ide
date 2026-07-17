@@ -56,7 +56,7 @@ sys.path.insert(0, str(REPO_ROOT / "lib"))
 from tx import history                    # noqa: E402
 from tx.palette import tag_cube           # noqa: E402
 from tx.render import reltime             # noqa: E402
-from tx.session import ChatRef, Kind, Role, Session, State  # noqa: E402
+from tx.session import ChatRef, LlmSession, Role, Session, State  # noqa: E402
 from tx.storage import tx_ide_home        # noqa: E402
 from tx.store import SessionStore         # noqa: E402
 from tx.tmux import Tmux                  # noqa: E402
@@ -95,7 +95,8 @@ def cube_to_hex(cube_index: int) -> str:
 
 
 def _tmux_name(session: Session) -> str:
-    return session.id if session.kind == Kind.PROCESS else session.name
+    # Every record is a process now (views left the store), so a session is always tmux-named by id.
+    return session.id
 
 
 def _latest_chat(session: Session) -> ChatRef | None:
@@ -442,7 +443,7 @@ def build_inbox_feed() -> dict:
             continue
         transcript = _transcript_of(session)
         entries = _tail_entries(transcript) if transcript else []
-        turns = _dialogue_turns(entries, session.cmd or "")[-THREAD_TURNS:]
+        turns = _dialogue_turns(entries, session.initial_cmd or "")[-THREAD_TURNS:]
         blocked = _blocked_state(session, entries, tmux)
         if session.state == State.WAITING:
             reason = "blocked" if blocked else "ready"
@@ -451,7 +452,7 @@ def build_inbox_feed() -> dict:
         agent_turns = [turn for turn in turns if turn["who"] == "agent"]
         preview = agent_turns[-1]["text"].split("\n", 1)[0] if agent_turns else ""
         turn_ts = max((turn["ts"] for turn in turns), default=0.0)
-        last_ts = max(turn_ts, session.last_activity or 0.0, session.created_at or 0.0)
+        last_ts = max(turn_ts, session.activity_at, session.created_at or 0.0)
         items.append({
             "id": session.id,
             "name": session.name,
@@ -465,7 +466,7 @@ def build_inbox_feed() -> dict:
             "turns": turns,
             "last_ts": last_ts,
             "rel": reltime(last_ts, now) if last_ts else "",
-            "context_pct": _context_pct(entries, session.cmd or ""),
+            "context_pct": _context_pct(entries, session.initial_cmd or ""),
             "error": _drift_error(session, transcript),
         })
     items.sort(key=lambda item: item["last_ts"], reverse=True)
@@ -662,7 +663,7 @@ def session_history(session_id: str, before: float) -> tuple[int, dict]:
         return 404, {"ok": False, "error": "no such session"}
     transcript = _transcript_of(session)
     entries = _tail_entries(transcript, HISTORY_TAIL_BYTES) if transcript else []
-    turns = _dialogue_turns(entries, session.cmd or "")
+    turns = _dialogue_turns(entries, session.initial_cmd or "")
     if before > 0:
         cut = next(
             (i for i, turn in enumerate(turns) if turn["ts"] and turn["ts"] >= before),
@@ -737,7 +738,7 @@ def session_details(session_id: str) -> tuple[int, dict]:
     chat = _latest_chat(session)
     # Window guess: [1m] in the launch command ⇒ the long-context beta; self-corrects upward when
     # the observed context already exceeds the guess (e.g. a model on 1M without the flag).
-    window = 1_000_000 if "[1m]" in (session.cmd or "") else 200_000
+    window = 1_000_000 if "[1m]" in (session.initial_cmd or "") else 200_000
     if meta["context_tokens"] and meta["context_tokens"] > window:
         window = 1_000_000
     return 200, {
@@ -749,12 +750,16 @@ def session_details(session_id: str) -> tuple[int, dict]:
         "tag_colors": {tag: cube_to_hex(tag_cube(tag)) for tag in session.tags},
         "cwd": session.cwd,
         "branch": _git_branch(session.cwd),
-        "cmd": session.cmd,
-        "engine": session.engine.value if session.engine else None,
+        "cmd": session.initial_cmd,
+        "engine": session.engine.value if isinstance(session, LlmSession) else None,
         "parent": parent,
         "pid": session.pid,
         "created_rel": reltime(session.created_at, now) if session.created_at else None,
-        "activity_rel": reltime(session.last_activity, now) if session.last_activity else None,
+        "activity_rel": (
+            reltime(session.last_activity, now)
+            if isinstance(session, LlmSession) and session.last_activity
+            else None
+        ),
         "attached": [
             f"{loc.host} · {loc.window_index}:{loc.window_name} · p{loc.pane_index}"
             for loc in (session.attached_to or [])

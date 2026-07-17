@@ -29,22 +29,23 @@ and backs up anything it edits. `./uninstall` puts it all back.
 ### Sessions and durable records
 
 Every tx-created tmux session has a **durable record** at `$TX_IDE_HOME/sessions/<uuid>.json`
-holding its `name`, `kind`, `role`, `state`, `cwd`, `cmd`, `tags`, `env`, `parent`, `pid`,
-`attached_to`, timestamps, and `chats`. One tmux pointer — `@tx_id`, set once at spawn — links the
-live session to its record, so the record survives a `kill-session` or a tmux restart. Records are
-the single source of truth; `tags` and `kind` are **fields in the record**, not tmux options (read
-them by resolving `@tx_id`, change them through `tx tag` / `tx rename`, never `tmux set @tag`).
-`role` (`llm` / `nvim` / `shell` / `other`) is derived from the launch command at spawn — it is
-shown (its own column in `tx attach`), not set, and never belongs in `tags`.
+holding its `name`, `role`, `state`, `cwd`, `cmd`, `tags`, `env`, `parent`, `pid`, `attached_to`,
+timestamps, and (for an llm session) `chats`. One tmux pointer — `@tx_id`, set once at spawn — links
+the live session to its record, so the record survives a `kill-session` or a tmux restart. Records
+are the single source of truth; `tags` is a **field in the record**, not a tmux option (read it by
+resolving `@tx_id`, change it through `tx tag`, never `tmux set @tag`). `role` (`llm` / `nvim` /
+`shell` / `other`) is derived from the launch command at spawn — it is shown (its own column in
+`tx attach`), not set, and never belongs in `tags`.
 
 ### Views vs Processes
 
-`tx ls` splits the world into two buckets:
-
-- **Views** (`kind=view`) — home-base outer sessions you live in. They nest-attach inner sessions
-  and give you a stable surface. Views are filtered out of the `tx attach` picker.
-- **Processes** — everything else: the `tx-assistant`, AI workers, nvim companions, ad-hoc shells.
-  These are what you pick from in `tx attach`.
+- **Views** — home-base outer sessions you live in. A view is **not a record**: it is a live tmux
+  session marked by the `@tx_view` option, which is its whole durable identity (it dies with the
+  tmux server and is recreated by `tx spawn-view`). It carries no tags, is not listed by `tx ls` or
+  the `tx attach` picker (it is visible in tmux itself), and its only tx lifecycle verbs are
+  `tx spawn-view` and `tx kill`. Views nest-attach inner sessions and give you a stable surface.
+- **Processes** — everything with a record: the `tx-assistant`, AI workers, nvim companions, ad-hoc
+  shells. `tx ls` is a single processes listing, and these are what you pick from in `tx attach`.
 
 ### State
 
@@ -106,13 +107,13 @@ session, retag, message a peer. It follows `agents/TX-ASSISTANT.md`.
 |---|---|
 | `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd CMD] [--engine ENGINE] [--prompt TEXT] [--model MODEL] [--effort {1,2,3,4,5}] [--read-only] [--env K=V …]` | Spawn a detached tmux session. Claude/Codex agents launch from a detached `$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<name>` checkout. Both footers show `<repository>--<name>` without a branch. Engine-built launches translate effort as `1=low`, `2=medium`, `3=high`, `4=xhigh`, and `5=max`; omission defaults to `3`. `--read-only` keeps shell inspection available while blocking repository edits. LLM chats are captured automatically. |
 | `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V …]` | Spawn a detached nvim companion. `--diff [BASE]` opens a diffview (base defaults to `main`). The plugins this relies on (diffview.nvim, gitsigns, tokyonight) ship in the repo's `nvim/` config — provision it with `setup/nvim.sh install` (or the installer's nvim prompt). |
-| `tx spawn-view <name> [--tag TAGS] [--cwd DIR] [--cmd CMD] [--env K=V …]` | Spawn a detached view session (`kind=view`); `--tag` defaults to `views`. |
+| `tx spawn-view <name> [--cwd DIR] [--cmd CMD] [--env K=V …]` | Spawn a detached view session — a live `@tx_view` tmux home, not a store record (carries no tags). |
 
 ### Inspect
 
 | Command | What it does |
 |---|---|
-| `tx ls` | List current (live) sessions, split into VIEWS / PROCESSES. |
+| `tx ls` | List current (live) sessions (a single PROCESSES listing; views live in tmux, not the store). |
 | `tx show <id\|name>` | Print a session record as JSON. |
 | `tx history [--tag T] [--cwd C] [--since YYYY-MM-DD] [--until YYYY-MM-DD]` | List past (EXITED / ARCHIVED) sessions, filtered. |
 | `tx chat ls <session>` | List a session's chats (ChatRefs) and their history-bundle paths. |
