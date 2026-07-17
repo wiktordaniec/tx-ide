@@ -24,8 +24,10 @@ from enum import Enum
 # refuses any other version at the boundary (OPEN-0b) rather than silently mis-reading an older
 # record. v4 split the one record shape into role-discriminated types and took views out of the
 # store: it drops the dead `kind` key, drops the non-llm `engine`/`chats`/`last_activity` keys, and
-# deletes view records. `tx migrate` upgrades v3 records in place.
-SCHEMA_VERSION = 4
+# deletes view records. v5 adds a nullable `artifact_id` back-link to `OtherSession` ONLY — an nvim
+# view opened on an artifact (Plan 2, sequencing step 3); no other role gains a field. `tx migrate`
+# upgrades older records in place, chaining v3 -> v4 -> v5 in a single run.
+SCHEMA_VERSION = 5
 
 # Access-mode markers live in the already-persisted session environment, so v3 records remain
 # readable across this additive behavior change. An absent marker is the writable default.
@@ -347,12 +349,14 @@ class Session:
     def from_dict(cls, data: dict) -> Session:
         """Deserialize a persisted record — the role-dispatching **factory** for the hierarchy.
         This is a system boundary (persisted data), so it validates the schema version here
-        (OPEN-0b): a non-v4 record raises a clear `UnsupportedRecordError`, never a raw
+        (OPEN-0b): a non-current record raises a clear `UnsupportedRecordError`, never a raw
         `TypeError`/`KeyError`. `role == "llm"` builds an `LlmSession` (`engine`/`chats`/
         `last_activity` are guaranteed present on such records; `turn_started_at` is read via
         `.get()` because a v4 record written before the session's first post-split turn lacks it);
-        every other role builds an `OtherSession`. Within a v4 record the shape is ours, so fields
-        are read directly (no defensive defaults — DEVELOPER standard)."""
+        every other role builds an `OtherSession` (`artifact_id` is read via `.get()` for the same
+        reason — it is the v5 addition, absent on a v3/v4 record the migrator is upgrading in one
+        pass). Within a current record the shape is ours, so fields are read directly (no defensive
+        defaults — DEVELOPER standard)."""
         version = data.get("schema_version")
         if version != SCHEMA_VERSION:
             raise UnsupportedRecordError(
@@ -385,7 +389,9 @@ class Session:
                 last_activity=data["last_activity"],
                 turn_started_at=data.get("turn_started_at"),
             )
-        return OtherSession(**common, role=Role(data["role"]))
+        return OtherSession(
+            **common, role=Role(data["role"]), artifact_id=data.get("artifact_id")
+        )
 
 
 @dataclass
@@ -428,11 +434,24 @@ class OtherSession(Session):
     """A non-llm work session (nvim / shell / other). It uses none of the llm axis: `role` is a
     plain field set from disk (immutable by convention — nothing mutates it, so there is no setter
     to remove), and `chats` is a read-only empty property so the uniform picker/ls loops that read
-    `len(session.chats)` stay branch-free."""
+    `len(session.chats)` stay branch-free.
+
+    `artifact_id` (v5) is the one mutable extension: an nvim view opened on an artifact via
+    `tx artifact open` records which artifact it renders (Plan 2 step 3) — nullable, and set only on
+    that flow; every other `OtherSession` leaves it `None`. It lives here rather than on a new
+    subtype (the settled lean — no `ArtifactViewSession`)."""
 
     role: Role = Role.OTHER  # nvim / shell / other, set from disk at load
+    artifact_id: str | None = None  # v5: the artifact an nvim view renders (Plan 2 step 3); else None
 
     @property
     def chats(self) -> list[ChatRef]:
         """Non-llm sessions host no chats; a read-only `[]` keeps uniform readers branch-free."""
         return []
+
+    def to_dict(self) -> dict:
+        """Extend the shared shape with the v5 `artifact_id` back-link (null for every non-view
+        session). `LlmSession` never carries this key — the field is `OtherSession`-only."""
+        data = super().to_dict()
+        data["artifact_id"] = self.artifact_id
+        return data

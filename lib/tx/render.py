@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import time
 
+from .artifact import Artifact
 from .palette import RESET_FG, WARN_ANSI, tag_ansi
 from .session import LlmSession, Location, Session
 
@@ -235,5 +236,69 @@ def render_chats(session: Session, now: float | None = None) -> str:
             origin += f"←{chat.origin.chat_id[:8]}"
         lines.append("  {:<8}  {:<9} {:<18} {:>4} ago   {}".format(
             identifier, chat.role, origin, reltime(chat.started_at, now), chat.bundle_path or "—",
+        ))
+    return "\n".join(lines)
+
+
+# ----- artifacts (Plan 2) ------------------------------------------------------------------------
+# Self-contained renderers for `tx artifact ls` + `show`, pure formatting over `Artifact` objects
+# (no I/O) like the session renderers above. The `show` working-copy flag is computed by the caller
+# (it is a disk read) and passed in, keeping this module I/O-free.
+
+
+def _distinct_authors(artifact: Artifact) -> list[str]:
+    """The distinct touch authors, in first-touch order — the creator first, later toucher(s) after.
+    Backs the ls author chips and reads straight off `history` (no denormalized field)."""
+    authors: list[str] = []
+    for touch in artifact.history:
+        if touch.session_id not in authors:
+            authors.append(touch.session_id)
+    return authors
+
+
+def render_artifacts(artifacts: list[Artifact], now: float | None = None) -> str:
+    """`tx artifact ls` — durable artifacts, newest-touched first. Columns: short id, revision count,
+    last-touched age, title (falling back to the filename), and the distinct touch authors as chips
+    (the settled `ls` shape: title, id, #revs, last touched)."""
+    if now is None:
+        now = time.time()
+    ordered = sorted(artifacts, key=lambda artifact: artifact.updated_at, reverse=True)
+    rows = []
+    for artifact in ordered:
+        rows.append("  {:<8}  {:>3}r  {:>5}  {:<28}{}".format(
+            artifact.id[:8],
+            len(artifact.history),
+            reltime(artifact.updated_at, now),
+            _trunc(artifact.title or artifact.filename, 28),
+            _chips(_distinct_authors(artifact)),
+        ))
+    if not rows:
+        return "ARTIFACTS\n  (none)"
+    return "\n".join(["ARTIFACTS", *rows])
+
+
+def render_artifact_show(artifact: Artifact, dirty: bool, now: float | None = None) -> str:
+    """`tx artifact show` — metadata + the full touch/version log (this absorbs the earlier separate
+    `history` verb — one verb, not two). Each history entry is one revision: rev number, age, author,
+    and its optional changes note. The working-copy line flags a dirty `current` (un-snapshotted
+    edits — a visible state, not an error). Pure formatting; the caller computes `dirty`."""
+    if now is None:
+        now = time.time()
+    working = (
+        "dirty — un-snapshotted edits (close with `tx artifact modify`)" if dirty else "clean"
+    )
+    lines = [
+        f"{artifact.title or artifact.filename}  ({artifact.id})",
+        f"  filename:   {artifact.filename}",
+        f"  created:    {reltime(artifact.created_at, now)} ago",
+        f"  updated:    {reltime(artifact.updated_at, now)} ago",
+        f"  revisions:  {len(artifact.history)}",
+        f"  working:    {working}",
+        "  history:",
+    ]
+    for touch in artifact.history:
+        note = f"  {touch.changes}" if touch.changes else ""
+        lines.append("    rev {:<3} {:>5} ago  {:<20}{}".format(
+            touch.rev, reltime(touch.at, now), touch.session_id, note,
         ))
     return "\n".join(lines)
