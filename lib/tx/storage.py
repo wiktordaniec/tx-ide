@@ -48,6 +48,13 @@ def history_dir() -> Path:
     return tx_ide_home() / "history"
 
 
+def artifacts_dir() -> Path:
+    """`$TX_IDE_HOME/artifacts/` — durable artifact records `<id>.json` (`ArtifactStore`) alongside
+    each artifact's file directory `<id>/` (working copy + `revs/`). Records and content dirs share
+    this parent; the store's `*.json` glob selects only records (Plan 2)."""
+    return tx_ide_home() / "artifacts"
+
+
 def worktrees_dir() -> Path:
     """`$TX_IDE_HOME/worktrees/` — tx-owned linked checkouts for agent sessions."""
     return tx_ide_home() / "worktrees"
@@ -92,9 +99,9 @@ def ensure_home() -> Path:
     """Create the `$TX_IDE_HOME` skeleton if absent (idempotent) and return the home path.
 
     Creates the directories foundation code writes into (`sessions/`, `history/`, `worktrees/`,
-    `user-agents/`). `agents` (a symlink to the repo) and `hooks/` (baked shims) are the installer's
-    job (S2), not created here. The full installer may call this or replicate it; `python3.14 -m tx
-    _init-home` exposes it so the installer need not duplicate the layout.
+    `user-agents/`, `artifacts/`). `agents` (a symlink to the repo) and `hooks/` (baked shims) are
+    the installer's job (S2), not created here. The full installer may call this or replicate it;
+    `python3.14 -m tx _init-home` exposes it so the installer need not duplicate the layout.
     """
     home = tx_ide_home()
     for directory in (
@@ -103,6 +110,7 @@ def ensure_home() -> Path:
         history_dir(),
         worktrees_dir(),
         user_agents_dir(),
+        artifacts_dir(),
     ):
         directory.mkdir(parents=True, exist_ok=True)
     return home

@@ -17,6 +17,20 @@ Later stages add: history.py (S3), chat.py (S4), hooks.py (S2). cli.py / render.
 presentation layer (not part of the frozen import surface).
 """
 
+from .artifact import (
+    ARTIFACT_SCHEMA_VERSION,
+    USER_ACTOR,
+    Artifact,
+    Touch,
+    UnsupportedArtifactError,
+)
+from .artifact_service import (
+    ArtifactConflict,
+    ArtifactError,
+    ArtifactNotFound,
+    ArtifactService,
+)
+from .artifact_store import ArtifactContent, ArtifactStore
 from .events import EventLog
 from .reconcile import Reconciler
 from .service import (
@@ -45,6 +59,7 @@ from .storage import (
     LocalStorage,
     S3Storage,
     Storage,
+    artifacts_dir,
     config_path,
     ensure_home,
     history_dir,
@@ -61,8 +76,17 @@ from .tmux import Tmux, TmuxError
 __version__ = "0.0.0-s1a"
 
 __all__ = [
+    "ARTIFACT_SCHEMA_VERSION",
     "SCHEMA_VERSION",
+    "USER_ACTOR",
     "__version__",
+    "Artifact",
+    "ArtifactConflict",
+    "ArtifactContent",
+    "ArtifactError",
+    "ArtifactNotFound",
+    "ArtifactService",
+    "ArtifactStore",
     "ChatRef",
     "Engine",
     "EventLog",
@@ -86,7 +110,10 @@ __all__ = [
     "Storage",
     "Tmux",
     "TmuxError",
+    "Touch",
+    "UnsupportedArtifactError",
     "UnsupportedRecordError",
+    "artifacts_dir",
     "config_path",
     "DEFAULT_HOME",
     "ensure_home",
