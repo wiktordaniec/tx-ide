@@ -158,11 +158,9 @@
   .legend .fsep { flex: 0 0 auto; width: 1px; height: 16px; background: var(--border); margin: 0 6px; }
   /* Role legend — a static KEY (not a filter) decoding the per-role node stripe + badge colours. Mirrors
      the state chips' dot+label, but non-interactive (cursor:default, no aria-pressed / hover) so it
-     reads as a key, not a button. The swatch dot inherits --role from the .r-* class it also carries;
-     the view-host marker is a hollow dashed dot, matching the .kind badge on the node. */
+     reads as a key, not a button. The swatch dot inherits --role from the .r-* class it also carries. */
   .rolekey { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); cursor: default; }
   .rolekey .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--role, var(--muted)); }
-  .rolekey.kindkey .dot { background: transparent; border: 1.5px dashed var(--dim); }
   /* Attachment key (attachmentLegendHtml) — reuses .rolekey's inline-flex/font/cursor; the detached
      variant recedes to --muted, matching the muted detached row under a node. */
   .rolekey.lockey.detached { color: var(--muted); }
@@ -316,14 +314,6 @@
     padding: 1px 6px; border-radius: 999px;
     color: var(--role, var(--dim)); border: 1px solid var(--role, var(--border));
     background: color-mix(in srgb, var(--role, var(--surface-hi)) 16%, transparent);
-  }
-  /* Kind badge — shown ONLY for a VIEW (a "Views" host that nests other sessions); processes are the
-     default and stay unbadged so the 300+ normal nodes carry no noise. A dashed outline so a host
-     reads as a container rather than a tag. */
-  .kind {
-    font-size: 9.5px; letter-spacing: .4px; text-transform: uppercase; white-space: nowrap;
-    padding: 1px 6px; border-radius: 999px;
-    color: var(--dim); border: 1px dashed var(--dim); background: transparent;
   }
   /* Attachment readout — the "where is this surfaced" line under the chips (see locationRow). Laid out
      like .ghosthint (single clipped line) so a long window name can't widen the card. An attached row
@@ -887,7 +877,7 @@ let lastFetchAt = 0;
 let firstRender = true;
 let pendingRender = false;        // a stream push that landed mid-interaction, to render once it ends
 let activeTab = "graph";          // which view is showing — "graph" (force layout), "table" (grid), or "messages"
-let tableSort = { key: "last_activity", dir: "desc" };   // table: active sort column + direction (newest-first default, matching the feed order)
+let tableSort = { key: "activity_at", dir: "desc" };   // table: active sort column + direction (newest-first default, matching the feed order)
 let selectedTags = new Set();     // table: tags picked in the tag bar — a row shows if it carries ANY of them (empty ⇒ no tag filter)
 let cursorId = null;              // table: record id of the keyboard-highlighted row (arrow keys move it, f focuses it) — independent of focusedId (terminal pane) and selectedId (drawer)
 let messagesFeed = null;          // messages: the /api/messages payload ({ messages:[…] }) — from the SSE `messages` channel or a one-shot fetch
@@ -983,10 +973,10 @@ function timeBounds() {
 }
 function timeFilterActive() { const { from, to } = timeBounds(); return from !== null || to !== null; }
 
-function sessionInWindow(createdAt, lastActivity) {
+function sessionInWindow(createdAt, activityAt) {
   const { from, to } = timeBounds();
   if (from === null && to === null) return true;
-  const lastActive = lastActivity || createdAt || 0;     // fall back to created if a record has no activity yet
+  const lastActive = activityAt || createdAt || 0;       // fall back to created if a record has no activity yet
   const created = createdAt || lastActive;
   if (from !== null && lastActive < from) return false;  // its whole active span predates the window
   if (to !== null && created > to) return false;         // it started after the window ends
@@ -1013,9 +1003,8 @@ function buildNodes(feed) {
     parentName: entry.record.parent,
     state: entry.record.state,
     role: entry.record.role,
-    kind: entry.record.kind,
     tags: entry.record.tags,
-    lastActivity: entry.record.last_activity || 0,
+    activityAt: entry.derived.activity_at,           // uniform recency epoch (server-computed); llm → last_activity, else created_at
     createdAt: entry.record.created_at || 0,         // for the shared time-window filter (visibleForest)
     attachedTo: entry.record.attached_to || [],      // live (server compute-on-read): panes surfacing this session
     derived: entry.derived,
@@ -1040,7 +1029,7 @@ function buildNodes(feed) {
     if (candidates.length === 0) return null;
     const ranked = candidates.slice().sort((a, b) => {
       if (terminal(a.state) !== terminal(b.state)) return terminal(a.state) ? 1 : -1;
-      return b.lastActivity - a.lastActivity;
+      return b.activityAt - a.activityAt;
     });
     return ranked[0];
   };
@@ -1054,7 +1043,7 @@ function buildNodes(feed) {
     if (!ghosts.has(node.parentName)) {
       ghosts.set(node.parentName, {
         id: "ghost::" + node.parentName, name: node.parentName, parent: null,
-        state: "ghost", ghost: true, tags: [], lastActivity: 0,
+        state: "ghost", ghost: true, tags: [], activityAt: 0,
       });
     }
     node.parent = ghosts.get(node.parentName);
@@ -1069,7 +1058,7 @@ function visibleForest(allNodes) {
   // A node is hidden by a filtered-off state OR by falling outside the shared time window; either way
   // effectiveParent() walks past it so an in-window descendant re-attaches to its nearest visible
   // ancestor. Ghosts (no state, no timestamps) are never hidden here — the ghost-keep pass prunes them.
-  const hidden = (node) => !node.ghost && (hiddenStates.has(node.state) || !sessionInWindow(node.createdAt, node.lastActivity));
+  const hidden = (node) => !node.ghost && (hiddenStates.has(node.state) || !sessionInWindow(node.createdAt, node.activityAt));
   const effectiveParent = (node) => {
     let cursor = node.parent, guard = 0;
     while (cursor && hidden(cursor) && guard++ < 1000) cursor = cursor.parent;
@@ -1256,8 +1245,8 @@ function render() {
 const COLUMNS = [
   { key: "name", label: "name", sortVal: (e) => e.record.name.toLowerCase(),
     cell: (e) => `<span class="tname"><span class="dot"></span>${escapeHtml(e.record.name)}</span>` },
-  { key: "last_activity", label: "last interacted", sortVal: (e) => e.record.last_activity || 0,
-    cell: (e) => timeCell(e.record.last_activity, e.derived.idle_rel) },
+  { key: "activity_at", label: "last interacted", sortVal: (e) => e.derived.activity_at,
+    cell: (e) => timeCell(e.derived.activity_at, e.derived.idle_rel) },
   { key: "state", label: "state", sortVal: (e) => e.record.state,
     cell: (e) => `<span class="tstate">${escapeHtml(e.record.state)}</span>` },
   { key: "role", label: "role", sortVal: (e) => e.record.role,
@@ -1268,7 +1257,7 @@ const COLUMNS = [
     cell: (e) => timeCell(e.record.created_at, e.derived.started_rel) },
 ];
 // Time columns default newest-first (desc); text columns A→Z (asc).
-const TIME_KEYS = new Set(["created_at", "last_activity"]);
+const TIME_KEYS = new Set(["created_at", "activity_at"]);
 function defaultDir(key) { return TIME_KEYS.has(key) ? "desc" : "asc"; }
 
 function tableChips(entry) {
@@ -1306,15 +1295,15 @@ function matchesTags(record) {
 function matchesState(record) { return !hiddenStates.has(record.state); }
 
 // Row visibility by the shared time window — the same predicate the graph and messages use, reading
-// the record's created_at / last_activity (see sessionInWindow). Empty window ⇒ always true.
-function matchesTime(record) { return sessionInWindow(record.created_at, record.last_activity); }
+// created_at + the derived activity_at epoch (see sessionInWindow). Empty window ⇒ always true.
+function matchesTime(entry) { return sessionInWindow(entry.record.created_at, entry.derived.activity_at); }
 
 function renderTable() {
   if (!feed) return;
   renderFilterBar();
   const query = $("filter").value.trim().toLowerCase();
   const rows = feed.sessions.filter((entry) =>
-    matchesState(entry.record) && matchesTags(entry.record) && matchesTime(entry.record) && matchesQuery(entry.record, query));
+    matchesState(entry.record) && matchesTags(entry.record) && matchesTime(entry) && matchesQuery(entry.record, query));
 
   const column = COLUMNS.find((candidate) => candidate.key === tableSort.key);
   const direction = tableSort.dir === "asc" ? 1 : -1;
@@ -1838,9 +1827,6 @@ function nodeInner(dataNode, simNode) {
            `<div class="ghosthint">parent — lineage only</div>`;
   }
   const pin = simNode.pinned ? `<span class="pin" title="pinned — click to release">📌</span>` : "";
-  // Flag a Views host (only kind that isn't the implied "process") so it's distinguishable from the
-  // workers it nests; processes stay unbadged so the common case carries no chrome.
-  const kind = dataNode.kind === "view" ? `<span class="kind" title="a Views host — nests other sessions">view</span>` : "";
   const role = `<span class="role">${escapeHtml(dataNode.role)}</span>`;
   const chips = (dataNode.tags || []).map((tag) => {
     const color = (dataNode.derived.tag_colors && dataNode.derived.tag_colors[tag]) || "var(--dim)";
@@ -1853,7 +1839,7 @@ function nodeInner(dataNode, simNode) {
     : `<span class="dot"></span>`;
   return `<div class="row1">${dot}` +
          `<span class="name">${escapeHtml(dataNode.name)}</span>${pin}</div>` +
-         `<div class="chips">${kind}${role}${chips}</div>` +
+         `<div class="chips">${role}${chips}</div>` +
          locationRow(dataNode.attachedTo);
 }
 
@@ -1949,7 +1935,7 @@ function renderFilterBar() {
 }
 
 // The role legend — a STATIC key (not a filter) decoding the per-role node colours (the left stripe +
-// the role badge), plus the view-host marker. Sits in the shared bar alongside the state/tag chips on
+// the role badge). Sits in the shared bar alongside the state/tag chips on
 // the graph + table tabs (both surface role: the graph as a stripe, the table as a coloured cell), but
 // is non-interactive — clicking a swatch does nothing, which is why it carries no data-* hook and the
 // delegated bar listener never matches it. Each swatch reuses the .r-* class so its dot inherits --role.
@@ -1957,8 +1943,7 @@ function roleLegendHtml() {
   const swatches = ["llm", "nvim", "shell", "other"]
     .map((role) => `<span class="rolekey r-${role}"><span class="dot"></span>${role}</span>`)
     .join("");
-  return `<span class="fsep"></span><span class="hint">type:</span>${swatches}` +
-         `<span class="rolekey kindkey" title="a Views host — nests other sessions"><span class="dot"></span>view host</span>`;
+  return `<span class="fsep"></span><span class="hint">type:</span>${swatches}`;
 }
 
 // The attachment key — a STATIC key decoding the location readout under each node (locationRow): 📍 a
@@ -2016,7 +2001,7 @@ function tagSectionHtml() {
   const colors = {};
   if (feed) for (const entry of feed.sessions) {
     if (hiddenStates.has(entry.record.state)) continue;   // only surface tags carried by the visible states
-    if (!matchesTime(entry.record)) continue;             // …and within the active time window, so chip counts match the rows
+    if (!matchesTime(entry)) continue;                    // …and within the active time window, so chip counts match the rows
     for (const tag of entry.record.tags) {
       counts.set(tag, (counts.get(tag) || 0) + 1);
       if (!(tag in colors)) colors[tag] = (entry.derived.tag_colors && entry.derived.tag_colors[tag]) || "var(--dim)";

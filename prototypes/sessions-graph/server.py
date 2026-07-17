@@ -93,6 +93,7 @@ def session_payload(session: Session, now: float) -> dict:
             "needs_attention": session.needs_attention,
             "is_terminal": session.state.is_terminal,
             "started_rel": reltime(session.created_at, now),
+            "activity_at": session.activity_at,   # uniform recency epoch (llm → last_activity, else created_at); the page sorts/filters on this
             "idle_rel": reltime(session.activity_at, now),
             "tag_colors": {tag: cube_to_hex(tag_cube(tag)) for tag in session.tags},
         },
