@@ -37,7 +37,9 @@ Nothing enforces "edits are sequential"; two sessions can both write `revs/<n>`,
 - notes:
 
 ### B2 — authority after a crash between rev-write and record-save
-- [x] record (`<id>.json`) is authoritative; orphan `revs/<n>` ignored + overwritten by next modify
+- [x] record (`<id>.json`) is authoritative; orphan `revs/<n>` ignored on read. AMENDED after QA
+  P0: a claimed slot is never silently overwritten — `modify` hitting one always conflicts;
+  `doctor` fix mode owns orphan removal (an in-flight writer is indistinguishable from debris)
 - [ ] filesystem (highest n) is authoritative; record repaired on load
 - notes:
 
@@ -80,8 +82,9 @@ Bare `revs/<n>` breaks nvim filetype detection and renderer mime.
   gate; `diff` refuses non-utf-8; "if it becomes a problem I will try to fix it then."
 
 ### D3 — encoding
-- [x] utf-8 required (implied by D2 text-only)
-- [ ] bytes-clean, encoding-agnostic
+- [ ] utf-8 required (implied by D2 text-only)
+- [x] bytes-clean, encoding-agnostic (follows the D2 accept-anything pick; the LLM-readability
+  concern lands on the record, which is utf-8 JSON regardless; `diff` refuses non-utf-8 revs)
 - notes: is there a value in having utf-8 if we accept any format? The artifacts are specifically
 for the LLMs so they should be able to read the metadata.
 
