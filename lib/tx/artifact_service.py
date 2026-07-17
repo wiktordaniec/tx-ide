@@ -100,6 +100,16 @@ class ArtifactService:
         artifact = self._require(artifact_id)
         return self._apply_modify(artifact, session_id, content, changes)
 
+    def snapshot_current(
+        self, artifact_id: str, session_id: str, *, changes: str | None = None
+    ) -> Artifact:
+        """Snapshot the CURRENT working copy as the next revision — the no-file `tx artifact modify`
+        that closes the loop after editing `current.<ext>` in the nvim view. Reads the working copy
+        WITHOUT a read-log line (the read is internal to this mutation), then delegates to the same
+        modify body — so an unchanged working copy is the same no-op skip (E3)."""
+        artifact = self._require(artifact_id)
+        return self._apply_modify(artifact, session_id, self.files.read_current(artifact), changes)
+
     def _apply_modify(
         self, artifact: Artifact, session_id: str, content: bytes, changes: str | None
     ) -> Artifact:
@@ -246,6 +256,22 @@ class ArtifactService:
             raise ArtifactError(
                 f"artifact {artifact.id} revision {rev} is not utf-8 text — cannot diff"
             )
+
+    def resolve_id(self, token: str) -> str:
+        """Resolve a full id OR a unique id prefix to a full artifact id (CLI convenience — the
+        one place a caller passes a possibly-partial id by hand). An exact record wins immediately;
+        otherwise match by prefix across the store — zero matches -> not found, more than one ->
+        ambiguous."""
+        if self.store.load(token) is not None:
+            return token
+        matches = [artifact.id for artifact in self.store.all() if artifact.id.startswith(token)]
+        if not matches:
+            raise ArtifactNotFound(f"artifact '{token}' not found")
+        if len(matches) > 1:
+            raise ArtifactError(
+                f"artifact id prefix '{token}' is ambiguous ({len(matches)} matches) — use more characters"
+            )
+        return matches[0]
 
     def _require(self, artifact_id: str) -> Artifact:
         artifact = self.store.load(artifact_id)

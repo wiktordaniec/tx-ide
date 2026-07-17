@@ -29,6 +29,8 @@ from datetime import datetime
 from pathlib import Path
 
 from . import chat, engines, history, hooks, palette, sync
+from .artifact import USER_ACTOR
+from .artifact_service import ArtifactService
 from .chat import ChatOps
 from .engines import claude
 from .events import EventLog
@@ -37,6 +39,8 @@ from .render import (
     ROLE_W,
     picker_display_rows,
     picker_namew,
+    render_artifact_show,
+    render_artifacts,
     render_chats,
     render_history,
     render_ls,
@@ -673,6 +677,160 @@ class SendMessageCommand(Command):
         args = parser.parse_args(argv)
         self.service.send_message(args.target, args.body)
         return 0
+
+
+class ArtifactCommand(Command):
+    name = "artifact"
+    summary = "Create / modify / inspect durable versioned artifacts (tx artifact <subcommand>)."
+
+    def __init__(self, service: SessionService):
+        super().__init__(service)
+        # A parallel use-case core (its own store); the SessionService is kept for tmux (actor
+        # resolution now, `spawn_nvim` for `open` in step 3).
+        self.artifacts = ArtifactService()
+
+    def _subcommands(self):
+        """The settled minimal verb set — each backs one step of the motivating flow, nothing
+        speculative. `open` (the tmux view) lands in sequencing step 3."""
+        return {
+            "create": self._create,
+            "modify": self._modify,
+            "ls": self._ls,
+            "show": self._show,
+            "diff": self._diff,
+            "doctor": self._doctor,
+        }
+
+    def run(self, argv: list[str]) -> int:
+        if not argv or argv[0] in ("-h", "--help", "help"):
+            self._print_help()
+            return 0
+        handler = self._subcommands().get(argv[0])
+        if handler is None:
+            print(f"tx artifact: unknown subcommand '{argv[0]}'", file=sys.stderr)
+            self._print_help()
+            return 2
+        return handler(argv[1:])
+
+    def _print_help(self) -> None:
+        print("usage: tx artifact <subcommand> [args]\n")
+        print("subcommands:")
+        for usage, summary in (
+            ("create <file> [--title T]", "register a new artifact from a file"),
+            ("modify <id> [<file>] [--changes ...]", "snapshot a new revision (no file = the working copy)"),
+            ("ls [--session S]", "list artifacts (--session: what a session touched)"),
+            ("show <id>", "metadata + the full touch/version log"),
+            ("diff <id> [<revA> <revB>]", "difflib diff between two revisions (default: last two)"),
+            ("doctor", "check store invariants (orphan/missing revs, dirty working copies)"),
+        ):
+            print(f"  {usage:<40} {summary}")
+
+    def _sub_parser(self, sub: str) -> argparse.ArgumentParser:
+        return argparse.ArgumentParser(prog=f"tx artifact {sub}")
+
+    def _actor(self) -> str:
+        """The session id to stamp on a touch: `$TX_SESSION_ID` (exported into every tx session),
+        else the `@tx_id` of the current tmux session, else the `USER_ACTOR` sentinel (a plain
+        terminal / a manual edit). Never passed by hand (plan CLI surface); artifact commands never
+        hard-fail on missing session context — they fall back to the sentinel."""
+        env_id = os.environ.get("TX_SESSION_ID")
+        if env_id:
+            return env_id
+        current = self.service.tmux.current_session_name()
+        if current is not None:
+            tx_id = self.service.tmux.get_tx_id(current)
+            if tx_id:
+                return tx_id
+        return USER_ACTOR
+
+    def _create(self, argv: list[str]) -> int:
+        parser = self._sub_parser("create")
+        parser.add_argument("file")
+        parser.add_argument("--title")
+        args = parser.parse_args(argv)
+        path = Path(args.file)
+        if not path.is_file():
+            parser.error(f"no such file: {args.file}")
+        artifact = self.artifacts.create(
+            self._actor(), path.read_bytes(), title=args.title, filename=path.name
+        )
+        print(f"Created artifact {artifact.id} ({artifact.filename})")
+        return 0
+
+    def _modify(self, argv: list[str]) -> int:
+        parser = self._sub_parser("modify")
+        parser.add_argument("id")
+        parser.add_argument("file", nargs="?")
+        parser.add_argument("--changes")
+        args = parser.parse_args(argv)
+        artifact_id = self.artifacts.resolve_id(args.id)
+        before = self.artifacts.store.load(artifact_id).latest_rev
+        if args.file is not None:
+            path = Path(args.file)
+            if not path.is_file():
+                parser.error(f"no such file: {args.file}")
+            artifact = self.artifacts.modify(
+                artifact_id, self._actor(), path.read_bytes(), changes=args.changes
+            )
+        else:
+            # No file: snapshot the working copy — the one-command close after editing `current`.
+            artifact = self.artifacts.snapshot_current(
+                artifact_id, self._actor(), changes=args.changes
+            )
+        if artifact.latest_rev == before:
+            print(
+                f"No change — {artifact.id} working copy is identical to rev {before}; nothing snapshotted."
+            )
+        else:
+            print(f"Modified artifact {artifact.id} → rev {artifact.latest_rev}")
+        return 0
+
+    def _ls(self, argv: list[str]) -> int:
+        parser = self._sub_parser("ls")
+        parser.add_argument("--session", help="only artifacts this session created or touched")
+        args = parser.parse_args(argv)
+        artifacts = (
+            self.artifacts.artifacts_for_session(args.session)
+            if args.session is not None
+            else self.artifacts.store.all()
+        )
+        print(render_artifacts(artifacts))
+        return 0
+
+    def _show(self, argv: list[str]) -> int:
+        parser = self._sub_parser("show")
+        parser.add_argument("id")
+        args = parser.parse_args(argv)
+        artifact = self.artifacts.store.load(self.artifacts.resolve_id(args.id))
+        dirty = self.artifacts.files.current_is_dirty(artifact)  # show flags a dirty current
+        print(render_artifact_show(artifact, dirty))
+        return 0
+
+    def _diff(self, argv: list[str]) -> int:
+        parser = self._sub_parser("diff")
+        parser.add_argument("id")
+        parser.add_argument("rev_a", nargs="?", type=int)
+        parser.add_argument("rev_b", nargs="?", type=int)
+        args = parser.parse_args(argv)
+        if (args.rev_a is None) != (args.rev_b is None):
+            parser.error("give both revs or neither (default: the last two)")
+        out = self.artifacts.diff(self.artifacts.resolve_id(args.id), args.rev_a, args.rev_b)
+        if out:
+            sys.stdout.write(out)
+        else:
+            print("(no differences)")
+        return 0
+
+    def _doctor(self, argv: list[str]) -> int:
+        self._sub_parser("doctor").parse_args(argv)
+        problems = self.artifacts.doctor()
+        if not problems:
+            print("artifacts: clean")
+            return 0
+        for problem in problems:
+            print(f"  {problem}")
+        print(f"artifacts: {len(problems)} problem(s)")
+        return 1
 
 
 class SyncCommand(Command):
@@ -1523,6 +1681,7 @@ PUBLIC_COMMANDS: list[type[Command]] = [
     HistoryCommand,
     ChatCommand,
     ResumeCommand,
+    ArtifactCommand,
     SyncCommand,
     ForkCommand,
     HandoverCommand,

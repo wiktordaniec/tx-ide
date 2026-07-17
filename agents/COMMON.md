@@ -153,3 +153,10 @@ Both ends resolve through the store: `<target-session>` may be a session's displ
 ## AINote workflow
 
 Review comments in the form `# AINote: ...` are left inline in the code itself. **Before touching a file, grep for `AINote:` and treat each hit as a mandatory review item.** Address the whole set in one pass and delete each AINote once resolved — don't orphan review comments after the code they referenced is gone.
+
+## Artifacts
+
+Durable, versioned deliverables (plans, question sets, docs, reports) live as **artifacts** under `$TX_IDE_HOME/artifacts/` — a record plus a linear snapshot history of every revision, with who-touched-it provenance. Two rules:
+
+1. **Every artifact operation goes through `tx artifact …` (or the `tx.ArtifactService` Python API) — never a hand-rolled write.** `tx artifact create <file>` registers one; `tx artifact modify <id> [<file>]` snapshots a new revision (no file = snapshot the working copy); `tx artifact ls` / `show` / `diff` inspect. The current session is recorded as the toucher automatically — never pass an actor by hand.
+2. **A direct write under `artifacts/` is corruption.** The record is authoritative and the `revs/` snapshots are immutable; editing them by hand desyncs history from disk. `tx artifact doctor` detects such drift. The one file you may edit directly is an artifact's `current.<ext>` working copy in its nvim view — then close the loop with a no-file `tx artifact modify <id>` to snapshot the edit (this is also how your inline `# AINote:` comments get captured — they are content, so the next snapshot records them).
