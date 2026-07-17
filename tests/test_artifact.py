@@ -227,6 +227,13 @@ check("doctor flags the dirty current", any("dirty" in p and dirty.id in p for p
 service.modify(dirty.id, "s", b"edited-in-nvim\n")  # the no-file close snapshots it
 check("modify closes the dirty state", not any("dirty" in p and dirty.id in p for p in service.doctor()))
 
+# a no-op modify (supplied == last rev) must NOT reset a dirty working copy (round-2 P2)
+noop_dirty = service.create("s", b"orig\n", filename="nd.txt")
+files.write_current(noop_dirty, b"dirty\n")  # an unsnapshotted edit
+service.modify(noop_dirty.id, "s", b"orig\n")  # supplied == rev 0 -> no-op skip, current untouched
+check("a no-op leaves a dirty working copy untouched", service.content(noop_dirty.id) == b"dirty\n")
+check("a no-op adds no rev", len(service.store.load(noop_dirty.id).history) == 1)
+
 # ----- 6e. store tolerates an unreadable record -----------------------------------------------
 (artifacts_dir() / "garbage.json").write_text("{not json")
 stderr = io.StringIO()

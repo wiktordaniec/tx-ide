@@ -136,7 +136,19 @@ check("no-file modify snapshots the working copy", code == 0 and "rev 2" in out)
 check("no-file modify content is the edited working copy", ArtifactService().content(created.id, rev=2) == b"# plan\nalpha\nbeta\ngamma\n")
 
 code, out = run(command(), ["modify", created.id])
-check("no-op modify prints the notice and adds no rev", "No change" in out and len(inspect.load(created.id).history) == 3)
+check("no-file no-op prints the working-copy notice and adds no rev", "No change" in out and "working copy is identical" in out and len(inspect.load(created.id).history) == 3)
+
+# supplied-file no-op with a DIRTY working copy (QA round-2 P2): the notice must state the SUPPLIED
+# file comparison, never claim the working copy is identical, and flag the un-snapshotted edits —
+# which are PRESERVED (a no-op never resets a dirty current).
+dirty_noop = ArtifactService().create("sess-1", b"base\n", filename="dn.md")
+ArtifactService().files.write_current(inspect.load(dirty_noop.id), b"unsnapshotted edit\n")  # current != rev 0
+code, out = run(command(), ["modify", dirty_noop.id, write("same.md", "base\n")])  # supplied == rev 0
+check("supplied-file no-op adds no rev", code == 0 and len(inspect.load(dirty_noop.id).history) == 1)
+check("the notice states the supplied-file comparison, not the working copy", "supplied file is identical to rev 0" in out and "working copy is identical" not in out)
+check("the notice flags the dirty working copy", "unsnapshotted" in out)
+check("the dirty working copy is preserved (a no-op never resets current)", ArtifactService().content(dirty_noop.id) == b"unsnapshotted edit\n")
+run(command(), ["modify", dirty_noop.id])  # snapshot the dirty edit so the store is clean for §7 doctor
 
 # ----- 4. ls + ls --session -------------------------------------------------------------------
 code, out = run(command(), ["ls"])

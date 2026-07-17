@@ -789,13 +789,27 @@ class ArtifactCommand(Command):
             artifact = self.artifacts.snapshot_current(
                 artifact_id, self._actor(), changes=args.changes
             )
-        if artifact.latest_rev == before:
-            print(
-                f"No change — {artifact.id} working copy is identical to rev {before}; nothing snapshotted."
-            )
-        else:
+        if artifact.latest_rev != before:
             print(f"Modified artifact {artifact.id} → rev {artifact.latest_rev}")
+            return 0
+        print(self._no_op_notice(artifact, before, args.file is not None))
         return 0
+
+    def _no_op_notice(self, artifact, last_rev: int, from_file: bool) -> str:
+        """The precise no-op message (E3). The skip compares the SUPPLIED content against the last
+        rev only, and `current` is left untouched — so a supplied-file no-op must NOT claim the
+        working copy is identical (it may be dirty); it states the real comparison and flags an
+        un-snapshotted working copy. A no-file no-op snapshotted `current` itself, so there `current`
+        genuinely equals the last rev."""
+        if not from_file:
+            return f"No change — the working copy is identical to rev {last_rev}; nothing to snapshot."
+        notice = f"No change — the supplied file is identical to rev {last_rev}; nothing snapshotted."
+        if self.artifacts.files.current_is_dirty(artifact):
+            notice += (
+                f" NOTE: the working copy still has unsnapshotted edits — run "
+                f"`tx artifact modify {artifact.id}` (no file) to snapshot them."
+            )
+        return notice
 
     def _ls(self, argv: list[str]) -> int:
         parser = self._sub_parser("ls")
