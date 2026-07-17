@@ -221,8 +221,8 @@ runnable, no pytest):
 5. Round-trip `Artifact.from_dict(to_dict())`; strict boundary rejects a bad version, empty
    history, and non-contiguous revs.
 6. Concurrency + crash: two racing `modify`s → exactly one wins, loser gets the conflict error;
-   a hand-planted orphan `revs/<n>` is ignored on read, flagged by `doctor`, overwritten by the
-   next `modify`.
+   a hand-planted orphan `revs/<n>` is ignored on read, flagged by `doctor`, removed by its
+   repair mode — and a `modify` hitting it conflicts until repaired (never overwrites).
 7. `tx artifact open <id>` spawns an nvim session bound to `artifact_id` (fake tmux), opened on
    `current.<ext>`, tags inherited from the invoker.
 8. **Agent conformance (e2e, non-hermetic)** — spawn a primed worker with the updated role files
