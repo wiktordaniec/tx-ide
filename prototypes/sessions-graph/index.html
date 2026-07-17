@@ -656,7 +656,7 @@
   @media (max-width: 700px) {
     html, body { height: 100dvh; }
     header { gap: 8px; padding: 8px 10px; }
-    .brand, .meta, #filterbarToggle, #fit, #shuffle, #refresh, .toggle { display: none; }
+    .brand, .meta, #filterbarToggle, #fit, #tidy, #shuffle, #refresh, .toggle { display: none; }
     #filterbar { display: none; }
     .control input[type="search"] { width: 110px; }
     .tab { padding: 6px 10px; }
@@ -691,6 +691,7 @@
     <label class="control toggle"><input type="checkbox" id="auto" checked /> live</label>
     <button id="filterbarToggle" title="hide the filter bar (time · states · tags · usage)">▾ filters</button>
     <button id="fit" class="graph-only" title="reset zoom &amp; recenter on the graph">1:1</button>
+    <button id="tidy" class="graph-only" title="arrange the visible forest into a tidy tree &amp; pin every node (shuffle releases)">⑂ tidy</button>
     <button id="shuffle" class="graph-only" title="release every pinned node &amp; re-run the layout">⤮ shuffle</button>
     <button id="refresh" title="reload records now">↻ refresh</button>
   </header>
@@ -2570,6 +2571,72 @@ $("shuffle").addEventListener("click", () => {
   }
   reheat(1);
   render();
+});
+
+// ---- tidy layout --------------------------------------------------------------------------------
+// Arrange the visible forest into a tidy tree: roots side by side, descendants fanning down, every
+// node centered over its own subtree span. Rows are lineage depth and sibling spans never overlap,
+// so parent→child edges have no crossings by construction; spacing comes from the measured card
+// widths. Every node ends pinned at its tidy spot (persisted like a drag), so the arrangement
+// survives reloads and background refreshes — shuffle is the release.
+const TIDY_GAP_X = 30;        // breathing room between adjacent subtree spans
+const TIDY_ROW_GAP = 150;     // vertical distance between a parent row and its children row
+
+$("tidy").addEventListener("click", () => {
+  if (sim.size === 0) return;
+  const byName = (a, b) => a.data.name.localeCompare(b.data.name);
+  const children = new Map([...sim.values()].map((node) => [node.id, []]));
+  for (const link of links) children.get(link.sourceId).push(link.b);
+  for (const list of children.values()) list.sort(byName);
+  const childIds = new Set(links.map((link) => link.targetId));
+  const roots = [...sim.values()].filter((node) => !childIds.has(node.id)).sort(byName);
+
+  // Post-order span pass: a subtree is as wide as its own card or its children side by side.
+  const spanWidth = (node) => {
+    const kidsWidth = children.get(node.id).reduce((total, kid) => total + spanWidth(kid), 0);
+    return (node.spanW = Math.max((node.w || NODE_W) + TIDY_GAP_X, kidsWidth));
+  };
+  const depthOf = (node) => 1 + children.get(node.id).reduce((deepest, kid) => Math.max(deepest, depthOf(kid)), 0);
+
+  // Pre-order place pass: center the node over its span, pack the child spans inside it.
+  const place = (node, left, y) => {
+    node.x = left + node.spanW / 2;
+    node.y = y;
+    const kids = children.get(node.id);
+    let kidLeft = left + (node.spanW - kids.reduce((total, kid) => total + kid.spanW, 0)) / 2;
+    for (const kid of kids) { place(kid, kidLeft, y + TIDY_ROW_GAP); kidLeft += kid.spanW; }
+  };
+
+  const forestWidth = roots.reduce((total, root) => total + spanWidth(root), 0);
+  const rows = roots.reduce((deepest, root) => Math.max(deepest, depthOf(root)), 0);
+  const top = WORLD_CY - ((rows - 1) * TIDY_ROW_GAP) / 2;
+  let treeLeft = WORLD_CX - forestWidth / 2;
+  for (const root of roots) { place(root, treeLeft, top); treeLeft += root.spanW; }
+
+  pins = {};
+  for (const node of sim.values()) {
+    node.pinned = true; node.fx = node.x; node.fy = node.y; node.vx = 0; node.vy = 0;
+    pins[node.id] = { x: node.x, y: node.y };
+  }
+  savePins();
+  render();                                     // remounts cards with their pin badges + redraws edges
+
+  // Fit the whole forest in the viewport: zoom out to its bounding box (never in past 1:1), then
+  // pan the box center to the viewport center — the bbox, not the centroid centerView() uses, since
+  // a lopsided forest would otherwise hang off one edge at exactly-fitting zoom.
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const node of sim.values()) {
+    const halfW = (node.w || NODE_W) / 2, halfH = (node.h || NODE_H) / 2;
+    minX = Math.min(minX, node.x - halfW); maxX = Math.max(maxX, node.x + halfW);
+    minY = Math.min(minY, node.y - halfH); maxY = Math.max(maxY, node.y + halfH);
+  }
+  const FIT_PAD = 40;                           // viewport pixels kept clear around the fitted forest
+  zoom = Math.min(1, Math.max(ZOOM_MIN, Math.min(
+    (canvas.clientWidth - FIT_PAD * 2) / (maxX - minX),
+    (canvas.clientHeight - FIT_PAD * 2) / (maxY - minY))));
+  panX = canvas.clientWidth / 2 - ((minX + maxX) / 2) * zoom;
+  panY = canvas.clientHeight / 2 - ((minY + maxY) / 2) * zoom;
+  applyTransform();
 });
 
 // ---- node drag + canvas pan ---------------------------------------------------------------------
