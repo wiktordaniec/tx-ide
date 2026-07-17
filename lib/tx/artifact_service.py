@@ -168,9 +168,15 @@ class ArtifactService:
 
     def content_path(self, artifact_id: str) -> str:
         """The `current.<ext>` path — what `tx artifact open` hands nvim (never a frozen rev). A pure
-        path accessor: it neither reads bytes nor logs; the `open` command logs its own line."""
+        path accessor: it neither reads bytes nor logs; the `open` command logs via `opened`."""
         artifact = self._require(artifact_id)
         return str(self.files.current_path(artifact))
+
+    def opened(self, artifact_id: str, session_id: str) -> None:
+        """Record that a session opened the artifact's view — read-visibility in the EventLog (G2).
+        The open is a read, so it stays OUT of `history` (no rev noise) but IS logged. Called by
+        `tx artifact open` once the nvim companion is up and bound."""
+        self.log.append("artifact-open", f"{artifact_id} → {session_id}", actor=session_id)
 
     def diff(self, artifact_id: str, rev_a: int | None = None, rev_b: int | None = None) -> str:
         """A unified `difflib` diff between two revisions (default: the last two). We store versions,

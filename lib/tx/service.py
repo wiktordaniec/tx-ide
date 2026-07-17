@@ -389,6 +389,20 @@ class SessionService:
         self.log.append("tag", f"{session.name} {','.join(tags)}")
         return session
 
+    def bind_artifact(self, session_id: str, artifact_id: str) -> Session:
+        """Bind an nvim view session to the artifact it renders — the `OtherSession.artifact_id`
+        back-link (v5). Backs `tx artifact open`: after the companion is spawned, this records which
+        artifact it surfaces, so the session->artifact direction is first-class on the session record
+        too (the artifact->sessions direction is `artifact.history`). Only ever called on the freshly
+        spawned nvim `OtherSession`, so the narrowing always holds — asserted loudly (mirroring
+        `record_state`'s `LlmSession` narrowing) rather than silently stashing the field on a base."""
+        session = self._require(session_id)
+        assert isinstance(session, OtherSession)
+        session.artifact_id = artifact_id
+        self.store.save(session)
+        self.log.append("bind-artifact", f"{session.name} → {artifact_id}")
+        return session
+
     def rename(self, name_or_id: str, new_name: str) -> Session:
         """Rename a session's DISPLAY name — a pure store write. tmux names every session by its
         (unchanging) id, so nothing moves in tmux and the pane border reflects the new name on its

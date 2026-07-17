@@ -691,13 +691,14 @@ class ArtifactCommand(Command):
 
     def _subcommands(self):
         """The settled minimal verb set — each backs one step of the motivating flow, nothing
-        speculative. `open` (the tmux view) lands in sequencing step 3."""
+        speculative."""
         return {
             "create": self._create,
             "modify": self._modify,
             "ls": self._ls,
             "show": self._show,
             "diff": self._diff,
+            "open": self._open,
             "doctor": self._doctor,
         }
 
@@ -721,6 +722,7 @@ class ArtifactCommand(Command):
             ("ls [--session S]", "list artifacts (--session: what a session touched)"),
             ("show <id>", "metadata + the full touch/version log"),
             ("diff <id> [<revA> <revB>]", "difflib diff between two revisions (default: last two)"),
+            ("open <id> [--tag T] [--cwd D]", "open the working copy in an nvim view bound to the artifact"),
             ("doctor", "check store invariants (orphan/missing revs, dirty working copies)"),
         ):
             print(f"  {usage:<40} {summary}")
@@ -820,6 +822,49 @@ class ArtifactCommand(Command):
         else:
             print("(no differences)")
         return 0
+
+    def _open(self, argv: list[str]) -> int:
+        parser = self._sub_parser("open")
+        parser.add_argument("id")
+        parser.add_argument("--tag", help="tags for the nvim view (overrides the invoker's tags)")
+        parser.add_argument("--cwd", help="working directory for the view (default: the artifact's dir)")
+        args = parser.parse_args(argv)
+        artifact_id = self.artifacts.resolve_id(args.id)
+        artifact = self.artifacts.store.load(artifact_id)
+        content_path = self.artifacts.content_path(artifact_id)  # current.<ext> — never a frozen rev
+        tags = self._open_tags(args.tag)
+        if not tags:
+            parser.error("--tag requires at least one value")
+        spec = SpawnSpec.for_nvim(
+            name=f"art-{artifact_id[:8]}",
+            tags=tags,
+            cwd=args.cwd or str(self.artifacts.files.content_dir(artifact)),
+            open_file=content_path,
+        )
+        session = self.service.spawn_nvim(spec)
+        self.service.bind_artifact(session.id, artifact_id)  # the OtherSession.artifact_id back-link (v5)
+        self.artifacts.opened(artifact_id, self._actor())
+        print(f"Opened artifact {artifact_id} in nvim view '{session.name}' ({content_path})")
+        return 0
+
+    def _open_tags(self, tag_override: str | None) -> list[str]:
+        """Tags for the view (E1): `--tag` overrides; else inherit the invoking session's tags; else
+        (invoked outside tx, or an untagged invoker) a bare `["artifact"]` so `spawn_nvim`'s
+        mandatory-tag rule is always satisfied."""
+        if tag_override is not None:
+            return _split_tags(tag_override)
+        invoker = self._invoker_session()
+        if invoker is not None and invoker.tags:
+            return list(invoker.tags)
+        return ["artifact"]
+
+    def _invoker_session(self) -> Session | None:
+        """The store record for the session invoking `open`, or None outside tx — resolves the
+        current tmux session name (`#S`, the id for a process) back to its record."""
+        current = self.service.tmux.current_session_name()
+        if current is None:
+            return None
+        return self.service.get(current)
 
     def _doctor(self, argv: list[str]) -> int:
         self._sub_parser("doctor").parse_args(argv)
@@ -1506,12 +1551,12 @@ class SelfCheckCommand(Command):
 
 class MigrateCommand(Command):
     name = "migrate"
-    summary = "Upgrade $TX_IDE_HOME session records to the current schema (idempotent v3 → v4)."
+    summary = "Upgrade $TX_IDE_HOME session records to the current schema (idempotent; chains v3→v4→v5)."
 
     def run(self, argv: list[str]) -> int:
         # No flags: the target is $TX_IDE_HOME/sessions, so a sandbox run is `TX_IDE_HOME=<tmp> tx
-        # migrate` (the v4 code must never migrate the live v3 home). Explicit + idempotent. The live
-        # tmux server is needed to stamp @tx_view onto view sessions as their records are retired.
+        # migrate` (a newer checkout must never migrate a live older home). Explicit + idempotent. The
+        # live tmux server is needed to stamp @tx_view onto view sessions as their records are retired.
         self._parser().parse_args(argv)  # reject stray args; serve `-h`
         migrated, views_removed, skipped = migrate_sessions(
             sessions_dir(), self.service.tmux
