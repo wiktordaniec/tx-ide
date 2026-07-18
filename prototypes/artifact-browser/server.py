@@ -50,8 +50,12 @@ MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
 # A canonical artifact id is a uuid. The store joins the id into a filesystem path, so the browser
 # accepts ONLY that exact token in a route — a crafted `..` / `/` (literal OR percent-encoded) can
 # then never escape the artifacts directory to read an arbitrary file (QA P1: path traversal).
+# Deliberately UNANCHORED + used with `fullmatch`: `match` with a trailing `$` would accept a
+# canonical uuid followed by one newline (Python's `$` also matches just before a final `\n`), which
+# would let a control character survive into a record-derived path (QA P2b). `fullmatch` requires the
+# WHOLE string to be the token — no trailing newline, no leading or trailing anything.
 _ARTIFACT_ID_RE = re.compile(
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 
 
@@ -61,7 +65,7 @@ def _safe_artifact_id(raw: str) -> str | None:
     percent-encoding ONCE, then require the exact uuid shape; a literal or encoded `..`/`/`, or any
     other non-uuid token, returns None (the route 404s without touching the store)."""
     decoded = urllib.parse.unquote(raw)
-    return decoded if _ARTIFACT_ID_RE.match(decoded) else None
+    return decoded if _ARTIFACT_ID_RE.fullmatch(decoded) else None
 
 
 # Everything outside this set is dropped from the quoted Content-Disposition fallback. A record's

@@ -63,8 +63,12 @@ check("a canonical uuid is accepted", server._safe_artifact_id(inside.id) == ins
 for bad in (
     "../outside-record", "%2e%2e%2foutside-record", "..%2Foutside-record", "%2e%2e/outside-record",
     inside.id + "/..", "outside-content", "not-a-uuid", "", "..", "../../etc/passwd",
+    # P2b: `match` + a trailing `$` would accept these — Python's `$` also matches just before one
+    # final newline, so a control character could survive the validator. `fullmatch` refuses them.
+    inside.id + "\n", inside.id + "%0A", inside.id + "\r", inside.id + "%0D%0A",
+    "\n" + inside.id, " " + inside.id, inside.id + " ",
 ):
-    check(f"rejects non-uuid id {bad!r}", server._safe_artifact_id(bad) is None)
+    check(f"rejects non-canonical id {bad!r}", server._safe_artifact_id(bad) is None)
 
 # ----- integration: RAW sockets (no client-side `..` normalization, as the QA repro) -------------
 httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.BrowserHandler)
@@ -102,6 +106,12 @@ try:
     check("a valid id serves a diff (200)", status == 200 and b"+beta" in body)
     status, body = raw_get("/api/artifacts/00000000-0000-0000-0000-000000000000")
     check("a valid-but-missing uuid 404s cleanly", status == 404)
+    # P2b over HTTP: a canonical uuid carrying an encoded trailing newline must 404, not resolve.
+    for suffix, label in (("%0A", "encoded LF"), ("%0D", "encoded CR"), ("%00", "encoded NUL")):
+        status, _body = raw_get(f"/api/artifacts/{inside.id}{suffix}")
+        check(f"uuid + {label} is rejected (404)", status == 404)
+        status, _body = raw_get(f"/api/artifacts/{inside.id}{suffix}/raw")
+        check(f"uuid + {label} on /raw is rejected (404)", status == 404)
 
     for path in (
         "/api/artifacts/../outside-record",                       # detail, literal
