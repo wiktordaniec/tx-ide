@@ -78,11 +78,16 @@
   .grid .right { text-align: right; }
   /* Notion-style sub-item toggle: parents get a chevron that folds their subtree; leaves get an
      equal-width spacer so names align. The whole gutter (indent + chevron) is the hit target,
-     fattened to the full row height, so folding never mis-clicks into the session detail. */
+     fattened to the full row height and pulled flush to the row's left edge (the negative margins
+     swallow the cell padding), so folding never mis-clicks into the session detail. */
   .tgl, .tgl-spacer { display: inline-block; width: 24px; text-align: center; font-family: var(--mono); }
-  .gut { cursor: pointer; }
-  .gut .tgl { color: var(--muted); padding: 12px 0; margin: -12px 0; }
-  .gut:hover .tgl { color: var(--text); background: var(--panel-2); }
+  .gut {
+    display: inline-block; cursor: pointer;
+    padding: 12px 2px 12px 10px; margin: -12px -2px -12px -10px;
+  }
+  .gut .tgl { color: var(--muted); }
+  .gut:hover { background: var(--panel-2); }
+  .gut:hover .tgl { color: var(--text); }
   /* The visible sort key: a family orders by its subtree's newest interaction, so the root shows
      that time in green beside its own dim age, and the descendant that produced it carries the
      same green time — matching values connect the pair. */
