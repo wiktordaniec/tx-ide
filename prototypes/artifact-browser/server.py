@@ -479,17 +479,67 @@ def _first_existing(paths: list[Path]) -> Path | None:
     return None
 
 
+# How far back from the end of a transcript to look for the last stamped entry. A window bounds the
+# read on multi-MB files; an entry line longer than this (a giant single-line tool result at the very
+# end) falls back to mtime.
+_TAIL_WINDOW_BYTES = 65536
+_tail_ts_lock = threading.Lock()
+_tail_ts_cache: dict[str, tuple[int, int, float]] = {}  # path -> (size, mtime_ns, entry ts)
+
+
+def _last_entry_ts(path: Path) -> float:
+    """The timestamp of the newest transcript entry — the honest "last message" time. File mtime is
+    NOT trusted as the primary signal: Claude Code touches old transcript files during its own
+    housekeeping (observed: a 3-day-idle chat whose file mtime was minutes old), so the tail's own
+    stamp decides and mtime is only the fallback when no entry in the window parses. Cached by
+    (size, mtime), so an unchanged file is a stat, not a read. 0.0 when the file is absent."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return 0.0
+    key = str(path)
+    with _tail_ts_lock:
+        cached = _tail_ts_cache.get(key)
+        if cached is not None and cached[0] == stat.st_size and cached[1] == stat.st_mtime_ns:
+            return cached[2]
+    timestamp = 0.0
+    try:
+        with path.open("rb") as handle:
+            if stat.st_size > _TAIL_WINDOW_BYTES:
+                handle.seek(stat.st_size - _TAIL_WINDOW_BYTES)
+            lines = handle.read().decode(errors="replace").splitlines()
+    except OSError:
+        return 0.0
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            timestamp = _iso_epoch(entry.get("timestamp"))
+            if timestamp:
+                break
+    if timestamp == 0.0:
+        timestamp = stat.st_mtime
+    with _tail_ts_lock:
+        _tail_ts_cache[key] = (stat.st_size, stat.st_mtime_ns, timestamp)
+    return timestamp
+
+
 def _last_interaction(session: LlmSession) -> float:
-    """The session's most recent sign of life: the record's activity stamp or the newest mtime of
-    any chat's transcript/bundle — whichever is later. Transcript mtime catches conversation that
-    the record's `last_activity` (a hook-side stamp) missed."""
+    """The session's most recent sign of life: the record's activity stamp or the newest LAST-ENTRY
+    timestamp of any chat's transcript — whichever is later. The bundle is a prefix mirror of the
+    live transcript, so the first candidate that exists decides for its chat."""
     latest = session.activity_at
     for chat in session.chats:
         for path in _transcript_candidates(session, chat):
-            try:
-                latest = max(latest, path.stat().st_mtime)
-            except OSError:
-                continue
+            timestamp = _last_entry_ts(path)
+            if timestamp:
+                latest = max(latest, timestamp)
+                break
     return latest
 
 
