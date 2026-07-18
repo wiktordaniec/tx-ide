@@ -2670,6 +2670,16 @@ $("tidy").addEventListener("click", () => {
     }
   }
 
+  // Pin and render BEFORE the squeeze-out: pinning adds the 📌 badge to a card, which widens it,
+  // and the squeeze must see those final measured widths — squeezing first left freshly-pinned
+  // cards overlapping by the badge's width.
+  pins = {};
+  for (const node of sim.values()) {
+    node.pinned = true; node.fx = node.x; node.fy = node.y; node.vx = 0; node.vy = 0;
+    pins[node.id] = { x: node.x, y: node.y };
+  }
+  render();                                     // remounts cards with their pin badges + re-measures
+
   // Squeeze-out: push overlapping pairs apart along their least-overlapping axis (tick()'s AABB
   // separation rule, run to convergence) so congestion never becomes cards covering each other.
   const placed = [...sim.values()];
@@ -2690,14 +2700,12 @@ $("tidy").addEventListener("click", () => {
     }
     if (!pushed) break;
   }
-
-  pins = {};
-  for (const node of sim.values()) {
-    node.pinned = true; node.fx = node.x; node.fy = node.y; node.vx = 0; node.vy = 0;
+  for (const node of sim.values()) {            // persist the squeezed spots, not the raw ring ones
+    node.fx = node.x; node.fy = node.y;
     pins[node.id] = { x: node.x, y: node.y };
   }
   savePins();
-  render();                                     // remounts cards with their pin badges + redraws edges
+  paint();
 
   // Fit the whole forest in the viewport: zoom out to its bounding box (never in past 1:1), then
   // pan the box center to the viewport center — the bbox, not the centroid centerView() uses, since
