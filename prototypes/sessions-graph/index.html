@@ -164,16 +164,6 @@
   /* Attachment key (attachmentLegendHtml) — reuses .rolekey's inline-flex/font/cursor; the detached
      variant recedes to --muted, matching the muted detached row under a node. */
   .rolekey.lockey.detached { color: var(--muted); }
-  /* View selector chips (viewSelectorHtml) — a single-select radio row ("all" + one per live View host)
-     that scopes the location readout to one host; same look as the messages .kindchip. */
-  .viewchip {
-    font: inherit; font-size: 11px; cursor: pointer; padding: 3px 11px; border-radius: 999px;
-    color: var(--muted); border: 1px solid var(--border); background: transparent;
-  }
-  .viewchip:hover { color: var(--fg); }
-  .viewchip.on { color: var(--fg); border-color: var(--fg); background: var(--surface); }
-  .viewchip .n { color: var(--muted); font-size: 10px; margin-left: 6px; }
-  .viewchip.on .n { color: var(--dim); }
   /* The dynamic half of the filter bar — renderFilterBar() fills this with the state/tag (graph · table)
      or kind (messages) chips, leaving the time control (its stable sibling) untouched on every repaint.
      Flexes like the bar itself so the chips keep their spacing and the graph's pin-hint spacer still
@@ -884,7 +874,6 @@ let messagesFeed = null;          // messages: the /api/messages payload ({ mess
 let messagesSort = { key: "ts", dir: "desc" };   // messages: active sort column + direction (newest-first default)
 let messageKind = "all";          // messages: kind filter — "all" | "agent" | "you"
 let messageScope = null;          // messages: a session name clicked to narrow to its conversation (null ⇒ all)
-let selectedView = (() => { try { return localStorage.getItem("tx-graph-view-v1") || null; } catch { return null; } })();   // graph: which View host the location readout is scoped to (null ⇒ all views, host shown); persists per browser
 let selectedMessage = null;       // messages: uuid of the message whose full body is open in the drawer
 let inboxFeed = null;             // inbox: the /api/inbox payload ({ items:[…] }) — SSE `inbox` channel or one-shot fetch
 let inboxSel = null;              // inbox: session id of the open thread (persists across SSE repaints)
@@ -1843,15 +1832,12 @@ function nodeInner(dataNode, simNode) {
          locationRow(dataNode.attachedTo);
 }
 
-// The attachment readout (attachment-topology) — where the session is surfaced RIGHT NOW, scoped to the
-// View the user picked (see viewSelectorHtml). `attached_to` is the server's live `attachment_map` stamp
-// (compute-on-read), not the stale on-disk field. Always shows the primary pane as
-// `host · window:name · pane` with a `+N` overflow — the View (host) name is shown at all times, so you
-// can always read which View a node lives in, whether the picker is on "all" or a single host. With one
-// View picked, attachments in any OTHER host are ignored — collapsed to a muted "detached".
+// The attachment readout — where the session is surfaced RIGHT NOW: the primary pane as
+// `host · window:name · pane`, with a `+N` overflow for any others. `attached_to` is the server's live
+// `attachment_map` stamp (compute-on-read), not the stale on-disk field, so it reflects where the
+// session sits this second; surfaced nowhere ⇒ a muted "detached".
 function locationRow(locations) {
-  let locs = locations || [];
-  if (selectedView) locs = locs.filter((location) => location.host === selectedView);   // scope to the picked View; attached elsewhere ⇒ detached
+  const locs = locations || [];
   if (!locs.length) {
     return `<div class="loc detached"><span class="locmark">○</span>detached</div>`;
   }
@@ -1926,12 +1912,8 @@ function renderFilterBar() {
   }
   const pinHint = activeTab === "graph"
     ? `<span class="spacer"></span><span class="hint">drag a node to pin it · click for actions</span>` : "";
-  // The view selector + attachment key both decode the per-node location readout, which only the graph
-  // draws (the table has no location column) — so they ride the graph tab alongside the role key, and
-  // the table omits them. The selector sits with the filters (states · tags · viewing); the keys after.
-  const viewSel = activeTab === "graph" ? viewSelectorHtml() : "";
-  const attachKey = activeTab === "graph" ? attachmentLegendHtml() : "";
-  bar.innerHTML = `<span class="hint">states — click to show / hide:</span>${stateChipsHtml()}${tagSectionHtml()}${viewSel}${roleLegendHtml()}${attachKey}${pinHint}`;
+  const attachKey = activeTab === "graph" ? attachmentLegendHtml() : "";   // decodes the per-node 📍/○ location readout (graph only)
+  bar.innerHTML = `<span class="hint">states — click to show / hide:</span>${stateChipsHtml()}${tagSectionHtml()}${roleLegendHtml()}${attachKey}${pinHint}`;
 }
 
 // The role legend — a STATIC key (not a filter) decoding the per-role node colours (the left stripe +
@@ -1953,32 +1935,6 @@ function attachmentLegendHtml() {
   return `<span class="fsep"></span><span class="hint">where:</span>` +
          `<span class="rolekey lockey" title="surfaced in a tmux pane now — host · window · pane">📍 attached</span>` +
          `<span class="rolekey lockey detached" title="attached nowhere">○ detached</span>`;
-}
-
-// The view selector (graph only) — a single-select radio row scoping the location readout to ONE View
-// host: "all" (every host, host shown on each node) plus one chip per live View host. Picking a host
-// shows only that host's panes on each node and collapses everything attached elsewhere to "detached",
-// so the graph reflects just the terminal you're actually in. Options are the hosts currently surfacing
-// something (the distinct attached_to hosts), each with a count of how many sessions it holds; the active
-// pick stays selectable even if its view momentarily holds nothing. data-view drives the delegated
-// toggle (below); selectedView persists per browser.
-function viewSelectorHtml() {
-  const counts = new Map();
-  let anyAttached = 0;
-  if (feed) for (const entry of feed.sessions) {
-    const hosts = new Set((entry.record.attached_to || []).map((location) => location.host));
-    if (hosts.size) anyAttached++;
-    for (const host of hosts) counts.set(host, (counts.get(host) || 0) + 1);
-  }
-  if (selectedView && !counts.has(selectedView)) counts.set(selectedView, 0);
-  if (counts.size === 0) return "";                       // nothing attached anywhere — no views to scope to
-  const chip = (value, label, count) =>
-    `<button class="viewchip${(selectedView || "") === value ? " on" : ""}" data-view="${escapeHtml(value)}" ` +
-    `aria-pressed="${(selectedView || "") === value}">${escapeHtml(label)}<span class="n">${count}</span></button>`;
-  const hosts = [...counts.keys()].sort();
-  return `<span class="fsep"></span><span class="hint">viewing:</span>` +
-         chip("", "all", anyAttached) +
-         hosts.map((host) => chip(host, host, counts.get(host))).join("");
 }
 
 // The six state chips, reflecting hiddenStates with live per-state counts. data-state drives the
@@ -2055,13 +2011,6 @@ $("filterbar").addEventListener("click", (event) => {
   if (tagChip) {
     const tag = tagChip.dataset.tag;
     if (selectedTags.has(tag)) selectedTags.delete(tag); else selectedTags.add(tag);
-    paintActive();
-    return;
-  }
-  const viewChip = event.target.closest(".viewchip");
-  if (viewChip) {
-    selectedView = viewChip.dataset.view || null;   // "" (the "all" chip) ⇒ no scoping
-    try { localStorage.setItem("tx-graph-view-v1", selectedView || ""); } catch { /* private mode — ignore */ }
     paintActive();
     return;
   }

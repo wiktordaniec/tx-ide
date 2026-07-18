@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -53,6 +54,9 @@ DEFAULT_PORT = 8765
 # POST /api/focus-changed to it — and finds nothing to poke when the dashboard is down (file absent).
 # Written on startup, removed on exit. `$TX_IDE_HOME` is resolved exactly as `tx` resolves it.
 ENDPOINT_FILE = tx_ide_home() / "sessions-graph.port"
+# A tx session id is a UUID; a view (a tmux home base) is identified by a plain name. build_feed uses
+# this to tell a removed *process* parent (UUID → keep its lineage ghost) from a *view* parent (name).
+_SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 # The positions the user drags nodes to are persisted here — one JSON map {session-id: {x, y}} — so
 # the graph's layout is restored from the SERVER on every page load instead of from a single browser's
 # localStorage (which never followed the user to another browser or machine). Keyed by the same id the
@@ -108,12 +112,22 @@ def build_feed() -> dict:
     sessions = sorted(
         SessionStore().all(), key=lambda session: session.activity_at, reverse=True
     )
-    # Attachment is compute-on-read (attachment-topology §4): a record's on-disk `attached_to` is
-    # stamped only on an actual mutation (spawn / rename / state change), so it goes stale on a plain
-    # attach or detach. Re-stamp every session from ONE live `attachment_map` sweep — exactly as
-    # `SessionService.live_sessions` (and thus `tx ls` / the picker) does — so the graph's LOCATION
-    # readout reflects where each session is surfaced right now, never the stale persisted value. A
-    # terminal session isn't a key in the map, so it correctly resolves to [] (attached nowhere).
+    # Views are a terminal-viewing concept (tmux home bases), not part of the session graph. A session
+    # spawned from a view carries that view's *name* as `parent` (views are name-identified; a process
+    # is identified by its UUID id — D7), and since a view is not a record that ref would otherwise
+    # render as a dashed "view" ghost node. Drop any dangling (unresolved) parent that isn't a session
+    # id, so those sessions become clean roots and the graph never shows a view. A dangling *UUID* is a
+    # removed process, not a view — its ghost stays and preserves real session lineage.
+    record_keys = {session.id for session in sessions} | {session.name for session in sessions}
+    for session in sessions:
+        parent = session.parent
+        if parent and parent not in record_keys and not _SESSION_ID_RE.match(parent):
+            session.parent = None
+    # Live attachment (attachment-topology §4): the on-disk `attached_to` is stamped only on a mutation,
+    # so it goes stale on a plain attach / detach. Re-stamp every session from ONE live `attachment_map`
+    # sweep, so each node's location readout shows where it is surfaced right now. A session surfaced
+    # nowhere isn't a key in the map, resolving to [] (rendered as "detached"). This is where-it-lives
+    # info per node, not a view the graph structures around — the view nulling above still stands.
     attachment = Tmux().attachment_map()
     for session in sessions:
         session.attached_to = attachment.get(_tmux_name(session), [])
