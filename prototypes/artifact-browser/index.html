@@ -5,10 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>tx-ide · chats & artifacts</title>
 <style>
-  /* Palette mirrors the analytics house style (polymarket dashboard) — dark, airy, minimal. */
+  /* Palette mirrors the analytics house style (polymarket dashboard). Deliberately plain: flat
+     colors only — no gradients, no alpha, no blur, no rounding, no shadows. */
   :root {
     color-scheme: dark;
-    --bg: #080b10; --panel: #0e131b; --panel-2: #121923; --line: #253044;
+    --bg: #080b10; --panel: #0e131b; --panel-2: #121923; --line: #253044; --line-soft: #18202e;
     --text: #edf3fb; --muted: #8290a5; --dim: #3d5273;
     --blue: #5ca8ff; --green: #48d597; --red: #ff7085; --amber: #ffcb6b;
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
@@ -17,7 +18,7 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; }
   body {
-    background: radial-gradient(circle at 80% -10%, #13223a 0, transparent 34%), var(--bg);
+    background: var(--bg);
     color: var(--text); font: 14px/1.55 var(--sans); min-height: 100vh;
   }
   a { color: var(--blue); text-decoration: none; cursor: pointer; }
@@ -28,22 +29,18 @@
   /* ---- header ---- */
   header {
     position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 18px;
-    padding: 12px 28px; background: rgba(9,13,19,.88); backdrop-filter: blur(6px);
-    border-bottom: 1px solid var(--line);
+    padding: 12px 28px; background: var(--bg); border-bottom: 1px solid var(--line);
   }
   .brand { font-weight: 700; letter-spacing: .2px; color: var(--text); }
   .brand .glyph { color: var(--blue); }
-  nav.tabs { display: inline-flex; gap: 4px; }
-  nav.tabs a {
-    color: var(--muted); padding: 4px 12px; border-radius: 6px; font-size: 13px;
-    border: 1px solid transparent;
-  }
+  nav.tabs { display: inline-flex; gap: 16px; }
+  nav.tabs a { color: var(--muted); font-size: 13px; }
   nav.tabs a:hover { color: var(--text); text-decoration: none; }
-  nav.tabs a.active { color: var(--text); background: var(--panel-2); border-color: var(--line); }
+  nav.tabs a.active { color: var(--text); }
   header .spacer { flex: 1; }
   #search {
-    background: var(--panel); border: 1px solid var(--line); color: var(--text);
-    border-radius: 7px; padding: 5px 10px; width: 220px; font: 13px var(--sans);
+    background: var(--bg); border: 1px solid var(--line); color: var(--text);
+    padding: 5px 10px; width: 220px; font: 13px var(--sans);
   }
   #search:focus { outline: none; border-color: var(--blue); }
   #search.hidden { display: none; }
@@ -52,8 +49,7 @@
 
   /* ---- chips / badges / state dots ---- */
   .chip {
-    display: inline-block; padding: 1px 8px; margin: 0 4px 2px 0; border-radius: 10px;
-    background: var(--panel-2); border: 1px solid var(--line); color: var(--muted);
+    display: inline-block; margin-right: 10px; color: var(--muted);
     font: 11px var(--mono); white-space: nowrap;
   }
   .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px;
@@ -65,10 +61,7 @@
   .st-exited   .dot { background: var(--dim); }
   .st-archived .dot { background: var(--amber); }
   .state { white-space: nowrap; color: var(--muted); font-size: 12.5px; }
-  .badge {
-    display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 12px;
-    background: rgba(255,203,107,.12); color: var(--amber); border: 1px solid rgba(255,203,107,.3);
-  }
+  .badge { color: var(--amber); font-size: 12px; }
   .num { font-family: var(--mono); font-size: 12.5px; }
   .num.zero { color: var(--dim); }
 
@@ -79,12 +72,15 @@
     letter-spacing: .8px; color: var(--muted); padding: 8px 10px;
     border-bottom: 1px solid var(--line); white-space: nowrap;
   }
-  .grid td { padding: 9px 10px; border-bottom: 1px solid rgba(37,48,68,.45); vertical-align: baseline; }
+  .grid td { padding: 9px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: baseline; }
   .grid tbody tr.rowlink { cursor: pointer; }
   .grid tbody tr.rowlink:hover { background: var(--panel); }
   .grid .right { text-align: right; }
-  .ellip { display: block; max-width: 44ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .sub { color: var(--dim); font-family: var(--mono); }  /* the └ tree glyph on child sessions */
+  /* Notion-style sub-item toggle: parents get a chevron that folds their subtree; leaves get an
+     equal-width spacer so names align. */
+  .tgl, .tgl-spacer { display: inline-block; width: 20px; font-family: var(--mono); }
+  .tgl { color: var(--muted); cursor: pointer; }
+  .tgl:hover { color: var(--text); }
   /* The visible sort key: a family orders by its subtree's newest interaction, so the root shows
      that time in green beside its own dim age, and the descendant that produced it carries the
      same green time — matching values connect the pair. */
@@ -103,20 +99,20 @@
     color: var(--muted); margin: 0 0 4px; padding-bottom: 7px; border-bottom: 1px solid var(--line);
   }
   .props { display: grid; grid-template-columns: 175px 1fr; font-size: 13.5px; }
-  .props > div { padding: 6px 0; border-bottom: 1px solid rgba(37,48,68,.35); overflow-wrap: anywhere; }
+  .props > div { padding: 6px 0; border-bottom: 1px solid var(--line-soft); overflow-wrap: anywhere; }
   .props .k { color: var(--muted); }
   details.fold summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 6px 0; }
   details.fold summary:hover { color: var(--text); }
   pre.cmd {
-    font: 12px/1.5 var(--mono); background: var(--panel); border: 1px solid var(--line);
-    border-radius: 8px; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0;
+    font: 12px/1.5 var(--mono); background: var(--panel);
+    padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0;
   }
 
   /* ---- conversation ---- */
   .chat-sep {
     display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
-    margin: 26px 0 4px; padding: 8px 12px; background: var(--panel);
-    border: 1px solid var(--line); border-radius: 8px; font: 12px var(--mono); color: var(--muted);
+    margin: 26px 0 4px; padding-top: 8px; border-top: 1px solid var(--line);
+    font: 12px var(--mono); color: var(--muted);
   }
   .chat-sep b { color: var(--text); font-weight: 600; }
   .turn { padding: 10px 0 2px; }
@@ -127,7 +123,7 @@
   .turn .body { max-width: 110ch; }   /* full-width page; prose keeps a readable measure */
   .turn.you .body {
     white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0 0;
-    border-left: 2px solid rgba(92,168,255,.45); padding-left: 12px;
+    border-left: 2px solid var(--line); padding-left: 12px;
   }
   .turn.agent .body { margin: 4px 0 0; }
   .turn.tools { color: var(--dim); font: 11px var(--mono); padding: 6px 0; }
@@ -141,9 +137,8 @@
   .md p { margin: .55em 0; } .md ul,.md ol { margin: .45em 0; padding-left: 1.5em; }
   .md li { margin: .18em 0; }
   .md code { font-family: var(--mono); font-size: .87em; background: var(--panel-2);
-             padding: .1em .35em; border-radius: 4px; }
-  .md pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-            padding: 12px; overflow-x: auto; }
+             padding: .1em .35em; }
+  .md pre { background: var(--panel); padding: 12px; overflow-x: auto; }
   .md pre code { background: none; padding: 0; }
   .md blockquote { margin: .55em 0; padding: .1em 1em; border-left: 3px solid var(--line);
                    color: var(--muted); }
@@ -157,8 +152,8 @@
   /* ---- diff ---- */
   .diffbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 12px; }
   select, button {
-    font: 12.5px var(--mono); background: var(--panel-2); color: var(--text);
-    border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px;
+    font: 12.5px var(--mono); background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); padding: 5px 9px;
   }
   button { cursor: pointer; } button:hover { border-color: var(--blue); }
   pre.diff { font: 12.5px/1.5 var(--mono); margin: 0; overflow-x: auto; white-space: pre; }
@@ -296,15 +291,35 @@ function renderMarkdown(text) {
   return out.join("\n");
 }
 
-// ---- search (client-side filter over the current list) ----
+// ---- search (client-side filter over the current list) + subtree collapse ----
+// Collapse works like Notion sub-items: a parent row's chevron folds its whole subtree; everything
+// starts collapsed; the expanded set persists. A non-empty search overrides collapse — matches
+// surface wherever they nest — and clearing it restores the folded view.
 let filterables = [];   // [{row: <tr>, text: lowercased haystack}]
+const EXPAND_KEY = "txide-chats-expanded";
+let expanded = new Set();
+try { expanded = new Set(JSON.parse(localStorage.getItem(EXPAND_KEY) || "[]")); } catch (e) {}
 function applyFilter() {
   const needle = searchBox.value.trim().toLowerCase();
-  for (const item of filterables) item.row.hidden = needle !== "" && !item.text.includes(needle);
+  for (const item of filterables) {
+    let show = needle === "" || item.text.includes(needle);
+    if (show && needle === "" && item.row.dataset.anc) {
+      show = item.row.dataset.anc.split(" ").every(id => expanded.has(id));
+    }
+    item.row.hidden = !show;
+  }
 }
 searchBox.addEventListener("input", applyFilter);
 function bindFilter(tbody) {
   filterables = Array.from(tbody.rows).map(row => ({ row, text: row.textContent.toLowerCase() }));
+  applyFilter();
+}
+function toggleSubtree(id, tbody) {
+  if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+  localStorage.setItem(EXPAND_KEY, JSON.stringify([...expanded]));
+  tbody.querySelectorAll('.tgl[data-id="' + id + '"]').forEach(t => {
+    t.textContent = expanded.has(id) ? "▾" : "▸";
+  });
   applyFilter();
 }
 
@@ -328,14 +343,17 @@ function sessionForest(sessions) {
     return Math.max(s.last_epoch, ...kids.map(subtreeLast));
   };
   const flat = [];
-  const walk = (list, depth, root) => {
+  const walk = (list, depth, root, ancestors) => {
     list.sort((a, b) => subtreeLast(b) - subtreeLast(a));
     for (const s of list) {
-      flat.push({ s, depth, root: root || s, driver: false, familyDriver: null });
-      walk(children.get(s.id) || [], depth + 1, root || s);
+      flat.push({
+        s, depth, root: root || s, ancestors, driver: false, familyDriver: null,
+        hasChildren: children.has(s.id),
+      });
+      walk(children.get(s.id) || [], depth + 1, root || s, [...ancestors, s.id]);
     }
   };
-  walk(roots, 0, null);
+  walk(roots, 0, null, []);
   // Per family: the row whose own time IS the subtree's newest — the one that lifted the tree to
   // its list position. Mark it, and hand the root its time so the sort key is visible up top.
   const byRoot = new Map();
@@ -359,13 +377,13 @@ async function renderChats() {
   try { data = await getJSON("/api/chats"); }
   catch (e) { app.innerHTML = '<div class="err">' + esc(e.message) + "</div>"; return; }
   if (!data.sessions.length) { app.innerHTML = '<div class="empty">No chat sessions recorded yet.</div>'; return; }
-  const rows = sessionForest(data.sessions).map(({ s, depth, driver, familyDriver }) => {
+  const rows = sessionForest(data.sessions).map(({ s, depth, ancestors, driver, familyDriver, hasChildren }) => {
     const art = s.artifacts
       ? '<span class="num">' + s.artifacts + "</span>"
       : '<span class="num zero">—</span>';
-    const indent = depth
-      ? '<span class="sub" style="padding-left:' + (depth - 1) * 22 + 'px">└─ </span>'
-      : "";
+    const caret = hasChildren
+      ? '<span class="tgl" data-id="' + esc(s.id) + '">' + (expanded.has(s.id) ? "▾" : "▸") + "</span>"
+      : '<span class="tgl-spacer"></span>';
     let last = esc(s.last_ago);
     if (familyDriver) {
       last = '<span class="fresh" title="newest in this tree: ' + esc(familyDriver.name) + '">' +
@@ -373,8 +391,10 @@ async function renderChats() {
     } else if (driver) {
       last = '<span class="fresh" title="newest in this tree — keeps it at this position">' + last + "</span>";
     }
-    return '<tr class="rowlink" data-href="#/chats/' + esc(s.id) + '">' +
-      '<td>' + indent + '<b>' + esc(s.name) + '</b></td>' +
+    return '<tr class="rowlink" data-href="#/chats/' + esc(s.id) + '"' +
+      (ancestors.length ? ' data-anc="' + ancestors.map(esc).join(" ") + '"' : "") + '>' +
+      '<td><span style="display:inline-block;width:' + depth * 22 + 'px"></span>' + caret +
+      '<b>' + esc(s.name) + '</b></td>' +
       '<td>' + chips(s.tags) + '</td>' +
       '<td>' + stateHtml(s.state) + '</td>' +
       '<td class="muted mono" style="font-size:12px">' + esc(s.engine) + '</td>' +
@@ -389,6 +409,8 @@ async function renderChats() {
     '</tr></thead><tbody>' + rows + '</tbody></table>';
   const tbody = app.querySelector("tbody");
   tbody.addEventListener("click", e => {
+    const caret = e.target.closest(".tgl");
+    if (caret) { toggleSubtree(caret.dataset.id, tbody); return; }
     const row = e.target.closest("tr[data-href]");
     if (row && !e.target.closest("a")) location.hash = row.dataset.href.slice(1);
   });
