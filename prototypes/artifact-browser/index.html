@@ -77,10 +77,12 @@
   .grid tbody tr.rowlink:hover { background: var(--panel); }
   .grid .right { text-align: right; }
   /* Notion-style sub-item toggle: parents get a chevron that folds their subtree; leaves get an
-     equal-width spacer so names align. */
-  .tgl, .tgl-spacer { display: inline-block; width: 20px; font-family: var(--mono); }
-  .tgl { color: var(--muted); cursor: pointer; }
-  .tgl:hover { color: var(--text); }
+     equal-width spacer so names align. The whole gutter (indent + chevron) is the hit target,
+     fattened to the full row height, so folding never mis-clicks into the session detail. */
+  .tgl, .tgl-spacer { display: inline-block; width: 24px; text-align: center; font-family: var(--mono); }
+  .gut { cursor: pointer; }
+  .gut .tgl { color: var(--muted); padding: 12px 0; margin: -12px 0; }
+  .gut:hover .tgl { color: var(--text); background: var(--panel-2); }
   /* The visible sort key: a family orders by its subtree's newest interaction, so the root shows
      that time in green beside its own dim age, and the descendant that produced it carries the
      same green time — matching values connect the pair. */
@@ -328,7 +330,7 @@ function bindFilter(tbody) {
 function toggleSubtree(id, tbody) {
   if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
   localStorage.setItem(EXPAND_KEY, JSON.stringify([...expanded]));
-  tbody.querySelectorAll('.tgl[data-id="' + id + '"]').forEach(t => {
+  tbody.querySelectorAll('.gut[data-id="' + id + '"] .tgl').forEach(t => {
     t.textContent = expanded.has(id) ? "▾" : "▸";
   });
   applyFilter();
@@ -415,9 +417,12 @@ async function renderChats() {
     '<td class="right muted mono" style="font-size:12px">' + last + '</td>';
 
   const rows = entries.map(({ s, depth, ancestors, driver, familyDriver, hasChildren }) => {
-    const caret = hasChildren
-      ? '<span class="tgl" data-id="' + esc(s.id) + '">' + (expanded.has(s.id) ? "▾" : "▸") + "</span>"
-      : '<span class="tgl-spacer"></span>';
+    const indent = '<span style="display:inline-block;width:' + depth * 22 + 'px"></span>';
+    // Parents: indent + chevron wrapped in one fat clickable gutter. Leaves: plain spacers.
+    const gutter = hasChildren
+      ? '<span class="gut" data-id="' + esc(s.id) + '" title="fold/unfold">' + indent +
+        '<span class="tgl">' + (expanded.has(s.id) ? "▾" : "▸") + "</span></span>"
+      : indent + '<span class="tgl-spacer"></span>';
     let last = esc(s.last_ago);
     if (familyDriver) {
       last = '<span class="fresh" title="newest in this tree: ' + esc(familyDriver.name) + '">' +
@@ -428,7 +433,7 @@ async function renderChats() {
     const hot = ancestors.length && isHot(s);
     let html = '<tr class="rowlink" data-href="#/chats/' + esc(s.id) + '"' +
       (ancestors.length ? ' data-anc="' + ancestors.map(esc).join(" ") + '"' : "") + '>' +
-      '<td><span style="display:inline-block;width:' + depth * 22 + 'px"></span>' + caret +
+      '<td>' + gutter +
       '<b' + (hot ? ' class="hot"' : "") + '>' + esc(s.name) + '</b></td>' + cells(s, last) + "</tr>";
     // Promoted duplicates of this node's hot descendants, right below it — shown only while this
     // node is the visible collapsed ancestor (applyFilter), so they never coexist with the real rows.
@@ -452,8 +457,8 @@ async function renderChats() {
     '</tr></thead><tbody>' + rows + '</tbody></table>';
   const tbody = app.querySelector("tbody");
   tbody.addEventListener("click", e => {
-    const caret = e.target.closest(".tgl");
-    if (caret) { toggleSubtree(caret.dataset.id, tbody); return; }
+    const gutter = e.target.closest(".gut");
+    if (gutter) { toggleSubtree(gutter.dataset.id, tbody); return; }
     const row = e.target.closest("tr[data-href]");
     if (row && !e.target.closest("a")) location.hash = row.dataset.href.slice(1);
   });
