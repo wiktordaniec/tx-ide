@@ -506,6 +506,7 @@ def chats_payload() -> dict:
         rows.append({
             "id": session.id,
             "name": session.name,
+            "parent": session.parent,
             "title": _session_title(session),
             "tags": session.tags,
             "state": session.state.value,

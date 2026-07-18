@@ -48,7 +48,7 @@
   #search:focus { outline: none; border-color: var(--blue); }
   #search.hidden { display: none; }
 
-  main { max-width: 1060px; margin: 0 auto; padding: 26px 28px 80px; }
+  main { width: 100%; padding: 22px 28px 80px; }
 
   /* ---- chips / badges / state dots ---- */
   .chip {
@@ -84,6 +84,7 @@
   .grid tbody tr.rowlink:hover { background: var(--panel); }
   .grid .right { text-align: right; }
   .ellip { display: block; max-width: 44ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub { color: var(--dim); font-family: var(--mono); }  /* the └ tree glyph on child sessions */
   .empty { color: var(--muted); text-align: center; padding: 70px 0; }
   .err { color: var(--red); font-family: var(--mono); font-size: 13px; }
 
@@ -118,6 +119,7 @@
   .turn.you .who { color: var(--blue); }
   .turn.agent .who { color: var(--green); }
   .turn .ts { color: var(--dim); font: 10.5px var(--mono); margin-left: 8px; }
+  .turn .body { max-width: 110ch; }   /* full-width page; prose keeps a readable measure */
   .turn.you .body {
     white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0 0;
     border-left: 2px solid rgba(92,168,255,.45); padding-left: 12px;
@@ -302,6 +304,36 @@ function bindFilter(tbody) {
 }
 
 // ---- chats list ----
+// The list is a forest: a session spawned from another session (record `parent`) indents under it.
+// Ordering standard: a family sorts by its subtree's NEWEST interaction (a subsession update
+// bubbles its ancestors up, like a mail thread sorting by newest message); siblings sort by their
+// own subtree recency.
+function sessionForest(sessions) {
+  const byId = new Map(sessions.map(s => [s.id, s]));
+  const children = new Map();
+  const roots = [];
+  for (const s of sessions) {
+    if (s.parent && byId.has(s.parent) && s.parent !== s.id) {
+      if (!children.has(s.parent)) children.set(s.parent, []);
+      children.get(s.parent).push(s);
+    } else roots.push(s);
+  }
+  const subtreeLast = s => {
+    const kids = children.get(s.id) || [];
+    return Math.max(s.last_epoch, ...kids.map(subtreeLast));
+  };
+  const flat = [];
+  const walk = (list, depth) => {
+    list.sort((a, b) => subtreeLast(b) - subtreeLast(a));
+    for (const s of list) {
+      flat.push([s, depth]);
+      walk(children.get(s.id) || [], depth + 1);
+    }
+  };
+  walk(roots, 0);
+  return flat;
+}
+
 async function renderChats() {
   setNav("chats", true);
   app.innerHTML = '<div class="empty">loading…</div>';
@@ -309,13 +341,16 @@ async function renderChats() {
   try { data = await getJSON("/api/chats"); }
   catch (e) { app.innerHTML = '<div class="err">' + esc(e.message) + "</div>"; return; }
   if (!data.sessions.length) { app.innerHTML = '<div class="empty">No chat sessions recorded yet.</div>'; return; }
-  const rows = data.sessions.map(s => {
+  const rows = sessionForest(data.sessions).map(([s, depth]) => {
     const art = s.artifacts
       ? '<span class="num">' + s.artifacts + "</span>"
       : '<span class="num zero">—</span>';
+    const indent = depth
+      ? '<span class="sub" style="padding-left:' + (depth - 1) * 22 + 'px">└─ </span>'
+      : "";
     return '<tr class="rowlink" data-href="#/chats/' + esc(s.id) + '">' +
-      '<td><b>' + esc(s.name) + '</b> ' + chips(s.tags) + '</td>' +
-      '<td class="muted"><span class="ellip" title="' + esc(s.title) + '">' + esc(s.title || "—") + '</span></td>' +
+      '<td>' + indent + '<b>' + esc(s.name) + '</b></td>' +
+      '<td>' + chips(s.tags) + '</td>' +
       '<td>' + stateHtml(s.state) + '</td>' +
       '<td class="muted mono" style="font-size:12px">' + esc(s.engine) + '</td>' +
       '<td class="right num">' + s.chats + '</td>' +
@@ -324,7 +359,7 @@ async function renderChats() {
   }).join("");
   app.innerHTML =
     '<table class="grid"><thead><tr>' +
-    '<th>session</th><th>first prompt</th><th>state</th><th>engine</th>' +
+    '<th>session</th><th>tags</th><th>state</th><th>engine</th>' +
     '<th class="right">chats</th><th class="right">artifacts</th><th class="right">last</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table>';
   const tbody = app.querySelector("tbody");
