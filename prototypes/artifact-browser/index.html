@@ -215,7 +215,7 @@ async function renderList() {
   catch (e) { app.innerHTML = '<div class="err">' + esc(e.message) + "</div>"; return; }
   if (!data.artifacts.length) { app.innerHTML = '<div class="empty">No artifacts yet. Create one with <code>tx artifact create &lt;file&gt;</code>.</div>'; return; }
   app.innerHTML = data.artifacts.map(a => {
-    const authors = a.authors.map(x => '<span class="chip">' + esc(x.length > 12 ? shortId(x) : x) + "</span>").join("");
+    const authors = a.authors.map(x => '<span class="chip" title="' + esc(x.id) + '">' + esc(x.name) + "</span>").join("");
     return '<a class="row" href="#/' + esc(a.id) + '">' +
       '<span class="title">' + esc(a.title || a.filename) + '</span>' +
       '<span class="id mono">' + esc(shortId(a.id)) + '</span>' +
@@ -242,7 +242,7 @@ async function renderDetail(id) {
 
   const rows = d.history.map(t =>
     '<tr><td class="rev">rev ' + t.rev + '</td><td class="ago">' + esc(t.ago) + ' ago</td>' +
-    '<td class="who' + (t.session_id === "user" ? " user" : "") + '">' + esc(t.session_id) + '</td>' +
+    '<td class="who' + (t.session_id === "user" ? " user" : "") + '" title="' + esc(t.session_id) + '">' + esc(t.actor) + '</td>' +
     '<td class="changes' + (t.changes ? "" : " none") + '">' + esc(t.changes || "—") + "</td></tr>").join("");
 
   const opts = d.history.map(t => '<option value="' + t.rev + '">rev ' + t.rev + "</option>").join("");

@@ -16,7 +16,7 @@ import json
 import os
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from .session import Session, UnsupportedRecordError
@@ -62,6 +62,21 @@ class SessionStore:
     def _read(self, path: Path) -> Session:
         with open(path) as handle:
             return Session.from_dict(json.load(handle))
+
+    def names_for(self, session_ids: Iterable[str]) -> dict[str, str]:
+        """Map each given session id to its current display `name`, loading only those records (not
+        the whole store). Resolved at read time on purpose — a name changes via `tx rename`, so it
+        is never denormalized onto whatever references the id. Missing or unreadable records are
+        omitted; the caller falls back (e.g. to a short id). Backs the artifact author labels."""
+        names: dict[str, str] = {}
+        for session_id in set(session_ids):
+            try:
+                session = self.load(session_id)
+            except UnsupportedRecordError:
+                continue
+            if session is not None:
+                names[session_id] = session.name
+        return names
 
     def all(self) -> list[Session]:
         """Every record in the store, id-sorted. Tolerates unreadable files at this persistence

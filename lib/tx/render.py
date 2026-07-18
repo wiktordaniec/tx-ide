@@ -14,8 +14,9 @@ has no activity signal, so it renders `—` rather than a faked time. The NAME c
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 
-from .artifact import Artifact
+from .artifact import USER_ACTOR, Artifact
 from .palette import RESET_FG, WARN_ANSI, tag_ansi
 from .session import LlmSession, Location, Session
 
@@ -256,12 +257,26 @@ def _distinct_authors(artifact: Artifact) -> list[str]:
     return authors
 
 
-def render_artifacts(artifacts: list[Artifact], now: float | None = None) -> str:
+def actor_label(session_id: str, names: Mapping[str, str]) -> str:
+    """Display label for a touch author, resolved at render time — never stored (a name changes via
+    `tx rename`; the id stays the durable key). The live session name when known, the `USER_ACTOR`
+    sentinel (`user`) verbatim for a human edit, or a short id when the session record is gone.
+    `names` is the caller-resolved id→name map (see `SessionStore.names_for`)."""
+    if session_id == USER_ACTOR:
+        return USER_ACTOR
+    return names.get(session_id) or session_id[:8]
+
+
+def render_artifacts(
+    artifacts: list[Artifact], names: Mapping[str, str] | None = None, now: float | None = None
+) -> str:
     """`tx artifact ls` — durable artifacts, newest-touched first. Columns: short id, revision count,
     last-touched age, title (falling back to the filename), and the distinct touch authors as chips
-    (the settled `ls` shape: title, id, #revs, last touched)."""
+    (the settled `ls` shape: title, id, #revs, last touched). Authors show the resolved session name
+    via `names` (id→name); the caller passes it, keeping this module I/O-free."""
     if now is None:
         now = time.time()
+    names = names or {}
     ordered = sorted(artifacts, key=lambda artifact: artifact.updated_at, reverse=True)
     rows = []
     for artifact in ordered:
@@ -270,20 +285,25 @@ def render_artifacts(artifacts: list[Artifact], now: float | None = None) -> str
             len(artifact.history),
             reltime(artifact.updated_at, now),
             _trunc(artifact.title or artifact.filename, 28),
-            _chips(_distinct_authors(artifact)),
+            _chips([actor_label(author, names) for author in _distinct_authors(artifact)]),
         ))
     if not rows:
         return "ARTIFACTS\n  (none)"
     return "\n".join(["ARTIFACTS", *rows])
 
 
-def render_artifact_show(artifact: Artifact, dirty: bool, now: float | None = None) -> str:
+def render_artifact_show(
+    artifact: Artifact, dirty: bool, names: Mapping[str, str] | None = None,
+    now: float | None = None,
+) -> str:
     """`tx artifact show` — metadata + the full touch/version log (this absorbs the earlier separate
-    `history` verb — one verb, not two). Each history entry is one revision: rev number, age, author,
-    and its optional changes note. The working-copy line flags a dirty `current` (un-snapshotted
-    edits — a visible state, not an error). Pure formatting; the caller computes `dirty`."""
+    `history` verb — one verb, not two). Each history entry is one revision: rev number, age, author
+    (resolved session name via `names`), and its optional changes note. The working-copy line flags
+    a dirty `current` (un-snapshotted edits — a visible state, not an error). Pure formatting; the
+    caller computes `dirty` and resolves `names`."""
     if now is None:
         now = time.time()
+    names = names or {}
     working = (
         "dirty — un-snapshotted edits (close with `tx artifact modify`)" if dirty else "clean"
     )
@@ -299,6 +319,6 @@ def render_artifact_show(artifact: Artifact, dirty: bool, now: float | None = No
     for touch in artifact.history:
         note = f"  {touch.changes}" if touch.changes else ""
         lines.append("    rev {:<3} {:>5} ago  {:<20}{}".format(
-            touch.rev, reltime(touch.at, now), touch.session_id, note,
+            touch.rev, reltime(touch.at, now), actor_label(touch.session_id, names), note,
         ))
     return "\n".join(lines)

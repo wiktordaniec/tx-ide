@@ -820,7 +820,10 @@ class ArtifactCommand(Command):
             if args.session is not None
             else self.artifacts.store.all()
         )
-        print(render_artifacts(artifacts))
+        names = SessionStore().names_for(
+            touch.session_id for artifact in artifacts for touch in artifact.history
+        )
+        print(render_artifacts(artifacts, names))
         return 0
 
     def _show(self, argv: list[str]) -> int:
@@ -829,7 +832,8 @@ class ArtifactCommand(Command):
         args = parser.parse_args(argv)
         artifact = self.artifacts.store.load(self.artifacts.resolve_id(args.id))
         dirty = self.artifacts.files.current_is_dirty(artifact)  # show flags a dirty current
-        print(render_artifact_show(artifact, dirty))
+        names = SessionStore().names_for(touch.session_id for touch in artifact.history)
+        print(render_artifact_show(artifact, dirty, names))
         return 0
 
     def _diff(self, argv: list[str]) -> int:

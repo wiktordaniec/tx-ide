@@ -36,8 +36,9 @@ sys.path.insert(0, str(REPO_ROOT / "lib"))
 
 from tx.artifact import Artifact  # noqa: E402
 from tx.artifact_store import ArtifactContent, ArtifactStore  # noqa: E402
-from tx.render import reltime  # noqa: E402
+from tx.render import actor_label, reltime  # noqa: E402
 from tx.storage import artifacts_dir  # noqa: E402
+from tx.store import SessionStore  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 PAGE = HERE / "index.html"
@@ -87,8 +88,8 @@ def _content_disposition(filename: str) -> str:
 # ----- payloads — read through the store + content primitives, NEVER the logging service ---------
 
 
-def _authors(artifact: Artifact) -> list[str]:
-    """The distinct touch authors in first-touch order (creator first) — read straight off history."""
+def _author_ids(artifact: Artifact) -> list[str]:
+    """The distinct touch author ids in first-touch order (creator first) — straight off history."""
     seen: list[str] = []
     for touch in artifact.history:
         if touch.session_id not in seen:
@@ -96,10 +97,20 @@ def _authors(artifact: Artifact) -> list[str]:
     return seen
 
 
+def _authors(artifact: Artifact, names: dict[str, str]) -> list[dict]:
+    """Distinct authors as `{id, name}` — the id stays the durable identity, `name` is the session
+    name resolved at request time (or the `user` sentinel / a short id when unresolvable)."""
+    return [{"id": author, "name": actor_label(author, names)} for author in _author_ids(artifact)]
+
+
 def list_payload() -> dict:
     """The list feed — every artifact with the settled columns (title, id, filename, #revs, last
-    touched, touch authors), newest-touched first. Re-reads the store on every call."""
+    touched, touch authors), newest-touched first. Re-reads the store on every call and resolves
+    author session names for just the ids that appear."""
     artifacts = sorted(ArtifactStore().all(), key=lambda artifact: artifact.updated_at, reverse=True)
+    names = SessionStore().names_for(
+        touch.session_id for artifact in artifacts for touch in artifact.history
+    )
     return {
         "artifacts": [
             {
@@ -108,7 +119,7 @@ def list_payload() -> dict:
                 "filename": artifact.filename,
                 "revs": len(artifact.history),
                 "updated_ago": reltime(artifact.updated_at),
-                "authors": _authors(artifact),
+                "authors": _authors(artifact, names),
             }
             for artifact in artifacts
         ]
@@ -127,6 +138,7 @@ def detail_payload(artifact_id: str) -> dict | None:
         dirty = current_bytes != content.read_rev(artifact, artifact.latest_rev)
     except FileNotFoundError:
         dirty = False  # a missing last-rev file is corruption `tx artifact doctor` owns, not a 500
+    names = SessionStore().names_for(touch.session_id for touch in artifact.history)
     return {
         "id": artifact.id,
         "title": artifact.title,
@@ -140,6 +152,7 @@ def detail_payload(artifact_id: str) -> dict | None:
                 "rev": touch.rev,
                 "ago": reltime(touch.at),
                 "session_id": touch.session_id,
+                "actor": actor_label(touch.session_id, names),
                 "changes": touch.changes,
             }
             for touch in artifact.history
