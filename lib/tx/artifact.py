@@ -6,8 +6,7 @@ the version index (each touch produced a snapshot `revs/<rev>.<ext>`) — a `Tou
 generalizes the `ChatRef`/`Origin` provenance prior art (`session.py`) from immutable chat
 transcripts to mutable, versioned files.
 
-Contracts honored here (docs/artifact-subsystem-plan.md + the decision record
-docs/artifact-plan-questions.md):
+Contracts honored here:
   - `ARTIFACT_SCHEMA_VERSION = 1` with a strict `from_dict` boundary, INDEPENDENT of the session
     schema (mirrors `Session.from_dict`): a version mismatch raises `UnsupportedArtifactError`, and
     beyond the version it validates the structural invariants — non-empty history, entry 0 is the
