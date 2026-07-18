@@ -691,7 +691,7 @@
     <label class="control toggle"><input type="checkbox" id="auto" checked /> live</label>
     <button id="filterbarToggle" title="hide the filter bar (time · states · tags · usage)">▾ filters</button>
     <button id="fit" class="graph-only" title="reset zoom &amp; recenter on the graph">1:1</button>
-    <button id="tidy" class="graph-only" title="arrange the visible forest into a tidy tree &amp; pin every node (shuffle releases)">⑂ tidy</button>
+    <button id="tidy" class="graph-only" title="arrange the visible forest into concentric rings &amp; pin every node (shuffle releases)">◎ tidy</button>
     <button id="shuffle" class="graph-only" title="release every pinned node &amp; re-run the layout">⤮ shuffle</button>
     <button id="refresh" title="reload records now">↻ refresh</button>
   </header>
@@ -2574,13 +2574,15 @@ $("shuffle").addEventListener("click", () => {
 });
 
 // ---- tidy layout --------------------------------------------------------------------------------
-// Arrange the visible forest into a tidy tree: roots side by side, descendants fanning down, every
-// node centered over its own subtree span. Rows are lineage depth and sibling spans never overlap,
-// so parent→child edges have no crossings by construction; spacing comes from the measured card
-// widths. Every node ends pinned at its tidy spot (persisted like a drag), so the arrangement
-// survives reloads and background refreshes — shuffle is the release.
-const TIDY_GAP_X = 30;        // breathing room between adjacent subtree spans
-const TIDY_ROW_GAP = 150;     // vertical distance between a parent row and its children row
+// Arrange the visible forest into concentric rings: lineage depth picks the ring, nodes are spaced
+// evenly around it. Children enter their ring in their parent's angular order, so each edge leans
+// toward its parent's side of the circle without breaking the even spacing. Ring radii grow enough
+// that every card fits its arc slot. Every node ends pinned at its tidy spot (persisted like a
+// drag), so the arrangement survives reloads and background refreshes — shuffle is the release.
+const TIDY_RING_GAP = 170;    // minimum radial distance between consecutive rings — the widest card
+                              // stretches it further, since at the circle's sides the radial
+                              // direction is horizontal and must clear a full card width
+const TIDY_ARC_PAD = 26;      // breathing room between adjacent cards along a ring
 
 $("tidy").addEventListener("click", () => {
   if (sim.size === 0) return;
@@ -2591,27 +2593,34 @@ $("tidy").addEventListener("click", () => {
   const childIds = new Set(links.map((link) => link.targetId));
   const roots = [...sim.values()].filter((node) => !childIds.has(node.id)).sort(byName);
 
-  // Post-order span pass: a subtree is as wide as its own card or its children side by side.
-  const spanWidth = (node) => {
-    const kidsWidth = children.get(node.id).reduce((total, kid) => total + spanWidth(kid), 0);
-    return (node.spanW = Math.max((node.w || NODE_W) + TIDY_GAP_X, kidsWidth));
-  };
-  const depthOf = (node) => 1 + children.get(node.id).reduce((deepest, kid) => Math.max(deepest, depthOf(kid)), 0);
+  // Ring membership by depth, each ring queued in its parents' angular order.
+  const rings = [];
+  for (let ring = roots; ring.length; ring = ring.flatMap((node) => children.get(node.id))) {
+    rings.push(ring);
+  }
 
-  // Pre-order place pass: center the node over its span, pack the child spans inside it.
-  const place = (node, left, y) => {
-    node.x = left + node.spanW / 2;
-    node.y = y;
-    const kids = children.get(node.id);
-    let kidLeft = left + (node.spanW - kids.reduce((total, kid) => total + kid.spanW, 0)) / 2;
-    for (const kid of kids) { place(kid, kidLeft, y + TIDY_ROW_GAP); kidLeft += kid.spanW; }
-  };
-
-  const forestWidth = roots.reduce((total, root) => total + spanWidth(root), 0);
-  const rows = roots.reduce((deepest, root) => Math.max(deepest, depthOf(root)), 0);
-  const top = WORLD_CY - ((rows - 1) * TIDY_ROW_GAP) / 2;
-  let treeLeft = WORLD_CX - forestWidth / 2;
-  for (const root of roots) { place(root, treeLeft, top); treeLeft += root.spanW; }
+  // A ring sits one ring gap outside the previous one, or further out when its cards need more
+  // circumference to fit side by side. Angles are uniform per ring (that's the visual rhythm that
+  // makes the rings read), so every slot is sized to the ring's widest card. Cards are wide and
+  // flat, so the rings are ellipses: horizontally consecutive rings must clear a full card width
+  // (that's the radial direction at the sides), vertically only a card height — but no flatter than
+  // 0.6, where an arc slot at the sides (vertical there) would stop clearing a card height. A lone
+  // innermost node takes the exact center.
+  const widest = [...sim.values()].reduce((max, node) => Math.max(max, (node.w || NODE_W) + TIDY_ARC_PAD), TIDY_RING_GAP);
+  const tallest = [...sim.values()].reduce((max, node) => Math.max(max, (node.h || NODE_H) + TIDY_ARC_PAD), 0);
+  let radiusX = 0, radiusY = 0;
+  rings.forEach((ring, depth) => {
+    const slot = ring.reduce((max, node) => Math.max(max, (node.w || NODE_W) + TIDY_ARC_PAD), 0);
+    if (!(depth === 0 && ring.length === 1)) {
+      radiusX = Math.max(radiusX + widest, (slot * ring.length) / (2 * Math.PI));
+      radiusY = Math.max(radiusY + tallest, radiusX * 0.6);
+    }
+    ring.forEach((node, index) => {
+      const angle = -Math.PI / 2 + (2 * Math.PI * index) / ring.length;
+      node.x = WORLD_CX + radiusX * Math.cos(angle);
+      node.y = WORLD_CY + radiusY * Math.sin(angle);
+    });
+  });
 
   pins = {};
   for (const node of sim.values()) {
