@@ -135,6 +135,21 @@ try:
           b"filename*=UTF-8''" in disposition and b"%0D%0A" in disposition)
     check("the store still holds the real filename untouched",
           service.store.load(hostile.id).filename == hostile_name)
+
+    # ----- P2: rev strictness — absent means the working copy, malformed must be REJECTED --------
+    # Presence and parse are different questions: a bad `?rev=` must not masquerade as "no rev".
+    status, body = raw_get(f"/api/artifacts/{inside.id}/raw")
+    check("raw with rev ABSENT serves the working copy (200)", status == 200 and b"beta" in body)
+    status, body = raw_get(f"/api/artifacts/{inside.id}/raw?rev=0")
+    check("raw with a VALID rev serves that snapshot (200)",
+          status == 200 and b"alpha" in body and b"beta" not in body)
+    for bad in ("notanumber", "1.5", "--1", "", "0x1", "1e3", "%2e%2e"):
+        status, body = raw_get(f"/api/artifacts/{inside.id}/raw?rev={bad}")
+        check(f"raw with MALFORMED rev={bad!r} is rejected (400)", status == 400)
+    status, _body = raw_get(f"/api/artifacts/{inside.id}/diff?a=0")
+    check("diff with an absent rev is still rejected (400)", status == 400)
+    status, _body = raw_get(f"/api/artifacts/{inside.id}/diff?a=0&b=zzz")
+    check("diff with a malformed rev is rejected (400)", status == 400)
 finally:
     httpd.shutdown()
 

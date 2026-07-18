@@ -200,6 +200,12 @@ def diff_payload(artifact_id: str, rev_a: int, rev_b: int) -> dict | None:
     return {"a": rev_a, "b": rev_b, "diff": diff}
 
 
+# Returned by `_int_param` when a query parameter is PRESENT but not a plain integer. It must stay
+# distinct from `None` (absent): collapsing the two let a malformed `?rev=` silently fall back to the
+# default instead of being rejected (QA P2).
+_MALFORMED_PARAM = object()
+
+
 # ----- HTTP — GET only; the browser never writes -------------------------------------------------
 
 
@@ -223,7 +229,10 @@ class BrowserHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
-        path, query = parsed.path, urllib.parse.parse_qs(parsed.query)
+        # keep_blank_values so `?rev=` counts as PRESENT-but-empty (a malformed value to reject),
+        # not as absent — presence and parse must stay distinguishable (QA P2).
+        path = parsed.path
+        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
         if path in ("/", "/index.html"):
             self._respond(200, PAGE.read_bytes(), "text/html; charset=utf-8")
         elif path == "/api/artifacts":
@@ -239,7 +248,11 @@ class BrowserHandler(BaseHTTPRequestHandler):
         ever touched; rev params must be plain integers (`_int_param`)."""
         if rest.endswith("/raw"):
             artifact_id = _safe_artifact_id(rest[: -len("/raw")])
-            result = raw_bytes(artifact_id, self._int_param(query, "rev")) if artifact_id else None
+            rev = self._int_param(query, "rev")  # absent => the working copy; malformed => reject
+            if rev is _MALFORMED_PARAM:
+                self._respond(400, b"rev must be a plain integer\n", "text/plain; charset=utf-8")
+                return
+            result = raw_bytes(artifact_id, rev) if artifact_id else None
             if result is None:
                 self._respond(404, b"not found\n", "text/plain; charset=utf-8")
                 return
@@ -253,8 +266,10 @@ class BrowserHandler(BaseHTTPRequestHandler):
             if artifact_id is None:
                 self._json(404, {"error": "no such artifact"})
                 return
+            # Both revs are REQUIRED here, so absent (None) and malformed are equally a 400 — an
+            # `isinstance` check covers both without collapsing them upstream.
             rev_a, rev_b = self._int_param(query, "a"), self._int_param(query, "b")
-            if rev_a is None or rev_b is None:
+            if not isinstance(rev_a, int) or not isinstance(rev_b, int):
                 self._json(400, {"error": "diff needs integer rev params a and b"})
                 return
             payload = diff_payload(artifact_id, rev_a, rev_b)
@@ -264,11 +279,19 @@ class BrowserHandler(BaseHTTPRequestHandler):
             payload = detail_payload(artifact_id) if artifact_id is not None else None
             self._json(200 if payload is not None else 404, payload or {"error": "no such artifact"})
 
-    def _int_param(self, query: dict, name: str) -> int | None:
+    def _int_param(self, query: dict, name: str):
+        """Three-state, because PRESENCE and PARSE are different questions (QA P2): `None` when the
+        key is ABSENT (the caller supplies its own default), `_MALFORMED_PARAM` when it is PRESENT
+        but not a plain integer (the caller must reject it), else the int. Collapsing the two let a
+        bad `?rev=` masquerade as "no rev given". `int()` is the parse, so `--5`, `1.5`, `0x1` and an
+        empty value are all refused rather than crashing or silently passing."""
         values = query.get(name)
-        if not values or not values[0].lstrip("-").isdigit():
+        if not values:
             return None
-        return int(values[0])
+        try:
+            return int(values[0])
+        except ValueError:
+            return _MALFORMED_PARAM
 
     def log_message(self, message_format: str, *args) -> None:
         # One quiet line per request — the default handler logs more than a prototype needs.
