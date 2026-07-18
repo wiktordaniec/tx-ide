@@ -2575,11 +2575,12 @@ $("shuffle").addEventListener("click", () => {
 
 // ---- tidy layout --------------------------------------------------------------------------------
 // Arrange the visible forest into tightly packed concentric rings: lineage depth picks the ring,
-// children enter it in their parent's angular order. The spacing is deliberately congested — cards
-// sit as close as they can without covering each other (a squeeze-out pass separates the spots
-// where the tight rings brush), so the shape reads as rings without wasting canvas on geometry.
-// Every node ends pinned at its tidy spot (persisted like a drag), so the arrangement survives
-// reloads and background refreshes — shuffle is the release.
+// and every subtree owns an angular wedge — its node at the wedge center, children splitting it —
+// so a parent→child edge never leaves its wedge and edges cannot cross. The spacing is
+// deliberately congested — cards sit as close as they can without covering each other (a
+// squeeze-out pass separates the spots where the tight rings brush), so the shape reads as rings
+// without wasting canvas on geometry. Every node ends pinned at its tidy spot (persisted like a
+// drag), so the arrangement survives reloads and background refreshes — shuffle is the release.
 const TIDY_PAD = 8;           // breathing room between neighbouring cards — congested on purpose
 
 $("tidy").addEventListener("click", () => {
@@ -2591,34 +2592,83 @@ $("tidy").addEventListener("click", () => {
   const childIds = new Set(links.map((link) => link.targetId));
   const roots = [...sim.values()].filter((node) => !childIds.has(node.id)).sort(byName);
 
-  // Ring membership by depth, each ring queued in its parents' angular order.
+  // Roots with no children have no edges to keep untangled — they'd only reserve wedge space at
+  // every ring, so they leave the wedge circle and form the halo ring placed after it.
+  const treeRoots = roots.filter((root) => children.get(root.id).length > 0);
+  const singles = roots.filter((root) => children.get(root.id).length === 0);
+
+  // Ring membership by depth — used only to size the ring radii; angles come from the wedges.
   const rings = [];
-  for (let ring = roots; ring.length; ring = ring.flatMap((node) => children.get(node.id))) {
+  for (let ring = treeRoots; ring.length; ring = ring.flatMap((node) => children.get(node.id))) {
     rings.push(ring);
   }
 
-  // Tight elliptical rings: each card takes an arc slot of its own width, each ring sits one card
-  // height outside the previous (or as far out as its circumference needs), flattened to half its
-  // width since the cards are wide and flat. This deliberately lets cards brush where a ring
-  // curves; the squeeze-out pass below resolves those spots locally, so the result stays congested
-  // and roughly — not perfectly — circular. A lone innermost node takes the exact center.
+  // Tight elliptical ring radii: each ring sits one card height outside the previous (or as far
+  // out as its circumference needs, every card taking an arc slot of its own width), flattened to
+  // half its width since the cards are wide and flat. This deliberately lets cards brush where a
+  // ring curves; the squeeze-out pass below resolves those spots locally, so the result stays
+  // congested and roughly — not perfectly — circular. A lone innermost node takes the exact center.
   const tallest = [...sim.values()].reduce((max, node) => Math.max(max, (node.h || NODE_H) + TIDY_PAD), 0);
-  let radiusX = 0, radiusY = 0;
-  rings.forEach((ring, depth) => {
-    const arc = ring.reduce((total, node) => total + (node.w || NODE_W) + TIDY_PAD, 0);
-    if (!(depth === 0 && ring.length === 1)) {
-      radiusX = Math.max(radiusX + tallest, arc / (2 * Math.PI));
-      radiusY = Math.max(radiusY + tallest, radiusX * 0.5);
-    }
-    let along = 0;                       // arc distance consumed so far around this ring
-    for (const node of ring) {
+  const radiusX = [], radiusY = [];
+  const buildRadii = (inflate) => {
+    radiusX.length = 0; radiusY.length = 0;
+    let rx = 0, ry = 0;
+    rings.forEach((ring, depth) => {
+      const arc = ring.reduce((total, node) => total + (node.w || NODE_W) + TIDY_PAD, 0);
+      if (!(depth === 0 && ring.length === 1)) {
+        rx = Math.max(rx + tallest, (inflate * arc) / (2 * Math.PI));
+        ry = Math.max(ry + tallest, rx * 0.5);
+      }
+      radiusX.push(rx); radiusY.push(ry);
+    });
+  };
+
+  // Wedge recursion: a subtree needs its own card's arc at its ring or the sum of its children's
+  // wedges, whichever is wider. Wedges can't tile a ring as tightly as pure arc packing (a subtree
+  // reserves its widest level's angle at every level), so the radii are inflated to the smallest
+  // factor where every wedge fits — a fixed point, since inflating also shrinks the wedges, found
+  // by iterating; one shot would overshoot and waste the canvas. Then each node sits at the center
+  // of its wedge, its children splitting the wedge beneath it — edges stay inside their wedge.
+  const wedgeOf = (node, depth) => {
+    const own = radiusX[depth] === 0 ? 0 : ((node.w || NODE_W) + TIDY_PAD) / radiusX[depth];
+    const kids = children.get(node.id).reduce((total, kid) => total + wedgeOf(kid, depth + 1), 0);
+    return (node.wedge = Math.max(own, kids));
+  };
+  buildRadii(1);
+  let inflate = 1;
+  let total = treeRoots.reduce((sum, root) => sum + wedgeOf(root, 0), 0);
+  for (let pass = 0; pass < 8 && Math.abs(total - 2 * Math.PI) > 0.05; pass++) {
+    inflate = Math.max(1, (inflate * total) / (2 * Math.PI));   // never tighter than pure arc packing
+    buildRadii(inflate);
+    total = treeRoots.reduce((sum, root) => sum + wedgeOf(root, 0), 0);
+    if (inflate === 1 && total < 2 * Math.PI) break;            // slack — the scale below spreads it
+  }
+  const scale = (2 * Math.PI) / total;
+  const place = (node, start, depth) => {
+    const span = node.wedge * scale;
+    node.x = WORLD_CX + radiusX[depth] * Math.cos(start + span / 2);
+    node.y = WORLD_CY + radiusY[depth] * Math.sin(start + span / 2);
+    const kids = children.get(node.id);
+    let cursor = start + (span - kids.reduce((sum, kid) => sum + kid.wedge * scale, 0)) / 2;
+    for (const kid of kids) { place(kid, cursor, depth + 1); cursor += kid.wedge * scale; }
+  };
+  let cursor = -Math.PI / 2;
+  for (const root of treeRoots) { place(root, cursor, 0); cursor += root.wedge * scale; }
+
+  // The halo: edgeless sessions ring the lineage circle, packed width-weighted like any ring.
+  if (singles.length) {
+    const arc = singles.reduce((total, node) => total + (node.w || NODE_W) + TIDY_PAD, 0);
+    const haloX = Math.max((radiusX[radiusX.length - 1] || 0) + tallest, arc / (2 * Math.PI));
+    const haloY = Math.max((radiusY[radiusY.length - 1] || 0) + tallest, haloX * 0.5);
+    let along = 0;
+    for (const node of singles) {
       const slot = (node.w || NODE_W) + TIDY_PAD;
       const angle = -Math.PI / 2 + ((along + slot / 2) / arc) * 2 * Math.PI;
       along += slot;
-      node.x = WORLD_CX + radiusX * Math.cos(angle);
-      node.y = WORLD_CY + radiusY * Math.sin(angle);
+      node.x = WORLD_CX + haloX * Math.cos(angle);
+      node.y = WORLD_CY + haloY * Math.sin(angle);
     }
-  });
+  }
 
   // Squeeze-out: push overlapping pairs apart along their least-overlapping axis (tick()'s AABB
   // separation rule, run to convergence) so congestion never becomes cards covering each other.
