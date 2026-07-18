@@ -656,7 +656,7 @@
   @media (max-width: 700px) {
     html, body { height: 100dvh; }
     header { gap: 8px; padding: 8px 10px; }
-    .brand, .meta, #filterbarToggle, #fit, #shuffle, #refresh, .toggle { display: none; }
+    .brand, .meta, #filterbarToggle, #fit, #tidy, #shuffle, #refresh, .toggle { display: none; }
     #filterbar { display: none; }
     .control input[type="search"] { width: 110px; }
     .tab { padding: 6px 10px; }
@@ -691,6 +691,7 @@
     <label class="control toggle"><input type="checkbox" id="auto" checked /> live</label>
     <button id="filterbarToggle" title="hide the filter bar (time · states · tags · usage)">▾ filters</button>
     <button id="fit" class="graph-only" title="reset zoom &amp; recenter on the graph">1:1</button>
+    <button id="tidy" class="graph-only" title="arrange the visible forest into concentric rings &amp; pin every node (shuffle releases)">◎ tidy</button>
     <button id="shuffle" class="graph-only" title="release every pinned node &amp; re-run the layout">⤮ shuffle</button>
     <button id="refresh" title="reload records now">↻ refresh</button>
   </header>
@@ -2570,6 +2571,158 @@ $("shuffle").addEventListener("click", () => {
   }
   reheat(1);
   render();
+});
+
+// ---- tidy layout --------------------------------------------------------------------------------
+// Arrange the visible forest into tightly packed concentric rings: lineage depth picks the ring,
+// and every subtree owns an angular wedge — its node at the wedge center, children splitting it —
+// so a parent→child edge never leaves its wedge and edges cannot cross. The spacing is
+// deliberately congested — cards sit as close as they can without covering each other (a
+// squeeze-out pass separates the spots where the tight rings brush), so the shape reads as rings
+// without wasting canvas on geometry. Every node ends pinned at its tidy spot (persisted like a
+// drag), so the arrangement survives reloads and background refreshes — shuffle is the release.
+const TIDY_PAD = 8;           // breathing room between neighbouring cards — congested on purpose
+
+$("tidy").addEventListener("click", () => {
+  if (sim.size === 0) return;
+  const byName = (a, b) => a.data.name.localeCompare(b.data.name);
+  const children = new Map([...sim.values()].map((node) => [node.id, []]));
+  for (const link of links) children.get(link.sourceId).push(link.b);
+  for (const list of children.values()) list.sort(byName);
+  const childIds = new Set(links.map((link) => link.targetId));
+  const roots = [...sim.values()].filter((node) => !childIds.has(node.id)).sort(byName);
+
+  // Roots with no children have no edges to keep untangled — they'd only reserve wedge space at
+  // every ring, so they leave the wedge circle and form the halo ring placed after it.
+  const treeRoots = roots.filter((root) => children.get(root.id).length > 0);
+  const singles = roots.filter((root) => children.get(root.id).length === 0);
+
+  // Ring membership by depth — used only to size the ring radii; angles come from the wedges.
+  const rings = [];
+  for (let ring = treeRoots; ring.length; ring = ring.flatMap((node) => children.get(node.id))) {
+    rings.push(ring);
+  }
+
+  // Tight elliptical ring radii: each ring sits one card height outside the previous (or as far
+  // out as its circumference needs, every card taking an arc slot of its own width), flattened to
+  // half its width since the cards are wide and flat. This deliberately lets cards brush where a
+  // ring curves; the squeeze-out pass below resolves those spots locally, so the result stays
+  // congested and roughly — not perfectly — circular. A lone innermost node takes the exact center.
+  const tallest = [...sim.values()].reduce((max, node) => Math.max(max, (node.h || NODE_H) + TIDY_PAD), 0);
+  const radiusX = [], radiusY = [];
+  const buildRadii = (inflate) => {
+    radiusX.length = 0; radiusY.length = 0;
+    let rx = 0, ry = 0;
+    rings.forEach((ring, depth) => {
+      const arc = ring.reduce((total, node) => total + (node.w || NODE_W) + TIDY_PAD, 0);
+      if (!(depth === 0 && ring.length === 1)) {
+        rx = Math.max(rx + tallest, (inflate * arc) / (2 * Math.PI));
+        ry = Math.max(ry + tallest, rx * 0.5);
+      }
+      radiusX.push(rx); radiusY.push(ry);
+    });
+  };
+
+  // Wedge recursion: a subtree needs its own card's arc at its ring or the sum of its children's
+  // wedges, whichever is wider. Wedges can't tile a ring as tightly as pure arc packing (a subtree
+  // reserves its widest level's angle at every level), so the radii are inflated to the smallest
+  // factor where every wedge fits — a fixed point, since inflating also shrinks the wedges, found
+  // by iterating; one shot would overshoot and waste the canvas. Then each node sits at the center
+  // of its wedge, its children splitting the wedge beneath it — edges stay inside their wedge.
+  const wedgeOf = (node, depth) => {
+    const own = radiusX[depth] === 0 ? 0 : ((node.w || NODE_W) + TIDY_PAD) / radiusX[depth];
+    const kids = children.get(node.id).reduce((total, kid) => total + wedgeOf(kid, depth + 1), 0);
+    return (node.wedge = Math.max(own, kids));
+  };
+  buildRadii(1);
+  let inflate = 1;
+  let total = treeRoots.reduce((sum, root) => sum + wedgeOf(root, 0), 0);
+  for (let pass = 0; pass < 8 && Math.abs(total - 2 * Math.PI) > 0.05; pass++) {
+    inflate = Math.max(1, (inflate * total) / (2 * Math.PI));   // never tighter than pure arc packing
+    buildRadii(inflate);
+    total = treeRoots.reduce((sum, root) => sum + wedgeOf(root, 0), 0);
+    if (inflate === 1 && total < 2 * Math.PI) break;            // slack — the scale below spreads it
+  }
+  const scale = (2 * Math.PI) / total;
+  const place = (node, start, depth) => {
+    const span = node.wedge * scale;
+    node.x = WORLD_CX + radiusX[depth] * Math.cos(start + span / 2);
+    node.y = WORLD_CY + radiusY[depth] * Math.sin(start + span / 2);
+    const kids = children.get(node.id);
+    let cursor = start + (span - kids.reduce((sum, kid) => sum + kid.wedge * scale, 0)) / 2;
+    for (const kid of kids) { place(kid, cursor, depth + 1); cursor += kid.wedge * scale; }
+  };
+  let cursor = -Math.PI / 2;
+  for (const root of treeRoots) { place(root, cursor, 0); cursor += root.wedge * scale; }
+
+  // The halo: edgeless sessions ring the lineage circle, packed width-weighted like any ring.
+  if (singles.length) {
+    const arc = singles.reduce((total, node) => total + (node.w || NODE_W) + TIDY_PAD, 0);
+    const haloX = Math.max((radiusX[radiusX.length - 1] || 0) + tallest, arc / (2 * Math.PI));
+    const haloY = Math.max((radiusY[radiusY.length - 1] || 0) + tallest, haloX * 0.5);
+    let along = 0;
+    for (const node of singles) {
+      const slot = (node.w || NODE_W) + TIDY_PAD;
+      const angle = -Math.PI / 2 + ((along + slot / 2) / arc) * 2 * Math.PI;
+      along += slot;
+      node.x = WORLD_CX + haloX * Math.cos(angle);
+      node.y = WORLD_CY + haloY * Math.sin(angle);
+    }
+  }
+
+  // Pin and render BEFORE the squeeze-out: pinning adds the 📌 badge to a card, which widens it,
+  // and the squeeze must see those final measured widths — squeezing first left freshly-pinned
+  // cards overlapping by the badge's width.
+  pins = {};
+  for (const node of sim.values()) {
+    node.pinned = true; node.fx = node.x; node.fy = node.y; node.vx = 0; node.vy = 0;
+    pins[node.id] = { x: node.x, y: node.y };
+  }
+  render();                                     // remounts cards with their pin badges + re-measures
+
+  // Squeeze-out: push overlapping pairs apart along their least-overlapping axis (tick()'s AABB
+  // separation rule, run to convergence) so congestion never becomes cards covering each other.
+  const placed = [...sim.values()];
+  for (let pass = 0; pass < 300; pass++) {
+    let pushed = false;
+    for (let i = 0; i < placed.length; i++) {
+      const a = placed[i], aHalfW = (a.w || NODE_W) / 2, aHalfH = (a.h || NODE_H) / 2;
+      for (let j = i + 1; j < placed.length; j++) {
+        const b = placed[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const ox = aHalfW + (b.w || NODE_W) / 2 + TIDY_PAD - Math.abs(dx);
+        const oy = aHalfH + (b.h || NODE_H) / 2 + TIDY_PAD - Math.abs(dy);
+        if (ox <= 0 || oy <= 0) continue;                 // their boxes don't overlap
+        if (ox < oy) { const shift = (ox / 2) * (dx < 0 ? -1 : 1); a.x -= shift; b.x += shift; }
+        else         { const shift = (oy / 2) * (dy < 0 ? -1 : 1); a.y -= shift; b.y += shift; }
+        pushed = true;
+      }
+    }
+    if (!pushed) break;
+  }
+  for (const node of sim.values()) {            // persist the squeezed spots, not the raw ring ones
+    node.fx = node.x; node.fy = node.y;
+    pins[node.id] = { x: node.x, y: node.y };
+  }
+  savePins();
+  paint();
+
+  // Fit the whole forest in the viewport: zoom out to its bounding box (never in past 1:1), then
+  // pan the box center to the viewport center — the bbox, not the centroid centerView() uses, since
+  // a lopsided forest would otherwise hang off one edge at exactly-fitting zoom.
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const node of sim.values()) {
+    const halfW = (node.w || NODE_W) / 2, halfH = (node.h || NODE_H) / 2;
+    minX = Math.min(minX, node.x - halfW); maxX = Math.max(maxX, node.x + halfW);
+    minY = Math.min(minY, node.y - halfH); maxY = Math.max(maxY, node.y + halfH);
+  }
+  const FIT_PAD = 40;                           // viewport pixels kept clear around the fitted forest
+  zoom = Math.min(1, Math.max(ZOOM_MIN, Math.min(
+    (canvas.clientWidth - FIT_PAD * 2) / (maxX - minX),
+    (canvas.clientHeight - FIT_PAD * 2) / (maxY - minY))));
+  panX = canvas.clientWidth / 2 - ((minX + maxX) / 2) * zoom;
+  panY = canvas.clientHeight / 2 - ((minY + maxY) / 2) * zoom;
+  applyTransform();
 });
 
 // ---- node drag + canvas pan ---------------------------------------------------------------------
