@@ -85,6 +85,11 @@
   .grid .right { text-align: right; }
   .ellip { display: block; max-width: 44ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .sub { color: var(--dim); font-family: var(--mono); }  /* the └ tree glyph on child sessions */
+  /* The visible sort key: a family orders by its subtree's newest interaction, so the root shows
+     that time in green beside its own dim age, and the descendant that produced it carries the
+     same green time — matching values connect the pair. */
+  .fresh { color: var(--green); }
+  .own { color: var(--dim); }
   .empty { color: var(--muted); text-align: center; padding: 70px 0; }
   .err { color: var(--red); font-family: var(--mono); font-size: 13px; }
 
@@ -323,14 +328,27 @@ function sessionForest(sessions) {
     return Math.max(s.last_epoch, ...kids.map(subtreeLast));
   };
   const flat = [];
-  const walk = (list, depth) => {
+  const walk = (list, depth, root) => {
     list.sort((a, b) => subtreeLast(b) - subtreeLast(a));
     for (const s of list) {
-      flat.push([s, depth]);
-      walk(children.get(s.id) || [], depth + 1);
+      flat.push({ s, depth, root: root || s, driver: false, familyDriver: null });
+      walk(children.get(s.id) || [], depth + 1, root || s);
     }
   };
-  walk(roots, 0);
+  walk(roots, 0, null);
+  // Per family: the row whose own time IS the subtree's newest — the one that lifted the tree to
+  // its list position. Mark it, and hand the root its time so the sort key is visible up top.
+  const byRoot = new Map();
+  for (const entry of flat) {
+    if (!byRoot.has(entry.root.id)) byRoot.set(entry.root.id, []);
+    byRoot.get(entry.root.id).push(entry);
+  }
+  for (const family of byRoot.values()) {
+    const driver = family.reduce((a, b) => (b.s.last_epoch > a.s.last_epoch ? b : a));
+    if (driver.s.id === family[0].s.id) continue;   // the root itself is the newest — nothing to explain
+    driver.driver = true;
+    family[0].familyDriver = driver.s;
+  }
   return flat;
 }
 
@@ -341,13 +359,20 @@ async function renderChats() {
   try { data = await getJSON("/api/chats"); }
   catch (e) { app.innerHTML = '<div class="err">' + esc(e.message) + "</div>"; return; }
   if (!data.sessions.length) { app.innerHTML = '<div class="empty">No chat sessions recorded yet.</div>'; return; }
-  const rows = sessionForest(data.sessions).map(([s, depth]) => {
+  const rows = sessionForest(data.sessions).map(({ s, depth, driver, familyDriver }) => {
     const art = s.artifacts
       ? '<span class="num">' + s.artifacts + "</span>"
       : '<span class="num zero">—</span>';
     const indent = depth
       ? '<span class="sub" style="padding-left:' + (depth - 1) * 22 + 'px">└─ </span>'
       : "";
+    let last = esc(s.last_ago);
+    if (familyDriver) {
+      last = '<span class="fresh" title="newest in this tree: ' + esc(familyDriver.name) + '">' +
+        esc(familyDriver.last_ago) + '</span> <span class="own">· ' + esc(s.last_ago) + "</span>";
+    } else if (driver) {
+      last = '<span class="fresh" title="newest in this tree — keeps it at this position">' + last + "</span>";
+    }
     return '<tr class="rowlink" data-href="#/chats/' + esc(s.id) + '">' +
       '<td>' + indent + '<b>' + esc(s.name) + '</b></td>' +
       '<td>' + chips(s.tags) + '</td>' +
@@ -355,7 +380,7 @@ async function renderChats() {
       '<td class="muted mono" style="font-size:12px">' + esc(s.engine) + '</td>' +
       '<td class="right num">' + s.chats + '</td>' +
       '<td class="right">' + art + '</td>' +
-      '<td class="right muted mono" style="font-size:12px">' + esc(s.last_ago) + '</td></tr>';
+      '<td class="right muted mono" style="font-size:12px">' + last + '</td></tr>';
   }).join("");
   app.innerHTML =
     '<table class="grid"><thead><tr>' +
