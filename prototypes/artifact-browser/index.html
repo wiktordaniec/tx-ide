@@ -203,10 +203,21 @@ function esc(s) {
   return String(s).replace(/[&<>"']/g, c => (
     {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
-async function getJSON(url) {
-  const r = await fetch(url);
-  if (!r.ok) { let j = {}; try { j = await r.json(); } catch (e) {} throw new Error(j.error || ("HTTP " + r.status)); }
-  return r.json();
+// Short-lived request memo: the auto-refresh tick fetches a view's payloads to fingerprint them,
+// then re-renders through route() — the memo makes that second read free instead of a double fetch.
+const _fetchCache = new Map();  // url -> {at, promise}
+const FETCH_REUSE_MS = 2000;
+async function getJSON(url, fresh) {
+  const hit = _fetchCache.get(url);
+  if (!fresh && hit && Date.now() - hit.at < FETCH_REUSE_MS) return hit.promise;
+  const promise = (async () => {
+    const r = await fetch(url);
+    if (!r.ok) { let j = {}; try { j = await r.json(); } catch (e) {} throw new Error(j.error || ("HTTP " + r.status)); }
+    return r.json();
+  })();
+  _fetchCache.set(url, { at: Date.now(), promise });
+  try { return await promise; }
+  catch (e) { _fetchCache.delete(url); throw e; }
 }
 function shortId(id) { return id && id.length > 12 ? id.slice(0, 8) : (id || ""); }
 function fmtBytes(n) {
@@ -572,7 +583,7 @@ async function renderChatDetail(id) {
 
     '<section><h2>Conversation</h2><div id="conv"><div id="convLoad">loading full history…</div></div></section>';
 
-  loadConversation(id, d);
+  return loadConversation(id, d);
 }
 
 async function loadConversation(id, detail) {
@@ -720,15 +731,72 @@ function setNav(tab, isList) {
 const UUID_RE = /^[0-9a-fA-F-]{36}$/;
 function route() {
   const hash = location.hash.replace(/^#/, "");
-  if (hash.startsWith("/chats/")) renderChatDetail(hash.slice("/chats/".length));
-  else if (hash === "/artifacts") renderArtifacts();
-  else if (hash.startsWith("/artifacts/")) renderArtifactDetail(hash.slice("/artifacts/".length));
-  else if (hash.startsWith("/") && UUID_RE.test(hash.slice(1))) renderArtifactDetail(hash.slice(1)); // legacy links
-  else renderChats();
+  if (hash.startsWith("/chats/")) return renderChatDetail(hash.slice("/chats/".length));
+  if (hash === "/artifacts") return renderArtifacts();
+  if (hash.startsWith("/artifacts/")) return renderArtifactDetail(hash.slice("/artifacts/".length));
+  if (hash.startsWith("/") && UUID_RE.test(hash.slice(1))) return renderArtifactDetail(hash.slice(1)); // legacy links
+  return renderChats();
 }
 document.getElementById("nav-refresh").onclick = route;
 window.addEventListener("hashchange", route);
 route();
+
+// ---- auto refresh ----
+// A 5s tick re-fetches the current view's payloads, fingerprints them with the volatile relative-age
+// strings stripped, and re-renders only on a real change (or once a minute, so the ages tick).
+// Scroll, open folds, and diff picks survive the swap; a hidden tab pauses and resyncs on focus;
+// an active text selection defers the tick so a copy in progress is never stomped.
+const REFRESH_MS = 5000, FORCE_AGE_REFRESH_EVERY = 12;
+function viewUrls() {
+  const hash = location.hash.replace(/^#/, "");
+  if (hash.startsWith("/chats/")) {
+    const id = encodeURIComponent(hash.slice("/chats/".length));
+    return ["/api/chats/" + id, "/api/chats/" + id + "/dialogue"];
+  }
+  if (hash === "/artifacts") return ["/api/artifacts"];
+  if (hash.startsWith("/artifacts/")) return ["/api/artifacts/" + encodeURIComponent(hash.slice("/artifacts/".length))];
+  if (hash.startsWith("/") && UUID_RE.test(hash.slice(1))) return ["/api/artifacts/" + hash.slice(1)];
+  return ["/api/chats"];
+}
+const stripVolatile = (k, v) => (k === "ago" || k.endsWith("_ago") ? undefined : v);
+let lastFingerprint = "", tickCount = 0, refreshing = false;
+async function refreshTick() {
+  if (refreshing || document.hidden) return;
+  const selection = getSelection();
+  if (selection && !selection.isCollapsed && app.contains(selection.anchorNode)) return;
+  refreshing = true;
+  try {
+    const urls = viewUrls();
+    const datas = await Promise.all(urls.map(u => getJSON(u, true)));
+    if (viewUrls().join() !== urls.join()) return;   // navigated away mid-fetch
+    const fingerprint = JSON.stringify(datas, stripVolatile);
+    tickCount++;
+    const force = tickCount % FORCE_AGE_REFRESH_EVERY === 0;
+    if (fingerprint === lastFingerprint && !force) return;
+    lastFingerprint = fingerprint;
+    const scroll = { x: scrollX, y: scrollY };
+    const openFolds = Array.from(document.querySelectorAll("details[open] summary")).map(s => s.textContent);
+    const diff = document.getElementById("ra")
+      ? { a: document.getElementById("ra").value, b: document.getElementById("rb").value } : null;
+    await route();
+    document.querySelectorAll("details summary").forEach(s => {
+      if (openFolds.includes(s.textContent)) s.parentElement.open = true;
+    });
+    if (diff && document.getElementById("ra")) {
+      document.getElementById("ra").value = diff.a;
+      document.getElementById("rb").value = diff.b;
+      document.getElementById("dodiff").click();
+    }
+    scrollTo(scroll.x, scroll.y);
+  } catch (e) {
+    // transient fetch failure — the next tick retries
+  } finally {
+    refreshing = false;
+  }
+}
+setInterval(refreshTick, REFRESH_MS);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshTick(); });
+window.addEventListener("hashchange", () => { lastFingerprint = ""; });
 </script>
 </body>
 </html>
