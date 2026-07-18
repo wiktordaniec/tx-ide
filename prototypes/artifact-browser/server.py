@@ -493,20 +493,31 @@ def _artifact_touch_counts(artifacts: list[Artifact]) -> dict[str, int]:
     return counts
 
 
+# The standing orchestrator. It spawns most sessions, so as a list parent it would fold nearly the
+# whole forest under one node — review round 2 settled that it is infrastructure, not lineage: its
+# rows stay OUT of the list feed and sessions it spawned render as roots. Its detail/dialogue routes
+# still serve (origin edges keep linking to it); only the list treats it as invisible plumbing.
+ASSISTANT_NAME = "tx-assistant"
+
+
 def chats_payload() -> dict:
     """The chats list feed — one row per session that hosted a conversation, newest interaction
-    first. Everything the grid needs; the heavy dialogue stays on the detail routes."""
+    first. Everything the grid needs; the heavy dialogue stays on the detail routes. The
+    tx-assistant is infrastructure (see `ASSISTANT_NAME`): no row, and never a parent."""
     now = time.time()
     store = SessionStore()
     sessions = _chat_sessions(store)
+    assistant_ids = {session.id for session in sessions if session.name == ASSISTANT_NAME}
     artifact_counts = _artifact_touch_counts(ArtifactStore().all())
     rows = []
     for session in sessions:
+        if session.name == ASSISTANT_NAME:
+            continue
         last = _last_interaction(session)
         rows.append({
             "id": session.id,
             "name": session.name,
-            "parent": session.parent,
+            "parent": None if session.parent in assistant_ids else session.parent,
             "title": _session_title(session),
             "tags": session.tags,
             "state": session.state.value,
