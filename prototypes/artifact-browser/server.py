@@ -48,6 +48,7 @@ from tx.artifact import Artifact  # noqa: E402
 from tx.artifact_store import ArtifactContent, ArtifactStore  # noqa: E402
 from tx.engines import claude as claude_engine  # noqa: E402
 from tx.engines import codex_rollout  # noqa: E402
+from tx.palette import tag_cube  # noqa: E402
 from tx.render import actor_label, reltime  # noqa: E402
 from tx.session import ChatRef, Engine, LlmSession, Role, Session, UnsupportedRecordError  # noqa: E402
 from tx.storage import artifacts_dir, history_dir, sessions_dir  # noqa: E402
@@ -413,6 +414,26 @@ def _derive_title(path: Path, launch_cmd: str, engine: Engine | None) -> str:
 # ----- chat-side payloads ------------------------------------------------------------------------
 
 
+def cube_to_hex(cube_index: int) -> str:
+    """Map an xterm-256 color index to `#rrggbb`, so the browser paints tag chips in the same
+    colors the terminal picker (and the sessions-graph dashboard) uses. `palette.tag_cube` returns
+    these indices; 16–231 is the 6×6×6 color cube, 232–255 the grayscale ramp."""
+    if 16 <= cube_index <= 231:
+        offset = cube_index - 16
+        red, green, blue = offset // 36, (offset // 6) % 6, offset % 6
+
+        def channel(step: int) -> int:
+            return 0 if step == 0 else 55 + 40 * step
+
+        return f"#{channel(red):02x}{channel(green):02x}{channel(blue):02x}"
+    grey = 8 + 10 * (cube_index - 232)
+    return f"#{grey:02x}{grey:02x}{grey:02x}"
+
+
+def _tag_colors(tags: list[str]) -> dict[str, str]:
+    return {tag: cube_to_hex(tag_cube(tag)) for tag in tags}
+
+
 def _load_llm_session(session_id: str) -> LlmSession | None:
     """Resolve a route-supplied id to an llm record, or None (→ 404). A persistence boundary read
     driven by user input: a missing record, an unreadable older-schema record, and a non-llm record
@@ -520,6 +541,7 @@ def chats_payload() -> dict:
             "parent": None if session.parent in assistant_ids else session.parent,
             "title": _session_title(session),
             "tags": session.tags,
+            "tag_colors": _tag_colors(session.tags),
             "state": session.state.value,
             "alive": session.is_alive(),
             "engine": session.engine.value,
@@ -666,6 +688,7 @@ def chat_detail_payload(session_id: str) -> dict | None:
         "name": session.name,
         "title": _session_title(session),
         "tags": session.tags,
+        "tag_colors": _tag_colors(session.tags),
         "state": session.state.value,
         "alive": session.is_alive(),
         "engine": session.engine.value,

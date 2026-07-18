@@ -48,9 +48,13 @@
   main { width: 100%; padding: 22px 28px 80px; }
 
   /* ---- chips / badges / state dots ---- */
+  /* Tag chips exactly as the sessions-graph dashboard draws them: per-tag color (the terminal
+     picker's tag_cube palette, served as --chip), pill outline, 16% tinted fill. */
   .chip {
-    display: inline-block; margin-right: 10px; color: var(--muted);
-    font: 11px var(--mono); white-space: nowrap;
+    display: inline-block; margin-right: 6px; font-size: 10.5px; padding: 1px 6px;
+    border-radius: 999px; color: var(--chip, var(--dim)); border: 1px solid var(--chip, var(--dim));
+    background: color-mix(in srgb, var(--chip, var(--dim)) 16%, transparent);
+    white-space: nowrap;
   }
   .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px;
          background: var(--dim); vertical-align: 1px; }
@@ -85,7 +89,9 @@
     display: inline-block; cursor: pointer;
     padding: 12px 2px 12px 10px; margin: -12px -2px -12px -10px;
   }
-  .gut .tgl { color: var(--muted); }
+  /* The glyph box spans [10,34] inside a visible block running 0→34 (row edge to name); shifting
+     it 5px left puts the triangle on the block's optical center. */
+  .gut .tgl { color: var(--muted); position: relative; left: -5px; }
   .gut:hover { background: var(--panel-2); }
   .gut:hover .tgl { color: var(--text); }
   /* The visible sort key: a family orders by its subtree's newest interaction, so the root shows
@@ -216,7 +222,12 @@ function fmtTs(epoch) {
   if (d.toDateString() === now.toDateString()) return hm;
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + hm;
 }
-function chips(tags) { return (tags || []).map(t => '<span class="chip">' + esc(t) + "</span>").join(""); }
+function chips(tags, colors) {
+  return (tags || []).map(t => {
+    const color = (colors && colors[t]) || "var(--dim)";
+    return '<span class="chip" style="--chip:' + esc(color) + '">' + esc(t) + "</span>";
+  }).join("");
+}
 function stateHtml(state) {
   return '<span class="state st-' + esc(state) + '"><span class="dot"></span>' + esc(state) + "</span>";
 }
@@ -412,7 +423,7 @@ async function renderChats() {
   }
 
   const cells = (s, last) =>
-    '<td>' + chips(s.tags) + '</td>' +
+    '<td>' + chips(s.tags, s.tag_colors) + '</td>' +
     '<td>' + stateHtml(s.state) + '</td>' +
     '<td class="muted mono" style="font-size:12px">' + esc(s.engine) + '</td>' +
     '<td class="right num">' + s.chats + '</td>' +
@@ -480,7 +491,7 @@ async function renderChatDetail(id) {
 
   const props = [];
   props.push(["state", stateHtml(d.state) + (d.read_only ? ' <span class="chip">read-only</span>' : "")]);
-  props.push(["tags", chips(d.tags) || '<span class="muted">—</span>']);
+  props.push(["tags", chips(d.tags, d.tag_colors) || '<span class="muted">—</span>']);
   props.push(["engine", '<span class="mono" style="font-size:12.5px">' + esc(d.engine) + "</span>"]);
   props.push(["cwd", '<span class="mono" style="font-size:12.5px">' + esc(d.cwd) + "</span>"]);
   if (d.parent) props.push(["parent", d.parent_is_session
