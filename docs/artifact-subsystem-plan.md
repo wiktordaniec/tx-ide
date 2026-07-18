@@ -193,6 +193,15 @@ lands — never coupled into `lib/tx`.
   download link), the full touch/version log, and an on-demand rev↔rev `difflib` diff.
 - Read-only in the strict sense: it never writes, and its reads do **not** log to EventLog — a
   polling dashboard would be noise. (EventLog read-visibility covers session/CLI reads, not this.)
+- Path safety at the HTTP boundary (added after QA): request parameters are validated strictly
+  before any store call — artifact ids must match the canonical uuid token (URL-decode once, then
+  validate), rev numbers must be plain integers; the server never joins raw request input into a
+  filesystem path, so traversal (literal or encoded) cannot escape `artifacts/`.
+- Output safety at the HTTP boundary (added after QA): record-derived values are **stored data,
+  not trusted output** — `filename` originates from user input at `create`. Any such value
+  interpolated into a response header (e.g. `Content-Disposition`) is sanitized: strip CR/LF,
+  encode quote/backslash, prefer RFC 5987 `filename*`. A control character in a stored filename
+  can never inject a header or split the response.
 - It is **not a session** and not a stored rendering — a live render over the store.
 - Naming: the ephemeral tmux **View** (from the session-record split) is a different concept from an artifact's rendering
   *surface*. Use "render/surface" for artifacts to avoid overloading "view".

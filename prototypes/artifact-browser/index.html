@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tx-ide artifacts</title>
+<style>
+  :root {
+    --bg: #12141a; --panel: #1a1d26; --panel2: #21252f; --border: #2c313d;
+    --fg: #d7dce5; --dim: #8a92a3; --accent: #7aa2f7; --accent2: #9ece6a;
+    --add: #9ece6a; --del: #f7768e; --warn: #e0af68;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans);
+         font-size: 15px; line-height: 1.5; }
+  a { color: var(--accent); text-decoration: none; cursor: pointer; }
+  a:hover { text-decoration: underline; }
+  header { position: sticky; top: 0; z-index: 5; display: flex; align-items: baseline; gap: 16px;
+           padding: 14px 24px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  header .brand { font-weight: 700; letter-spacing: .3px; }
+  header .brand .glyph { color: var(--accent); }
+  header .spacer { flex: 1; }
+  header a.nav { color: var(--dim); font-size: 13px; }
+  header a.nav:hover { color: var(--fg); }
+  main { max-width: 920px; margin: 0 auto; padding: 24px; }
+  .muted { color: var(--dim); }
+  .mono { font-family: var(--mono); }
+  .chip { display: inline-block; padding: 1px 7px; margin-right: 5px; border-radius: 10px;
+          background: var(--panel2); border: 1px solid var(--border); color: var(--dim);
+          font-family: var(--mono); font-size: 12px; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 12px;
+           background: rgba(224,175,104,.16); color: var(--warn); border: 1px solid rgba(224,175,104,.35); }
+
+  /* list */
+  .row { display: block; padding: 14px 16px; margin-bottom: 10px; background: var(--panel);
+         border: 1px solid var(--border); border-radius: 8px; }
+  .row:hover { border-color: var(--accent); background: var(--panel2); }
+  .row .title { font-weight: 600; font-size: 16px; }
+  .row .id { font-family: var(--mono); font-size: 12px; color: var(--dim); margin-left: 8px; }
+  .row .meta { margin-top: 6px; font-size: 13px; color: var(--dim); }
+  .row .meta b { color: var(--fg); font-weight: 600; }
+  .empty { color: var(--dim); text-align: center; padding: 60px 0; }
+
+  /* detail */
+  .crumbs { font-size: 13px; margin-bottom: 14px; }
+  h1.doc { font-size: 22px; margin: 0 0 4px; }
+  .subhead { color: var(--dim); font-size: 13px; margin-bottom: 18px; }
+  .subhead .k { color: var(--fg); }
+  section.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+                 margin-bottom: 18px; overflow: hidden; }
+  section.card > h2 { margin: 0; padding: 10px 16px; font-size: 13px; text-transform: uppercase;
+                      letter-spacing: .6px; color: var(--dim); background: var(--panel2);
+                      border-bottom: 1px solid var(--border); }
+  section.card > .body { padding: 16px; }
+
+  /* history log */
+  table.hist { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.hist td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.hist tr:last-child td { border-bottom: none; }
+  table.hist .rev { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+  table.hist .who { font-family: var(--mono); font-size: 12px; }
+  table.hist .who.user { color: var(--accent2); }
+  table.hist .ago { color: var(--dim); white-space: nowrap; }
+  table.hist .changes { color: var(--fg); }
+  table.hist .changes.none { color: var(--dim); font-style: italic; }
+
+  /* rendered markdown */
+  .md { overflow-wrap: anywhere; }
+  .md h1,.md h2,.md h3,.md h4 { line-height: 1.25; margin: 1.2em 0 .5em; }
+  .md h1 { font-size: 1.5em; border-bottom: 1px solid var(--border); padding-bottom: .2em; }
+  .md h2 { font-size: 1.28em; border-bottom: 1px solid var(--border); padding-bottom: .2em; }
+  .md h3 { font-size: 1.12em; } .md h4 { font-size: 1em; }
+  .md p { margin: .6em 0; } .md ul,.md ol { margin: .5em 0; padding-left: 1.5em; }
+  .md li { margin: .2em 0; }
+  .md code { font-family: var(--mono); font-size: .88em; background: var(--panel2);
+             padding: .1em .35em; border-radius: 4px; }
+  .md pre { background: #0e1016; border: 1px solid var(--border); border-radius: 6px;
+            padding: 12px; overflow-x: auto; }
+  .md pre code { background: none; padding: 0; }
+  .md blockquote { margin: .6em 0; padding: .1em 1em; border-left: 3px solid var(--border);
+                   color: var(--dim); }
+  .md hr { border: none; border-top: 1px solid var(--border); margin: 1.2em 0; }
+  .md a { color: var(--accent); }
+  .md table { border-collapse: collapse; margin: .8em 0; display: block; overflow-x: auto; }
+  .md table th, .md table td { border: 1px solid var(--border); padding: 5px 10px; }
+  .md table th { background: var(--panel2); }
+
+  pre.raw { font-family: var(--mono); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere;
+            margin: 0; }
+
+  /* diff */
+  .diffbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  select, button { font-family: var(--mono); font-size: 13px; background: var(--panel2);
+                   color: var(--fg); border: 1px solid var(--border); border-radius: 5px; padding: 5px 8px; }
+  button { cursor: pointer; } button:hover { border-color: var(--accent); }
+  pre.diff { font-family: var(--mono); font-size: 12.5px; line-height: 1.45; margin: 0;
+             overflow-x: auto; white-space: pre; }
+  pre.diff .a { color: var(--add); } pre.diff .d { color: var(--del); }
+  pre.diff .h { color: var(--accent); } pre.diff .c { color: var(--dim); }
+  .err { color: var(--del); font-family: var(--mono); font-size: 13px; }
+  .dl { display: inline-block; margin-top: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand"><span class="glyph">◈</span> tx-ide artifacts</span>
+  <span class="spacer"></span>
+  <a class="nav" id="nav-back" style="display:none">← all artifacts</a>
+  <a class="nav" id="nav-refresh">↻ refresh</a>
+</header>
+<main id="app"><div class="empty">loading…</div></main>
+
+<script>
+"use strict";
+const app = document.getElementById("app");
+const navBack = document.getElementById("nav-back");
+const navRefresh = document.getElementById("nav-refresh");
+
+// ---- helpers ----
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => (
+    {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) { let j = {}; try { j = await r.json(); } catch (e) {} throw new Error(j.error || ("HTTP " + r.status)); }
+  return r.json();
+}
+function shortId(id) { return id.length > 12 ? id.slice(0, 8) : id; }
+
+// ---- a compact, self-contained markdown renderer (no external libs) ----
+function inline(s) {
+  s = esc(s);
+  s = s.replace(/`([^`]+)`/g, (_, c) => "<code>" + c + "</code>");
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) =>
+    '<a href="' + u + '" target="_blank" rel="noopener">' + t + "</a>");
+  return s;
+}
+function renderMarkdown(text) {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const out = [];
+  let i = 0;
+  const listOpen = []; // stack of "ul"/"ol"
+  function closeLists() { while (listOpen.length) out.push("</" + listOpen.pop() + ">"); }
+  while (i < lines.length) {
+    let line = lines[i];
+    // fenced code block
+    const fence = line.match(/^```(.*)$/);
+    if (fence) {
+      closeLists(); i++;
+      const buf = [];
+      while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; }
+      i++; // closing fence
+      out.push("<pre><code>" + esc(buf.join("\n")) + "</code></pre>");
+      continue;
+    }
+    // horizontal rule
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { closeLists(); out.push("<hr>"); i++; continue; }
+    // heading
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { closeLists(); const n = h[1].length; out.push("<h" + n + ">" + inline(h[2]) + "</h" + n + ">"); i++; continue; }
+    // pipe table: header row followed by a |---|--- separator
+    if (/\|/.test(line) && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|[\s:|-]+$/.test(lines[i + 1])) {
+      closeLists();
+      const cells = r => r.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map(c => c.trim());
+      const head = cells(line);
+      i += 2;
+      let t = "<table><thead><tr>" + head.map(c => "<th>" + inline(c) + "</th>").join("") + "</tr></thead><tbody>";
+      while (i < lines.length && /\|/.test(lines[i]) && lines[i].trim() !== "") {
+        t += "<tr>" + cells(lines[i]).map(c => "<td>" + inline(c) + "</td>").join("") + "</tr>"; i++;
+      }
+      out.push(t + "</tbody></table>");
+      continue;
+    }
+    // blockquote (consume consecutive)
+    if (/^\s*>\s?/.test(line)) {
+      closeLists(); const buf = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) { buf.push(lines[i].replace(/^\s*>\s?/, "")); i++; }
+      out.push("<blockquote>" + renderMarkdown(buf.join("\n")) + "</blockquote>");
+      continue;
+    }
+    // list items
+    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
+    const ol = line.match(/^\s*\d+\.\s+(.*)$/);
+    if (ul || ol) {
+      const kind = ul ? "ul" : "ol";
+      if (listOpen[listOpen.length - 1] !== kind) { closeLists(); out.push("<" + kind + ">"); listOpen.push(kind); }
+      out.push("<li>" + inline((ul || ol)[1]) + "</li>"); i++; continue;
+    }
+    // blank line
+    if (line.trim() === "") { closeLists(); i++; continue; }
+    // paragraph (gather until a blank / block boundary)
+    closeLists();
+    const para = [line]; i++;
+    while (i < lines.length && lines[i].trim() !== "" &&
+           !/^(#{1,6}\s|```|\s*>|\s*[-*+]\s|\s*\d+\.\s|\s*(-{3,}|\*{3,})\s*$)/.test(lines[i])) {
+      para.push(lines[i]); i++;
+    }
+    out.push("<p>" + inline(para.join(" ")) + "</p>");
+  }
+  closeLists();
+  return out.join("\n");
+}
+
+// ---- list view ----
+async function renderList() {
+  navBack.style.display = "none";
+  app.innerHTML = '<div class="empty">loading…</div>';
+  let data;
+  try { data = await getJSON("/api/artifacts"); }
+  catch (e) { app.innerHTML = '<div class="err">' + esc(e.message) + "</div>"; return; }
+  if (!data.artifacts.length) { app.innerHTML = '<div class="empty">No artifacts yet. Create one with <code>tx artifact create &lt;file&gt;</code>.</div>'; return; }
+  app.innerHTML = data.artifacts.map(a => {
+    const authors = a.authors.map(x => '<span class="chip">' + esc(x.length > 12 ? shortId(x) : x) + "</span>").join("");
+    return '<a class="row" href="#/' + esc(a.id) + '">' +
+      '<span class="title">' + esc(a.title || a.filename) + '</span>' +
+      '<span class="id mono">' + esc(shortId(a.id)) + '</span>' +
+      '<div class="meta"><span class="mono">' + esc(a.filename) + '</span> · <b>' + a.revs +
+      '</b> rev' + (a.revs === 1 ? "" : "s") + ' · updated <b>' + esc(a.updated_ago) + '</b> ago · ' + authors +
+      "</div></a>";
+  }).join("");
+}
+
+// ---- detail view ----
+async function renderDetail(id) {
+  navBack.style.display = "";
+  app.innerHTML = '<div class="empty">loading…</div>';
+  let d;
+  try { d = await getJSON("/api/artifacts/" + encodeURIComponent(id)); }
+  catch (e) { app.innerHTML = '<div class="err">' + esc(e.message) + "</div>"; return; }
+
+  const w = d.working;
+  let working;
+  if (w.encoding === "markdown") working = '<div class="md">' + renderMarkdown(w.text) + "</div>";
+  else if (w.encoding === "text") working = '<pre class="raw">' + esc(w.text) + "</pre>";
+  else working = '<p class="muted">Binary content (' + w.size + ' bytes).</p>' +
+    '<a class="dl" href="/api/artifacts/' + encodeURIComponent(id) + '/raw">↓ download ' + esc(d.filename) + "</a>";
+
+  const rows = d.history.map(t =>
+    '<tr><td class="rev">rev ' + t.rev + '</td><td class="ago">' + esc(t.ago) + ' ago</td>' +
+    '<td class="who' + (t.session_id === "user" ? " user" : "") + '">' + esc(t.session_id) + '</td>' +
+    '<td class="changes' + (t.changes ? "" : " none") + '">' + esc(t.changes || "—") + "</td></tr>").join("");
+
+  const opts = d.history.map(t => '<option value="' + t.rev + '">rev ' + t.rev + "</option>").join("");
+  const defA = Math.max(0, d.revs - 2), defB = d.revs - 1;
+  const dirty = d.dirty ? ' <span class="badge">working copy dirty — unsnapshotted edits</span>' : "";
+
+  app.innerHTML =
+    '<div class="crumbs"><a href="#/">all artifacts</a> <span class="muted">/ ' + esc(shortId(d.id)) + "</span></div>" +
+    '<h1 class="doc">' + esc(d.title || d.filename) + "</h1>" +
+    '<div class="subhead"><span class="mono">' + esc(d.id) + '</span><br>' +
+    '<span class="k">' + esc(d.filename) + '</span> · <span class="k">' + d.revs + '</span> revision' + (d.revs === 1 ? "" : "s") +
+    ' · created <span class="k">' + esc(d.created_ago) + '</span> ago · updated <span class="k">' + esc(d.updated_ago) + '</span> ago' + dirty + "</div>" +
+
+    '<section class="card"><h2>Working copy</h2><div class="body">' + working + "</div></section>" +
+
+    '<section class="card"><h2>History — who touched it</h2><div class="body">' +
+    '<table class="hist"><tbody>' + rows + "</tbody></table></div></section>" +
+
+    (d.revs > 1 ?
+      '<section class="card"><h2>Diff revisions</h2><div class="body">' +
+      '<div class="diffbar"><select id="ra">' + opts + '</select><span class="muted">→</span>' +
+      '<select id="rb">' + opts + '</select><button id="dodiff">compare</button></div>' +
+      '<pre class="diff" id="diffout"><span class="c">pick two revisions and press compare</span></pre>' +
+      "</div></section>"
+      : "");
+
+  if (d.revs > 1) {
+    document.getElementById("ra").value = defA;
+    document.getElementById("rb").value = defB;
+    document.getElementById("dodiff").onclick = () => runDiff(id);
+    runDiff(id);
+  }
+}
+
+async function runDiff(id) {
+  const a = document.getElementById("ra").value, b = document.getElementById("rb").value;
+  const out = document.getElementById("diffout");
+  out.innerHTML = '<span class="c">computing…</span>';
+  let r;
+  try { r = await getJSON("/api/artifacts/" + encodeURIComponent(id) + "/diff?a=" + a + "&b=" + b); }
+  catch (e) { out.innerHTML = '<span class="d">' + esc(e.message) + "</span>"; return; }
+  if (r.error) { out.innerHTML = '<span class="d">' + esc(r.error) + "</span>"; return; }
+  if (!r.diff) { out.innerHTML = '<span class="c">(no differences between rev ' + a + " and rev " + b + ")</span>"; return; }
+  out.innerHTML = r.diff.split("\n").map(line => {
+    const cls = line.startsWith("+") ? "a" : line.startsWith("-") ? "d" :
+                line.startsWith("@@") ? "h" : "c";
+    return '<span class="' + cls + '">' + esc(line) + "</span>";
+  }).join("\n");
+}
+
+// ---- routing ----
+function route() {
+  const hash = location.hash.replace(/^#/, "");
+  if (hash.startsWith("/") && hash.length > 1) renderDetail(hash.slice(1));
+  else renderList();
+}
+navRefresh.onclick = route;
+window.addEventListener("hashchange", route);
+route();
+</script>
+</body>
+</html>
