@@ -64,6 +64,22 @@ def _safe_artifact_id(raw: str) -> str | None:
     return decoded if _ARTIFACT_ID_RE.match(decoded) else None
 
 
+# Everything outside this set is dropped from the quoted Content-Disposition fallback. A record's
+# filename is untrusted at the HTTP edge: a POSIX basename may legally contain CR/LF (which would
+# inject response headers — QA P1b), quotes (which truncate the parameter), or backslashes.
+_SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _content_disposition(filename: str) -> str:
+    """A header-safe `Content-Disposition` for a download. The quoted fallback is reduced to a
+    conservative ASCII token (no CR/LF, quote or backslash can survive), and the exact name rides in
+    the RFC 5987 `filename*` parameter, whose percent-encoding makes a header break impossible. The
+    store keeps the real filename untouched — this sanitizing belongs at the boundary that emits it."""
+    fallback = _SAFE_FILENAME_RE.sub("_", filename).strip("._") or "artifact"
+    encoded = urllib.parse.quote(filename, safe="")
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
+
+
 # ----- payloads — read through the store + content primitives, NEVER the logging service ---------
 
 
@@ -230,7 +246,7 @@ class BrowserHandler(BaseHTTPRequestHandler):
             data, filename = result
             self._respond(
                 200, data, "application/octet-stream",
-                {"Content-Disposition": f'attachment; filename="{filename}"'},
+                {"Content-Disposition": _content_disposition(filename)},
             )
         elif rest.endswith("/diff"):
             artifact_id = _safe_artifact_id(rest[: -len("/diff")])

@@ -72,8 +72,8 @@ port = httpd.server_address[1]
 threading.Thread(target=httpd.serve_forever, daemon=True).start()
 
 
-def raw_get(path):
-    """Send a RAW HTTP/1.0 GET with `path` verbatim; return (status, body_bytes)."""
+def raw_request(path):
+    """Send a RAW HTTP/1.0 GET with `path` verbatim; return (status, header_block, body_bytes)."""
     connection = socket.create_connection(("127.0.0.1", port), timeout=5)
     connection.sendall(f"GET {path} HTTP/1.0\r\nHost: localhost\r\n\r\n".encode())
     raw = b""
@@ -84,7 +84,13 @@ def raw_get(path):
         raw += chunk
     connection.close()
     head, _, body = raw.partition(b"\r\n\r\n")
-    return int(head.split(b" ", 2)[1]), body
+    return int(head.split(b" ", 2)[1]), head, body
+
+
+def raw_get(path):
+    """(status, body) — the common case."""
+    status, _head, body = raw_request(path)
+    return status, body
 
 
 try:
@@ -109,6 +115,26 @@ try:
         status, body = raw_get(path)
         leaked = b"SECRET" in body or b"outside" in body.lower()
         check(f"traversal 404 + no leak: {path}", status == 404 and not leaked)
+
+    # ----- P1b: a record-derived filename must not inject response headers -----------------------
+    # A POSIX basename may legally contain CR/LF and quotes, so `tx artifact create` can store one;
+    # the raw route echoes it into Content-Disposition. It must be sanitized at that emit boundary.
+    hostile_name = 'evil"\r\nX-QA-Injection: yes.md'
+    hostile = service.create("s", b"payload\n", title="Hostile", filename=hostile_name)
+    status, head, body = raw_request(f"/api/artifacts/{hostile.id}/raw")
+    header_lines = head.split(b"\r\n")[1:]
+    header_names = {line.split(b":", 1)[0].strip().lower() for line in header_lines if b":" in line}
+    disposition = next(line for line in header_lines if line.lower().startswith(b"content-disposition:"))
+    check("a hostile filename still downloads (200)", status == 200 and body == b"payload\n")
+    check("the CRLF filename injected NO response header", b"x-qa-injection" not in header_names)
+    check("Content-Disposition is one intact line (no CR/LF smuggled)",
+          b"\r" not in disposition and b"\n" not in disposition)
+    check("the quoted fallback is closed properly (no quote escape)",
+          b'filename="' in disposition and b'"; filename*' in disposition)
+    check("the exact name rides safely in RFC 5987 filename* (CRLF percent-encoded)",
+          b"filename*=UTF-8''" in disposition and b"%0D%0A" in disposition)
+    check("the store still holds the real filename untouched",
+          service.store.load(hostile.id).filename == hostile_name)
 finally:
     httpd.shutdown()
 
