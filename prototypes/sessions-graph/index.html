@@ -2574,15 +2574,13 @@ $("shuffle").addEventListener("click", () => {
 });
 
 // ---- tidy layout --------------------------------------------------------------------------------
-// Arrange the visible forest into concentric rings: lineage depth picks the ring, nodes are spaced
-// evenly around it. Children enter their ring in their parent's angular order, so each edge leans
-// toward its parent's side of the circle without breaking the even spacing. Ring radii grow enough
-// that every card fits its arc slot. Every node ends pinned at its tidy spot (persisted like a
-// drag), so the arrangement survives reloads and background refreshes — shuffle is the release.
-const TIDY_RING_GAP = 170;    // minimum radial distance between consecutive rings — the widest card
-                              // stretches it further, since at the circle's sides the radial
-                              // direction is horizontal and must clear a full card width
-const TIDY_ARC_PAD = 26;      // breathing room between adjacent cards along a ring
+// Arrange the visible forest into tightly packed concentric rings: lineage depth picks the ring,
+// children enter it in their parent's angular order. The spacing is deliberately congested — cards
+// sit as close as they can without covering each other (a squeeze-out pass separates the spots
+// where the tight rings brush), so the shape reads as rings without wasting canvas on geometry.
+// Every node ends pinned at its tidy spot (persisted like a drag), so the arrangement survives
+// reloads and background refreshes — shuffle is the release.
+const TIDY_PAD = 8;           // breathing room between neighbouring cards — congested on purpose
 
 $("tidy").addEventListener("click", () => {
   if (sim.size === 0) return;
@@ -2599,28 +2597,49 @@ $("tidy").addEventListener("click", () => {
     rings.push(ring);
   }
 
-  // A ring sits one ring gap outside the previous one, or further out when its cards need more
-  // circumference to fit side by side. Angles are uniform per ring (that's the visual rhythm that
-  // makes the rings read), so every slot is sized to the ring's widest card. Cards are wide and
-  // flat, so the rings are ellipses: horizontally consecutive rings must clear a full card width
-  // (that's the radial direction at the sides), vertically only a card height — but no flatter than
-  // 0.6, where an arc slot at the sides (vertical there) would stop clearing a card height. A lone
-  // innermost node takes the exact center.
-  const widest = [...sim.values()].reduce((max, node) => Math.max(max, (node.w || NODE_W) + TIDY_ARC_PAD), TIDY_RING_GAP);
-  const tallest = [...sim.values()].reduce((max, node) => Math.max(max, (node.h || NODE_H) + TIDY_ARC_PAD), 0);
+  // Tight elliptical rings: each card takes an arc slot of its own width, each ring sits one card
+  // height outside the previous (or as far out as its circumference needs), flattened to half its
+  // width since the cards are wide and flat. This deliberately lets cards brush where a ring
+  // curves; the squeeze-out pass below resolves those spots locally, so the result stays congested
+  // and roughly — not perfectly — circular. A lone innermost node takes the exact center.
+  const tallest = [...sim.values()].reduce((max, node) => Math.max(max, (node.h || NODE_H) + TIDY_PAD), 0);
   let radiusX = 0, radiusY = 0;
   rings.forEach((ring, depth) => {
-    const slot = ring.reduce((max, node) => Math.max(max, (node.w || NODE_W) + TIDY_ARC_PAD), 0);
+    const arc = ring.reduce((total, node) => total + (node.w || NODE_W) + TIDY_PAD, 0);
     if (!(depth === 0 && ring.length === 1)) {
-      radiusX = Math.max(radiusX + widest, (slot * ring.length) / (2 * Math.PI));
-      radiusY = Math.max(radiusY + tallest, radiusX * 0.6);
+      radiusX = Math.max(radiusX + tallest, arc / (2 * Math.PI));
+      radiusY = Math.max(radiusY + tallest, radiusX * 0.5);
     }
-    ring.forEach((node, index) => {
-      const angle = -Math.PI / 2 + (2 * Math.PI * index) / ring.length;
+    let along = 0;                       // arc distance consumed so far around this ring
+    for (const node of ring) {
+      const slot = (node.w || NODE_W) + TIDY_PAD;
+      const angle = -Math.PI / 2 + ((along + slot / 2) / arc) * 2 * Math.PI;
+      along += slot;
       node.x = WORLD_CX + radiusX * Math.cos(angle);
       node.y = WORLD_CY + radiusY * Math.sin(angle);
-    });
+    }
   });
+
+  // Squeeze-out: push overlapping pairs apart along their least-overlapping axis (tick()'s AABB
+  // separation rule, run to convergence) so congestion never becomes cards covering each other.
+  const placed = [...sim.values()];
+  for (let pass = 0; pass < 300; pass++) {
+    let pushed = false;
+    for (let i = 0; i < placed.length; i++) {
+      const a = placed[i], aHalfW = (a.w || NODE_W) / 2, aHalfH = (a.h || NODE_H) / 2;
+      for (let j = i + 1; j < placed.length; j++) {
+        const b = placed[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const ox = aHalfW + (b.w || NODE_W) / 2 + TIDY_PAD - Math.abs(dx);
+        const oy = aHalfH + (b.h || NODE_H) / 2 + TIDY_PAD - Math.abs(dy);
+        if (ox <= 0 || oy <= 0) continue;                 // their boxes don't overlap
+        if (ox < oy) { const shift = (ox / 2) * (dx < 0 ? -1 : 1); a.x -= shift; b.x += shift; }
+        else         { const shift = (oy / 2) * (dy < 0 ? -1 : 1); a.y -= shift; b.y += shift; }
+        pushed = true;
+      }
+    }
+    if (!pushed) break;
+  }
 
   pins = {};
   for (const node of sim.values()) {
