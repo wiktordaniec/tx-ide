@@ -160,6 +160,23 @@ try:
     check("diff with an absent rev is still rejected (400)", status == 400)
     status, _body = raw_get(f"/api/artifacts/{inside.id}/diff?a=0&b=zzz")
     check("diff with a malformed rev is rejected (400)", status == 400)
+
+    # ----- the chat routes share the same uuid boundary --------------------------------------
+    status, body = raw_get("/api/chats")
+    check("the chats list serves (200)", status == 200 and b"sessions" in body)
+    status, _body = raw_get("/api/chats/00000000-0000-0000-0000-000000000000")
+    check("a valid-but-missing session uuid 404s cleanly", status == 404)
+    status, _body = raw_get("/api/chats/00000000-0000-0000-0000-000000000000/dialogue")
+    check("dialogue for a missing session 404s cleanly", status == 404)
+    for path in (
+        "/api/chats/../outside-record",
+        "/api/chats/%2e%2e%2foutside-record",
+        "/api/chats/../outside-record/dialogue",
+        "/api/chats/%2e%2e%2foutside-record/dialogue",
+    ):
+        status, body = raw_get(path)
+        leaked = b"SECRET" in body or b"outside" in body.lower()
+        check(f"chat-route traversal 404 + no leak: {path}", status == 404 and not leaked)
 finally:
     httpd.shutdown()
 
