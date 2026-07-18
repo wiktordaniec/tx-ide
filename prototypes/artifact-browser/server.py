@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import re
 import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -45,6 +46,22 @@ DEFAULT_PORT = 8770
 # Extensions whose working copy the page renders as markdown; anything else utf-8 is preformatted
 # text, and anything that does not decode as utf-8 is offered as a binary download.
 MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
+
+# A canonical artifact id is a uuid. The store joins the id into a filesystem path, so the browser
+# accepts ONLY that exact token in a route — a crafted `..` / `/` (literal OR percent-encoded) can
+# then never escape the artifacts directory to read an arbitrary file (QA P1: path traversal).
+_ARTIFACT_ID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _safe_artifact_id(raw: str) -> str | None:
+    """Validate a URL path segment as a canonical artifact id BEFORE it reaches the store — boundary
+    validation at the HTTP edge, so no raw route input is ever joined into a filesystem path. Decode
+    percent-encoding ONCE, then require the exact uuid shape; a literal or encoded `..`/`/`, or any
+    other non-uuid token, returns None (the route 404s without touching the store)."""
+    decoded = urllib.parse.unquote(raw)
+    return decoded if _ARTIFACT_ID_RE.match(decoded) else None
 
 
 # ----- payloads — read through the store + content primitives, NEVER the logging service ---------
@@ -201,9 +218,12 @@ class BrowserHandler(BaseHTTPRequestHandler):
             self._respond(404, b"not found\n", "text/plain; charset=utf-8")
 
     def _route_artifact(self, rest: str, query: dict) -> None:
-        """`<id>` (detail) | `<id>/raw` (bytes) | `<id>/diff` (difflib)."""
+        """`<id>` (detail) | `<id>/raw` (bytes) | `<id>/diff` (difflib). The id is validated to a
+        canonical uuid at this boundary — a non-uuid (a traversal payload) 404s before the store is
+        ever touched; rev params must be plain integers (`_int_param`)."""
         if rest.endswith("/raw"):
-            result = raw_bytes(rest[: -len("/raw")], self._int_param(query, "rev"))
+            artifact_id = _safe_artifact_id(rest[: -len("/raw")])
+            result = raw_bytes(artifact_id, self._int_param(query, "rev")) if artifact_id else None
             if result is None:
                 self._respond(404, b"not found\n", "text/plain; charset=utf-8")
                 return
@@ -213,14 +233,19 @@ class BrowserHandler(BaseHTTPRequestHandler):
                 {"Content-Disposition": f'attachment; filename="{filename}"'},
             )
         elif rest.endswith("/diff"):
+            artifact_id = _safe_artifact_id(rest[: -len("/diff")])
+            if artifact_id is None:
+                self._json(404, {"error": "no such artifact"})
+                return
             rev_a, rev_b = self._int_param(query, "a"), self._int_param(query, "b")
             if rev_a is None or rev_b is None:
                 self._json(400, {"error": "diff needs integer rev params a and b"})
                 return
-            payload = diff_payload(rest[: -len("/diff")], rev_a, rev_b)
+            payload = diff_payload(artifact_id, rev_a, rev_b)
             self._json(200 if payload is not None else 404, payload or {"error": "no such artifact"})
         else:
-            payload = detail_payload(rest)
+            artifact_id = _safe_artifact_id(rest)
+            payload = detail_payload(artifact_id) if artifact_id is not None else None
             self._json(200 if payload is not None else 404, payload or {"error": "no such artifact"})
 
     def _int_param(self, query: dict, name: str) -> int | None:
