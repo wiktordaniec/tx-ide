@@ -86,6 +86,9 @@
      same green time — matching values connect the pair. */
   .fresh { color: var(--green); }
   .own { color: var(--dim); }
+  /* A hot session (interaction < 1h) nested in a tree: green name — both when promoted under a
+     collapsed ancestor and at its true position once the tree is expanded. */
+  .grid b.hot { color: var(--green); }
   .empty { color: var(--muted); text-align: center; padding: 70px 0; }
   .err { color: var(--red); font-family: var(--mono); font-size: 13px; }
 
@@ -302,9 +305,17 @@ try { expanded = new Set(JSON.parse(localStorage.getItem(EXPAND_KEY) || "[]")); 
 function applyFilter() {
   const needle = searchBox.value.trim().toLowerCase();
   for (const item of filterables) {
-    let show = needle === "" || item.text.includes(needle);
-    if (show && needle === "" && item.row.dataset.anc) {
-      show = item.row.dataset.anc.split(" ").every(id => expanded.has(id));
+    const anchor = item.row.dataset.promo;   // set on a promoted (hot, out-of-place) row
+    const ancestors = item.row.dataset.anc ? item.row.dataset.anc.split(" ") : [];
+    let show;
+    if (needle !== "") {
+      // Search shows real positions only — a promoted duplicate would double every match.
+      show = !anchor && item.text.includes(needle);
+    } else if (anchor) {
+      // A promoted row shows exactly while its anchor is the visible collapsed ancestor.
+      show = !expanded.has(anchor) && ancestors.every(id => expanded.has(id));
+    } else {
+      show = ancestors.every(id => expanded.has(id));
     }
     item.row.hidden = !show;
   }
@@ -377,10 +388,33 @@ async function renderChats() {
   try { data = await getJSON("/api/chats"); }
   catch (e) { app.innerHTML = '<div class="err">' + esc(e.message) + "</div>"; return; }
   if (!data.sessions.length) { app.innerHTML = '<div class="empty">No chat sessions recorded yet.</div>'; return; }
-  const rows = sessionForest(data.sessions).map(({ s, depth, ancestors, driver, familyDriver, hasChildren }) => {
-    const art = s.artifacts
+  const HOT_SECONDS = 3600;
+  const now = Date.now() / 1000;
+  const isHot = s => now - s.last_epoch < HOT_SECONDS;
+  const entries = sessionForest(data.sessions);
+  // Hot descendants per ancestor: a nested session with interaction < 1h gets one PROMOTED row
+  // under every ancestor; visibility rules make exactly the one under the visible collapsed
+  // ancestor show, so a folded tree surfaces the session responsible for its freshness.
+  const promotedByAnchor = new Map();
+  for (const entry of entries) {
+    if (!entry.ancestors.length || !isHot(entry.s)) continue;
+    for (const ancestorId of entry.ancestors) {
+      if (!promotedByAnchor.has(ancestorId)) promotedByAnchor.set(ancestorId, []);
+      promotedByAnchor.get(ancestorId).push(entry);
+    }
+  }
+
+  const cells = (s, last) =>
+    '<td>' + chips(s.tags) + '</td>' +
+    '<td>' + stateHtml(s.state) + '</td>' +
+    '<td class="muted mono" style="font-size:12px">' + esc(s.engine) + '</td>' +
+    '<td class="right num">' + s.chats + '</td>' +
+    '<td class="right">' + (s.artifacts
       ? '<span class="num">' + s.artifacts + "</span>"
-      : '<span class="num zero">—</span>';
+      : '<span class="num zero">—</span>') + '</td>' +
+    '<td class="right muted mono" style="font-size:12px">' + last + '</td>';
+
+  const rows = entries.map(({ s, depth, ancestors, driver, familyDriver, hasChildren }) => {
     const caret = hasChildren
       ? '<span class="tgl" data-id="' + esc(s.id) + '">' + (expanded.has(s.id) ? "▾" : "▸") + "</span>"
       : '<span class="tgl-spacer"></span>';
@@ -391,16 +425,25 @@ async function renderChats() {
     } else if (driver) {
       last = '<span class="fresh" title="newest in this tree — keeps it at this position">' + last + "</span>";
     }
-    return '<tr class="rowlink" data-href="#/chats/' + esc(s.id) + '"' +
+    const hot = ancestors.length && isHot(s);
+    let html = '<tr class="rowlink" data-href="#/chats/' + esc(s.id) + '"' +
       (ancestors.length ? ' data-anc="' + ancestors.map(esc).join(" ") + '"' : "") + '>' +
       '<td><span style="display:inline-block;width:' + depth * 22 + 'px"></span>' + caret +
-      '<b>' + esc(s.name) + '</b></td>' +
-      '<td>' + chips(s.tags) + '</td>' +
-      '<td>' + stateHtml(s.state) + '</td>' +
-      '<td class="muted mono" style="font-size:12px">' + esc(s.engine) + '</td>' +
-      '<td class="right num">' + s.chats + '</td>' +
-      '<td class="right">' + art + '</td>' +
-      '<td class="right muted mono" style="font-size:12px">' + last + '</td></tr>';
+      '<b' + (hot ? ' class="hot"' : "") + '>' + esc(s.name) + '</b></td>' + cells(s, last) + "</tr>";
+    // Promoted duplicates of this node's hot descendants, right below it — shown only while this
+    // node is the visible collapsed ancestor (applyFilter), so they never coexist with the real rows.
+    for (const hotEntry of (promotedByAnchor.get(s.id) || []).slice().sort((a, b) => b.s.last_epoch - a.s.last_epoch)) {
+      const anchorAncestors = hotEntry.ancestors.slice(0, hotEntry.ancestors.indexOf(s.id));
+      html += '<tr class="rowlink" data-href="#/chats/' + esc(hotEntry.s.id) + '"' +
+        ' data-promo="' + esc(s.id) + '"' +
+        (anchorAncestors.length ? ' data-anc="' + anchorAncestors.map(esc).join(" ") + '"' : "") + '>' +
+        '<td><span style="display:inline-block;width:' + (depth + 1) * 22 + 'px"></span>' +
+        '<span class="tgl-spacer"></span>' +
+        '<b class="hot" title="active ' + esc(hotEntry.s.last_ago) + ' ago inside this tree — expand ▸ to see its place">' +
+        esc(hotEntry.s.name) + "</b></td>" +
+        cells(hotEntry.s, '<span class="fresh">' + esc(hotEntry.s.last_ago) + "</span>") + "</tr>";
+    }
+    return html;
   }).join("");
   app.innerHTML =
     '<table class="grid"><thead><tr>' +
