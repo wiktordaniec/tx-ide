@@ -3,132 +3,249 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>tx-ide artifacts</title>
+<title>tx-ide · chats & artifacts</title>
 <style>
+  /* Palette mirrors the analytics house style (polymarket dashboard). Deliberately plain: flat
+     colors only — no gradients, no alpha, no blur, no rounding, no shadows. */
   :root {
-    --bg: #12141a; --panel: #1a1d26; --panel2: #21252f; --border: #2c313d;
-    --fg: #d7dce5; --dim: #8a92a3; --accent: #7aa2f7; --accent2: #9ece6a;
-    --add: #9ece6a; --del: #f7768e; --warn: #e0af68;
+    color-scheme: dark;
+    --bg: #080b10; --panel: #0e131b; --panel-2: #121923; --line: #253044; --line-soft: #18202e;
+    --text: #edf3fb; --muted: #8290a5; --dim: #3d5273;
+    --blue: #5ca8ff; --green: #48d597; --red: #ff7085; --amber: #ffcb6b;
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
-    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, sans-serif;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans);
-         font-size: 15px; line-height: 1.5; }
-  a { color: var(--accent); text-decoration: none; cursor: pointer; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text); font: 14px/1.55 var(--sans); min-height: 100vh;
+  }
+  a { color: var(--blue); text-decoration: none; cursor: pointer; }
   a:hover { text-decoration: underline; }
-  header { position: sticky; top: 0; z-index: 5; display: flex; align-items: baseline; gap: 16px;
-           padding: 14px 24px; background: var(--panel); border-bottom: 1px solid var(--border); }
-  header .brand { font-weight: 700; letter-spacing: .3px; }
-  header .brand .glyph { color: var(--accent); }
-  header .spacer { flex: 1; }
-  header a.nav { color: var(--dim); font-size: 13px; }
-  header a.nav:hover { color: var(--fg); }
-  main { max-width: 920px; margin: 0 auto; padding: 24px; }
-  .muted { color: var(--dim); }
+  .muted { color: var(--muted); }
   .mono { font-family: var(--mono); }
-  .chip { display: inline-block; padding: 1px 7px; margin-right: 5px; border-radius: 10px;
-          background: var(--panel2); border: 1px solid var(--border); color: var(--dim);
-          font-family: var(--mono); font-size: 12px; }
-  .badge { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 12px;
-           background: rgba(224,175,104,.16); color: var(--warn); border: 1px solid rgba(224,175,104,.35); }
 
-  /* list */
-  .row { display: block; padding: 14px 16px; margin-bottom: 10px; background: var(--panel);
-         border: 1px solid var(--border); border-radius: 8px; }
-  .row:hover { border-color: var(--accent); background: var(--panel2); }
-  .row .title { font-weight: 600; font-size: 16px; }
-  .row .id { font-family: var(--mono); font-size: 12px; color: var(--dim); margin-left: 8px; }
-  .row .meta { margin-top: 6px; font-size: 13px; color: var(--dim); }
-  .row .meta b { color: var(--fg); font-weight: 600; }
-  .empty { color: var(--dim); text-align: center; padding: 60px 0; }
+  /* ---- header ---- */
+  header {
+    position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 18px;
+    padding: 12px 28px; background: var(--bg); border-bottom: 1px solid var(--line);
+  }
+  .brand { font-weight: 700; letter-spacing: .2px; color: var(--text); }
+  .brand .glyph { color: var(--blue); }
+  nav.tabs { display: inline-flex; gap: 16px; }
+  nav.tabs a { color: var(--muted); font-size: 13px; }
+  nav.tabs a:hover { color: var(--text); text-decoration: none; }
+  nav.tabs a.active { color: var(--text); }
+  header .spacer { flex: 1; }
+  #search {
+    background: var(--bg); border: 1px solid var(--line); color: var(--text);
+    padding: 5px 10px; width: 220px; font: 13px var(--sans);
+  }
+  #search:focus { outline: none; border-color: var(--blue); }
+  #search.hidden { display: none; }
 
-  /* detail */
-  .crumbs { font-size: 13px; margin-bottom: 14px; }
-  h1.doc { font-size: 22px; margin: 0 0 4px; }
-  .subhead { color: var(--dim); font-size: 13px; margin-bottom: 18px; }
-  .subhead .k { color: var(--fg); }
-  section.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-                 margin-bottom: 18px; overflow: hidden; }
-  section.card > h2 { margin: 0; padding: 10px 16px; font-size: 13px; text-transform: uppercase;
-                      letter-spacing: .6px; color: var(--dim); background: var(--panel2);
-                      border-bottom: 1px solid var(--border); }
-  section.card > .body { padding: 16px; }
+  main { width: 100%; padding: 22px 28px 80px; }
 
-  /* history log */
-  table.hist { width: 100%; border-collapse: collapse; font-size: 14px; }
-  table.hist td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
-  table.hist tr:last-child td { border-bottom: none; }
-  table.hist .rev { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
-  table.hist .who { font-family: var(--mono); font-size: 12px; }
-  table.hist .who.user { color: var(--accent2); }
-  table.hist .ago { color: var(--dim); white-space: nowrap; }
-  table.hist .changes { color: var(--fg); }
-  table.hist .changes.none { color: var(--dim); font-style: italic; }
+  /* ---- chips / badges / state dots ---- */
+  /* Tag chips exactly as the sessions-graph dashboard draws them: per-tag color (the terminal
+     picker's tag_cube palette, served as --chip), pill outline, 16% tinted fill. */
+  .chip {
+    display: inline-block; margin-right: 6px; font-size: 10.5px; padding: 1px 6px;
+    border-radius: 999px; color: var(--chip, var(--dim)); border: 1px solid var(--chip, var(--dim));
+    background: color-mix(in srgb, var(--chip, var(--dim)) 16%, transparent);
+    white-space: nowrap;
+  }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px;
+         background: var(--dim); vertical-align: 1px; }
+  .st-working  .dot { background: var(--green); }
+  .st-waiting  .dot { background: var(--blue); }
+  .st-idle     .dot { background: var(--muted); }
+  .st-alive    .dot { background: var(--green); }
+  .st-exited   .dot { background: var(--dim); }
+  .st-archived .dot { background: var(--amber); }
+  .state { white-space: nowrap; color: var(--muted); font-size: 12.5px; }
+  .badge { color: var(--amber); font-size: 12px; }
+  .num { font-family: var(--mono); font-size: 12.5px; }
+  .num.zero { color: var(--dim); }
 
-  /* rendered markdown */
+  /* ---- grid tables (Notion-style rows) ---- */
+  table.grid { width: 100%; border-collapse: collapse; }
+  .grid th {
+    text-align: left; font: 600 10.5px var(--mono); text-transform: uppercase;
+    letter-spacing: .8px; color: var(--muted); padding: 8px 10px;
+    border-bottom: 1px solid var(--line); white-space: nowrap;
+  }
+  .grid td { padding: 9px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: baseline; }
+  .grid tbody tr.rowlink { cursor: pointer; }
+  .grid tbody tr.rowlink:hover { background: var(--panel); }
+  .grid .right { text-align: right; }
+  /* Notion-style sub-item toggle: parents get a chevron that folds their subtree; leaves get an
+     equal-width spacer so names align. The whole gutter (indent + chevron) is the hit target,
+     fattened to the full row height and pulled flush to the row's left edge (the negative margins
+     swallow the cell padding), so folding never mis-clicks into the session detail. */
+  .tgl, .tgl-spacer { display: inline-block; width: 24px; text-align: center; font-family: var(--mono); }
+  .gut {
+    display: inline-block; cursor: pointer;
+    padding: 12px 2px 12px 10px; margin: -12px -2px -12px -10px;
+  }
+  /* The glyph box spans [10,34] inside a visible block running 0→34 (row edge to name); shifting
+     it 5px left puts the triangle on the block's optical center. */
+  .gut .tgl { color: var(--muted); position: relative; left: -5px; }
+  .gut:hover { background: var(--panel-2); }
+  .gut:hover .tgl { color: var(--text); }
+  /* The visible sort key: a family orders by its subtree's newest interaction, so the root shows
+     that time in green beside its own dim age, and the descendant that produced it carries the
+     same green time — matching values connect the pair. */
+  .fresh { color: var(--green); }
+  .own { color: var(--dim); }
+  /* A hot session (interaction < 1h) nested in a tree: green name — both when promoted under a
+     collapsed ancestor and at its true position once the tree is expanded. */
+  .grid b.hot { color: var(--green); }
+  .empty { color: var(--muted); text-align: center; padding: 70px 0; }
+  .err { color: var(--red); font-family: var(--mono); font-size: 13px; }
+
+  /* ---- detail layout ---- */
+  .crumbs { font-size: 13px; margin-bottom: 14px; color: var(--muted); }
+  h1.doc { font-size: 21px; margin: 0 0 2px; font-weight: 650; }
+  .subhead { color: var(--muted); font-size: 13.5px; margin: 0 0 22px; max-width: 84ch; }
+  section { margin: 30px 0; }
+  section > h2 {
+    font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: .9px;
+    color: var(--muted); margin: 0 0 4px; padding-bottom: 7px; border-bottom: 1px solid var(--line);
+  }
+  .props { display: grid; grid-template-columns: 175px 1fr; font-size: 13.5px; }
+  .props > div { padding: 6px 0; border-bottom: 1px solid var(--line-soft); overflow-wrap: anywhere; }
+  .props .k { color: var(--muted); }
+  details.fold summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 6px 0; }
+  details.fold summary:hover { color: var(--text); }
+  pre.cmd {
+    font: 12px/1.5 var(--mono); background: var(--panel);
+    padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0;
+  }
+
+  /* ---- conversation ---- */
+  .chat-sep {
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    margin: 26px 0 4px; padding-top: 8px; border-top: 1px solid var(--line);
+    font: 12px var(--mono); color: var(--muted);
+  }
+  .chat-sep b { color: var(--text); font-weight: 600; }
+  .turn { padding: 10px 0 2px; }
+  .turn .who { font: 600 10px var(--mono); text-transform: uppercase; letter-spacing: .9px; }
+  .turn.you .who { color: var(--blue); }
+  .turn.agent .who { color: var(--green); }
+  .turn .ts { color: var(--dim); font: 10.5px var(--mono); margin-left: 8px; }
+  .turn .body { max-width: 110ch; }   /* full-width page; prose keeps a readable measure */
+  .turn.you .body {
+    white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0 0;
+    border-left: 2px solid var(--line); padding-left: 12px;
+  }
+  .turn.agent .body { margin: 4px 0 0; }
+  .turn.tools { color: var(--dim); font: 11px var(--mono); padding: 6px 0; }
+  #convLoad { color: var(--muted); font: 12px var(--mono); padding: 14px 0; }
+
+  /* ---- rendered markdown ---- */
   .md { overflow-wrap: anywhere; }
-  .md h1,.md h2,.md h3,.md h4 { line-height: 1.25; margin: 1.2em 0 .5em; }
-  .md h1 { font-size: 1.5em; border-bottom: 1px solid var(--border); padding-bottom: .2em; }
-  .md h2 { font-size: 1.28em; border-bottom: 1px solid var(--border); padding-bottom: .2em; }
-  .md h3 { font-size: 1.12em; } .md h4 { font-size: 1em; }
-  .md p { margin: .6em 0; } .md ul,.md ol { margin: .5em 0; padding-left: 1.5em; }
-  .md li { margin: .2em 0; }
-  .md code { font-family: var(--mono); font-size: .88em; background: var(--panel2);
-             padding: .1em .35em; border-radius: 4px; }
-  .md pre { background: #0e1016; border: 1px solid var(--border); border-radius: 6px;
-            padding: 12px; overflow-x: auto; }
+  .md h1,.md h2,.md h3,.md h4 { line-height: 1.3; margin: 1.1em 0 .45em; font-weight: 650; }
+  .md h1 { font-size: 1.3em; } .md h2 { font-size: 1.18em; } .md h3 { font-size: 1.06em; }
+  .md h4 { font-size: 1em; }
+  .md p { margin: .55em 0; } .md ul,.md ol { margin: .45em 0; padding-left: 1.5em; }
+  .md li { margin: .18em 0; }
+  .md code { font-family: var(--mono); font-size: .87em; background: var(--panel-2);
+             padding: .1em .35em; }
+  .md pre { background: var(--panel); padding: 12px; overflow-x: auto; }
   .md pre code { background: none; padding: 0; }
-  .md blockquote { margin: .6em 0; padding: .1em 1em; border-left: 3px solid var(--border);
-                   color: var(--dim); }
-  .md hr { border: none; border-top: 1px solid var(--border); margin: 1.2em 0; }
-  .md a { color: var(--accent); }
-  .md table { border-collapse: collapse; margin: .8em 0; display: block; overflow-x: auto; }
-  .md table th, .md table td { border: 1px solid var(--border); padding: 5px 10px; }
-  .md table th { background: var(--panel2); }
+  .md blockquote { margin: .55em 0; padding: .1em 1em; border-left: 3px solid var(--line);
+                   color: var(--muted); }
+  .md hr { border: none; border-top: 1px solid var(--line); margin: 1.1em 0; }
+  .md table { border-collapse: collapse; margin: .7em 0; display: block; overflow-x: auto; }
+  .md table th, .md table td { border: 1px solid var(--line); padding: 5px 10px; }
+  .md table th { background: var(--panel-2); }
 
-  pre.raw { font-family: var(--mono); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere;
-            margin: 0; }
+  pre.raw { font: 13px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
 
-  /* diff */
-  .diffbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
-  select, button { font-family: var(--mono); font-size: 13px; background: var(--panel2);
-                   color: var(--fg); border: 1px solid var(--border); border-radius: 5px; padding: 5px 8px; }
-  button { cursor: pointer; } button:hover { border-color: var(--accent); }
-  pre.diff { font-family: var(--mono); font-size: 12.5px; line-height: 1.45; margin: 0;
-             overflow-x: auto; white-space: pre; }
-  pre.diff .a { color: var(--add); } pre.diff .d { color: var(--del); }
-  pre.diff .h { color: var(--accent); } pre.diff .c { color: var(--dim); }
-  .err { color: var(--del); font-family: var(--mono); font-size: 13px; }
+  /* ---- diff ---- */
+  .diffbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 12px; }
+  select, button {
+    font: 12.5px var(--mono); background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); padding: 5px 9px;
+  }
+  button { cursor: pointer; } button:hover { border-color: var(--blue); }
+  pre.diff { font: 12.5px/1.5 var(--mono); margin: 0; overflow-x: auto; white-space: pre; }
+  pre.diff .a { color: var(--green); } pre.diff .d { color: var(--red); }
+  pre.diff .h { color: var(--blue); } pre.diff .c { color: var(--muted); }
   .dl { display: inline-block; margin-top: 6px; }
 </style>
 </head>
 <body>
 <header>
-  <span class="brand"><span class="glyph">◈</span> tx-ide artifacts</span>
+  <span class="brand"><span class="glyph">◈</span> tx-ide</span>
+  <nav class="tabs">
+    <a id="tab-chats" href="#/">chats</a>
+    <a id="tab-artifacts" href="#/artifacts">artifacts</a>
+  </nav>
   <span class="spacer"></span>
-  <a class="nav" id="nav-back" style="display:none">← all artifacts</a>
-  <a class="nav" id="nav-refresh">↻ refresh</a>
+  <input id="search" type="search" placeholder="filter…" autocomplete="off">
+  <a class="muted" id="nav-refresh" style="font-size:13px">↻</a>
 </header>
 <main id="app"><div class="empty">loading…</div></main>
 
 <script>
 "use strict";
 const app = document.getElementById("app");
-const navBack = document.getElementById("nav-back");
-const navRefresh = document.getElementById("nav-refresh");
+const searchBox = document.getElementById("search");
+const tabChats = document.getElementById("tab-chats");
+const tabArtifacts = document.getElementById("tab-artifacts");
 
 // ---- helpers ----
 function esc(s) {
   return String(s).replace(/[&<>"']/g, c => (
     {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
-async function getJSON(url) {
-  const r = await fetch(url);
-  if (!r.ok) { let j = {}; try { j = await r.json(); } catch (e) {} throw new Error(j.error || ("HTTP " + r.status)); }
-  return r.json();
+// Short-lived request memo: the auto-refresh tick fetches a view's payloads to fingerprint them,
+// then re-renders through route() — the memo makes that second read free instead of a double fetch.
+const _fetchCache = new Map();  // url -> {at, promise}
+const FETCH_REUSE_MS = 2000;
+async function getJSON(url, fresh) {
+  const hit = _fetchCache.get(url);
+  if (!fresh && hit && Date.now() - hit.at < FETCH_REUSE_MS) return hit.promise;
+  const promise = (async () => {
+    const r = await fetch(url);
+    if (!r.ok) { let j = {}; try { j = await r.json(); } catch (e) {} throw new Error(j.error || ("HTTP " + r.status)); }
+    return r.json();
+  })();
+  _fetchCache.set(url, { at: Date.now(), promise });
+  try { return await promise; }
+  catch (e) { _fetchCache.delete(url); throw e; }
 }
-function shortId(id) { return id.length > 12 ? id.slice(0, 8) : id; }
+function shortId(id) { return id && id.length > 12 ? id.slice(0, 8) : (id || ""); }
+function fmtBytes(n) {
+  if (n == null) return "";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / (1024 * 1024)).toFixed(1) + " MB";
+}
+function fmtTs(epoch) {
+  if (!epoch) return "";
+  const d = new Date(epoch * 1000), now = new Date();
+  const hm = d.toTimeString().slice(0, 5);
+  if (d.toDateString() === now.toDateString()) return hm;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + hm;
+}
+function chips(tags, colors) {
+  return (tags || []).map(t => {
+    const color = (colors && colors[t]) || "var(--dim)";
+    return '<span class="chip" style="--chip:' + esc(color) + '">' + esc(t) + "</span>";
+  }).join("");
+}
+function stateHtml(state) {
+  return '<span class="state st-' + esc(state) + '"><span class="dot"></span>' + esc(state) + "</span>";
+}
+function sessionLink(id, name, exists) {
+  if (!exists) return '<span class="mono" title="' + esc(id) + '">' + esc(name) + "</span>";
+  return '<a class="mono" href="#/chats/' + esc(id) + '" title="' + esc(id) + '">' + esc(name) + "</a>";
+}
 
 // ---- a compact, self-contained markdown renderer (no external libs) ----
 function inline(s) {
@@ -206,28 +323,337 @@ function renderMarkdown(text) {
   return out.join("\n");
 }
 
-// ---- list view ----
-async function renderList() {
-  navBack.style.display = "none";
+// ---- search (client-side filter over the current list) + subtree collapse ----
+// Collapse works like Notion sub-items: a parent row's chevron folds its whole subtree; everything
+// starts collapsed; the expanded set persists. A non-empty search overrides collapse — matches
+// surface wherever they nest — and clearing it restores the folded view.
+let filterables = [];   // [{row: <tr>, text: lowercased haystack}]
+const EXPAND_KEY = "txide-chats-expanded";
+let expanded = new Set();
+try { expanded = new Set(JSON.parse(localStorage.getItem(EXPAND_KEY) || "[]")); } catch (e) {}
+function applyFilter() {
+  const needle = searchBox.value.trim().toLowerCase();
+  for (const item of filterables) {
+    const anchor = item.row.dataset.promo;   // set on a promoted (hot, out-of-place) row
+    const ancestors = item.row.dataset.anc ? item.row.dataset.anc.split(" ") : [];
+    let show;
+    if (needle !== "") {
+      // Search shows real positions only — a promoted duplicate would double every match.
+      show = !anchor && item.text.includes(needle);
+    } else if (anchor) {
+      // A promoted row shows exactly while its anchor is the visible collapsed ancestor.
+      show = !expanded.has(anchor) && ancestors.every(id => expanded.has(id));
+    } else {
+      show = ancestors.every(id => expanded.has(id));
+    }
+    item.row.hidden = !show;
+  }
+}
+searchBox.addEventListener("input", applyFilter);
+function bindFilter(tbody) {
+  filterables = Array.from(tbody.rows).map(row => ({ row, text: row.textContent.toLowerCase() }));
+  applyFilter();
+}
+function toggleSubtree(id, tbody) {
+  if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+  localStorage.setItem(EXPAND_KEY, JSON.stringify([...expanded]));
+  tbody.querySelectorAll('.gut[data-id="' + id + '"] .tgl').forEach(t => {
+    t.textContent = expanded.has(id) ? "▾" : "▸";
+  });
+  applyFilter();
+}
+
+// ---- chats list ----
+// The list is a forest: a session spawned from another session (record `parent`) indents under it.
+// Ordering standard: a family sorts by its subtree's NEWEST interaction (a subsession update
+// bubbles its ancestors up, like a mail thread sorting by newest message); siblings sort by their
+// own subtree recency.
+function sessionForest(sessions) {
+  const byId = new Map(sessions.map(s => [s.id, s]));
+  const children = new Map();
+  const roots = [];
+  for (const s of sessions) {
+    if (s.parent && byId.has(s.parent) && s.parent !== s.id) {
+      if (!children.has(s.parent)) children.set(s.parent, []);
+      children.get(s.parent).push(s);
+    } else roots.push(s);
+  }
+  const subtreeLast = s => {
+    const kids = children.get(s.id) || [];
+    return Math.max(s.last_epoch, ...kids.map(subtreeLast));
+  };
+  const flat = [];
+  const walk = (list, depth, root, ancestors) => {
+    list.sort((a, b) => subtreeLast(b) - subtreeLast(a));
+    for (const s of list) {
+      flat.push({
+        s, depth, root: root || s, ancestors, driver: false, familyDriver: null,
+        hasChildren: children.has(s.id),
+      });
+      walk(children.get(s.id) || [], depth + 1, root || s, [...ancestors, s.id]);
+    }
+  };
+  walk(roots, 0, null, []);
+  // Per family: the row whose own time IS the subtree's newest — the one that lifted the tree to
+  // its list position. Mark it, and hand the root its time so the sort key is visible up top.
+  const byRoot = new Map();
+  for (const entry of flat) {
+    if (!byRoot.has(entry.root.id)) byRoot.set(entry.root.id, []);
+    byRoot.get(entry.root.id).push(entry);
+  }
+  for (const family of byRoot.values()) {
+    const driver = family.reduce((a, b) => (b.s.last_epoch > a.s.last_epoch ? b : a));
+    if (driver.s.id === family[0].s.id) continue;   // the root itself is the newest — nothing to explain
+    driver.driver = true;
+    family[0].familyDriver = driver.s;
+  }
+  return flat;
+}
+
+async function renderChats() {
+  setNav("chats", true);
+  app.innerHTML = '<div class="empty">loading…</div>';
+  let data;
+  try { data = await getJSON("/api/chats"); }
+  catch (e) { app.innerHTML = '<div class="err">' + esc(e.message) + "</div>"; return; }
+  if (!data.sessions.length) { app.innerHTML = '<div class="empty">No chat sessions recorded yet.</div>'; return; }
+  const HOT_SECONDS = 3600;
+  const now = Date.now() / 1000;
+  const isHot = s => now - s.last_epoch < HOT_SECONDS;
+  const entries = sessionForest(data.sessions);
+  // Hot descendants per ancestor: a nested session with interaction < 1h gets one PROMOTED row
+  // under every ancestor; visibility rules make exactly the one under the visible collapsed
+  // ancestor show, so a folded tree surfaces the session responsible for its freshness.
+  const promotedByAnchor = new Map();
+  for (const entry of entries) {
+    if (!entry.ancestors.length || !isHot(entry.s)) continue;
+    for (const ancestorId of entry.ancestors) {
+      if (!promotedByAnchor.has(ancestorId)) promotedByAnchor.set(ancestorId, []);
+      promotedByAnchor.get(ancestorId).push(entry);
+    }
+  }
+
+  const cells = (s, last) =>
+    '<td>' + chips(s.tags, s.tag_colors) + '</td>' +
+    '<td>' + stateHtml(s.state) + '</td>' +
+    '<td class="muted mono" style="font-size:12px">' + esc(s.engine) + '</td>' +
+    '<td class="right num">' + s.chats + '</td>' +
+    '<td class="right">' + (s.artifacts
+      ? '<span class="num">' + s.artifacts + "</span>"
+      : '<span class="num zero">—</span>') + '</td>' +
+    '<td class="right muted mono" style="font-size:12px">' + last + '</td>';
+
+  const rows = entries.map(({ s, depth, ancestors, driver, familyDriver, hasChildren }) => {
+    const indent = '<span style="display:inline-block;width:' + depth * 22 + 'px"></span>';
+    // Parents: indent + chevron wrapped in one fat clickable gutter. Leaves: plain spacers.
+    const gutter = hasChildren
+      ? '<span class="gut" data-id="' + esc(s.id) + '" title="fold/unfold">' + indent +
+        '<span class="tgl">' + (expanded.has(s.id) ? "▾" : "▸") + "</span></span>"
+      : indent + '<span class="tgl-spacer"></span>';
+    let last = esc(s.last_ago);
+    if (familyDriver) {
+      last = '<span class="fresh" title="newest in this tree: ' + esc(familyDriver.name) + '">' +
+        esc(familyDriver.last_ago) + '</span> <span class="own">· ' + esc(s.last_ago) + "</span>";
+    } else if (driver) {
+      last = '<span class="fresh" title="newest in this tree — keeps it at this position">' + last + "</span>";
+    }
+    const hot = ancestors.length && isHot(s);
+    let html = '<tr class="rowlink" data-href="#/chats/' + esc(s.id) + '"' +
+      (ancestors.length ? ' data-anc="' + ancestors.map(esc).join(" ") + '"' : "") + '>' +
+      '<td>' + gutter +
+      '<b' + (hot ? ' class="hot"' : "") + '>' + esc(s.name) + '</b></td>' + cells(s, last) + "</tr>";
+    // Promoted duplicates of this node's hot descendants, right below it — shown only while this
+    // node is the visible collapsed ancestor (applyFilter), so they never coexist with the real rows.
+    for (const hotEntry of (promotedByAnchor.get(s.id) || []).slice().sort((a, b) => b.s.last_epoch - a.s.last_epoch)) {
+      const anchorAncestors = hotEntry.ancestors.slice(0, hotEntry.ancestors.indexOf(s.id));
+      html += '<tr class="rowlink" data-href="#/chats/' + esc(hotEntry.s.id) + '"' +
+        ' data-promo="' + esc(s.id) + '"' +
+        (anchorAncestors.length ? ' data-anc="' + anchorAncestors.map(esc).join(" ") + '"' : "") + '>' +
+        '<td><span style="display:inline-block;width:' + (depth + 1) * 22 + 'px"></span>' +
+        '<span class="tgl-spacer"></span>' +
+        '<b class="hot" title="active ' + esc(hotEntry.s.last_ago) + ' ago inside this tree — expand ▸ to see its place">' +
+        esc(hotEntry.s.name) + "</b></td>" +
+        cells(hotEntry.s, '<span class="fresh">' + esc(hotEntry.s.last_ago) + "</span>") + "</tr>";
+    }
+    return html;
+  }).join("");
+  app.innerHTML =
+    '<table class="grid"><thead><tr>' +
+    '<th>session</th><th>tags</th><th>state</th><th>engine</th>' +
+    '<th class="right">chats</th><th class="right">artifacts</th><th class="right">last</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table>';
+  const tbody = app.querySelector("tbody");
+  tbody.addEventListener("click", e => {
+    const gutter = e.target.closest(".gut");
+    if (gutter) { toggleSubtree(gutter.dataset.id, tbody); return; }
+    const row = e.target.closest("tr[data-href]");
+    if (row && !e.target.closest("a")) location.hash = row.dataset.href.slice(1);
+  });
+  bindFilter(tbody);
+}
+
+// ---- chat (session) detail ----
+async function renderChatDetail(id) {
+  setNav("chats", false);
+  app.innerHTML = '<div class="empty">loading…</div>';
+  let d;
+  try { d = await getJSON("/api/chats/" + encodeURIComponent(id)); }
+  catch (e) { app.innerHTML = '<div class="err">' + esc(e.message) + "</div>"; return; }
+
+  const props = [];
+  props.push(["state", stateHtml(d.state) + (d.read_only ? ' <span class="chip">read-only</span>' : "")]);
+  props.push(["tags", chips(d.tags, d.tag_colors) || '<span class="muted">—</span>']);
+  props.push(["engine", '<span class="mono" style="font-size:12.5px">' + esc(d.engine) + "</span>"]);
+  props.push(["cwd", '<span class="mono" style="font-size:12.5px">' + esc(d.cwd) + "</span>"]);
+  if (d.parent) props.push(["parent", d.parent_is_session
+    ? sessionLink(d.parent, d.parent_name, true)
+    : '<span class="mono" style="font-size:12.5px" title="not a session record">' + esc(d.parent) + "</span>"]);
+  props.push(["created", '<span class="muted">' + esc(d.created_ago) + " ago</span>"]);
+  if (d.ended_ago) props.push(["ended", '<span class="muted">' + esc(d.ended_ago) + " ago</span>"]);
+  props.push(["last interaction", '<span class="muted">' + esc(d.last_ago) + " ago</span>"]);
+  props.push(["session id", '<span class="mono" style="font-size:12px">' + esc(d.id) + "</span>"]);
+
+  const chatRows = d.chats.map((c, i) => {
+    const origin = c.origin.chat_id
+      ? esc(c.origin.how) + " ← " + sessionLink(c.origin.session_id, c.origin.session_name, c.origin.session_exists)
+      : esc(c.origin.how);
+    const status = c.id === null
+      ? '<span class="muted">pending</span>'
+      : (c.open && d.alive ? '<span class="state st-working"><span class="dot"></span>open</span>'
+                           : '<span class="muted">closed</span>');
+    const src = [];
+    if (c.transcript_size != null) src.push("live " + fmtBytes(c.transcript_size));
+    if (c.bundle_size != null) src.push("bundle " + fmtBytes(c.bundle_size));
+    return '<tr><td class="mono muted" style="font-size:12px">' + (i + 1) + '</td>' +
+      '<td><span class="chip">' + esc(c.role) + '</span></td>' +
+      '<td class="mono muted" style="font-size:12px" title="' + esc(c.id || "") + '">' + esc(shortId(c.id) || "—") + '</td>' +
+      '<td style="font-size:13px">' + origin + '</td>' +
+      '<td class="muted mono" style="font-size:12px">' + esc(c.started_ago) + ' ago</td>' +
+      '<td>' + status + '</td>' +
+      '<td class="muted mono" style="font-size:11.5px">' + esc(src.join(" · ") || "no source on disk") + '</td></tr>';
+  }).join("");
+
+  const artRows = d.artifacts.map(a =>
+    '<tr class="rowlink" data-href="#/artifacts/' + esc(a.id) + '">' +
+    '<td><a href="#/artifacts/' + esc(a.id) + '">' + esc(a.title || a.filename) + '</a></td>' +
+    '<td class="mono muted" style="font-size:12px">' + esc(a.filename) + '</td>' +
+    '<td class="right num">' + a.own_revs.map(r => "r" + r).join(", ") + '</td>' +
+    '<td class="right num">' + a.revs + '</td>' +
+    '<td class="right muted mono" style="font-size:12px">' + esc(a.last_touch_ago) + ' ago</td></tr>'
+  ).join("");
+
+  const derivedRows = d.derived.map(x =>
+    '<tr><td>' + sessionLink(x.id, x.name, true) + '</td>' +
+    '<td><span class="chip">' + esc(x.how) + '</span></td>' +
+    '<td>' + stateHtml(x.state) + '</td>' +
+    '<td class="right muted mono" style="font-size:12px">' + esc(x.started_ago) + ' ago</td></tr>'
+  ).join("");
+
+  const notes = d.notes.map(n =>
+    '<details class="fold"><summary><span class="mono">' + esc(n.name) + '</span> · ' + esc(n.ago) + ' ago</summary>' +
+    '<div class="md" style="padding:6px 0 10px">' + renderMarkdown(n.text) + "</div></details>"
+  ).join("");
+
+  app.innerHTML =
+    '<div class="crumbs"><a href="#/">chats</a> / <span>' + esc(d.name) + "</span></div>" +
+    '<h1 class="doc">' + esc(d.name) + "</h1>" +
+    (d.title ? '<p class="subhead">' + esc(d.title) + "</p>" : '<p class="subhead"></p>') +
+
+    '<section><div class="props">' +
+    props.map(([k, v]) => '<div class="k">' + k + '</div><div class="v">' + v + "</div>").join("") +
+    '</div>' +
+    '<details class="fold"><summary>launch command</summary><pre class="cmd">' + esc(d.initial_cmd || "—") + "</pre></details>" +
+    "</section>" +
+
+    '<section><h2>Chats · ' + d.chats.length + '</h2><table class="grid"><thead><tr>' +
+    '<th>#</th><th>role</th><th>chat</th><th>origin</th><th>started</th><th>status</th><th>source</th>' +
+    '</tr></thead><tbody>' + chatRows + "</tbody></table></section>" +
+
+    (d.artifacts.length ?
+      '<section><h2>Artifacts touched · ' + d.artifacts.length + '</h2><table class="grid"><thead><tr>' +
+      '<th>artifact</th><th>file</th><th class="right">revs by this session</th><th class="right">total</th><th class="right">last touch</th>' +
+      '</tr></thead><tbody>' + artRows + "</tbody></table></section>" : "") +
+
+    (d.derived.length ?
+      '<section><h2>Derived sessions · ' + d.derived.length + '</h2><table class="grid"><thead><tr>' +
+      '<th>session</th><th>how</th><th>state</th><th class="right">started</th>' +
+      '</tr></thead><tbody>' + derivedRows + "</tbody></table></section>" : "") +
+
+    (d.notes.length ? '<section><h2>Notes · ' + d.notes.length + "</h2>" + notes + "</section>" : "") +
+
+    '<section><h2>Conversation</h2><div id="conv"><div id="convLoad">loading full history…</div></div></section>';
+
+  return loadConversation(id, d);
+}
+
+async function loadConversation(id, detail) {
+  const conv = document.getElementById("conv");
+  let data;
+  try { data = await getJSON("/api/chats/" + encodeURIComponent(id) + "/dialogue"); }
+  catch (e) { conv.innerHTML = '<div class="err">' + esc(e.message) + "</div>"; return; }
+  if (location.hash !== "#/chats/" + id) return;   // user navigated away meanwhile
+  const parts = [];
+  data.chats.forEach((chat, index) => {
+    const label = detail.chats[index] || {};
+    parts.push('<div class="chat-sep"><b>chat ' + (index + 1) + "</b>" +
+      '<span>' + esc(chat.role) + "</span>" +
+      (chat.id ? '<span title="' + esc(chat.id) + '">' + esc(shortId(chat.id)) + "</span>" : "") +
+      (label.started_ago ? "<span>started " + esc(label.started_ago) + " ago</span>" : "") +
+      (chat.source ? "<span>source: " + esc(chat.source) + "</span>" : "") +
+      "<span>" + chat.turns.length + " turns</span></div>");
+    if (!chat.source) {
+      parts.push('<div class="muted" style="padding:10px 0">no transcript on disk for this chat.</div>');
+      return;
+    }
+    for (const turn of chat.turns) {
+      if (turn.who === "tools") {
+        const names = (turn.names || []).slice(0, 4).join(", ");
+        parts.push('<div class="turn tools">· ' + turn.count + " tool call" + (turn.count === 1 ? "" : "s") +
+                   (names ? " — " + esc(names) : "") + " ·</div>");
+      } else if (turn.who === "you") {
+        parts.push('<div class="turn you"><span class="who">you</span><span class="ts">' + fmtTs(turn.ts) +
+                   '</span><div class="body">' + esc(turn.text) + "</div></div>");
+      } else {
+        parts.push('<div class="turn agent"><span class="who">agent</span><span class="ts">' + fmtTs(turn.ts) +
+                   '</span><div class="body md">' + renderMarkdown(turn.text) + "</div></div>");
+      }
+    }
+  });
+  conv.innerHTML = parts.join("") || '<div class="muted">no conversation recorded.</div>';
+}
+
+// ---- artifacts list ----
+async function renderArtifacts() {
+  setNav("artifacts", true);
   app.innerHTML = '<div class="empty">loading…</div>';
   let data;
   try { data = await getJSON("/api/artifacts"); }
   catch (e) { app.innerHTML = '<div class="err">' + esc(e.message) + "</div>"; return; }
   if (!data.artifacts.length) { app.innerHTML = '<div class="empty">No artifacts yet. Create one with <code>tx artifact create &lt;file&gt;</code>.</div>'; return; }
-  app.innerHTML = data.artifacts.map(a => {
+  const rows = data.artifacts.map(a => {
     const authors = a.authors.map(x => '<span class="chip" title="' + esc(x.id) + '">' + esc(x.name) + "</span>").join("");
-    return '<a class="row" href="#/' + esc(a.id) + '">' +
-      '<span class="title">' + esc(a.title || a.filename) + '</span>' +
-      '<span class="id mono">' + esc(shortId(a.id)) + '</span>' +
-      '<div class="meta"><span class="mono">' + esc(a.filename) + '</span> · <b>' + a.revs +
-      '</b> rev' + (a.revs === 1 ? "" : "s") + ' · updated <b>' + esc(a.updated_ago) + '</b> ago · ' + authors +
-      "</div></a>";
+    return '<tr class="rowlink" data-href="#/artifacts/' + esc(a.id) + '">' +
+      '<td><b>' + esc(a.title || a.filename) + '</b></td>' +
+      '<td class="mono muted" style="font-size:12px">' + esc(a.filename) + '</td>' +
+      '<td class="right num">' + a.revs + '</td>' +
+      '<td>' + authors + '</td>' +
+      '<td class="right muted mono" style="font-size:12px">' + esc(a.updated_ago) + ' ago</td></tr>';
   }).join("");
+  app.innerHTML =
+    '<table class="grid"><thead><tr>' +
+    '<th>artifact</th><th>file</th><th class="right">revs</th><th>authors</th><th class="right">updated</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table>';
+  const tbody = app.querySelector("tbody");
+  tbody.addEventListener("click", e => {
+    const row = e.target.closest("tr[data-href]");
+    if (row && !e.target.closest("a")) location.hash = row.dataset.href.slice(1);
+  });
+  bindFilter(tbody);
 }
 
-// ---- detail view ----
-async function renderDetail(id) {
-  navBack.style.display = "";
+// ---- artifact detail ----
+async function renderArtifactDetail(id) {
+  setNav("artifacts", false);
   app.innerHTML = '<div class="empty">loading…</div>';
   let d;
   try { d = await getJSON("/api/artifacts/" + encodeURIComponent(id)); }
@@ -241,32 +667,34 @@ async function renderDetail(id) {
     '<a class="dl" href="/api/artifacts/' + encodeURIComponent(id) + '/raw">↓ download ' + esc(d.filename) + "</a>";
 
   const rows = d.history.map(t =>
-    '<tr><td class="rev">rev ' + t.rev + '</td><td class="ago">' + esc(t.ago) + ' ago</td>' +
-    '<td class="who' + (t.session_id === "user" ? " user" : "") + '" title="' + esc(t.session_id) + '">' + esc(t.actor) + '</td>' +
-    '<td class="changes' + (t.changes ? "" : " none") + '">' + esc(t.changes || "—") + "</td></tr>").join("");
+    '<tr><td class="num">r' + t.rev + '</td>' +
+    '<td>' + sessionLink(t.session_id, t.actor, t.session_exists) + '</td>' +
+    '<td class="muted mono" style="font-size:12px">' + esc(t.ago) + ' ago</td>' +
+    '<td class="muted" style="font-size:13px">' + (t.changes ? esc(t.changes) : "—") + "</td></tr>").join("");
 
   const opts = d.history.map(t => '<option value="' + t.rev + '">rev ' + t.rev + "</option>").join("");
   const defA = Math.max(0, d.revs - 2), defB = d.revs - 1;
   const dirty = d.dirty ? ' <span class="badge">working copy dirty — unsnapshotted edits</span>' : "";
 
   app.innerHTML =
-    '<div class="crumbs"><a href="#/">all artifacts</a> <span class="muted">/ ' + esc(shortId(d.id)) + "</span></div>" +
+    '<div class="crumbs"><a href="#/artifacts">artifacts</a> / <span>' + esc(shortId(d.id)) + "</span></div>" +
     '<h1 class="doc">' + esc(d.title || d.filename) + "</h1>" +
-    '<div class="subhead"><span class="mono">' + esc(d.id) + '</span><br>' +
-    '<span class="k">' + esc(d.filename) + '</span> · <span class="k">' + d.revs + '</span> revision' + (d.revs === 1 ? "" : "s") +
-    ' · created <span class="k">' + esc(d.created_ago) + '</span> ago · updated <span class="k">' + esc(d.updated_ago) + '</span> ago' + dirty + "</div>" +
+    '<p class="subhead"><span class="mono" style="font-size:12px">' + esc(d.id) + '</span><br>' +
+    '<span class="mono">' + esc(d.filename) + '</span> · ' + d.revs + ' revision' + (d.revs === 1 ? "" : "s") +
+    ' · created ' + esc(d.created_ago) + ' ago · updated ' + esc(d.updated_ago) + " ago" + dirty + "</p>" +
 
-    '<section class="card"><h2>Working copy</h2><div class="body">' + working + "</div></section>" +
+    '<section><h2>Touched by</h2><table class="grid"><thead><tr>' +
+    '<th>rev</th><th>session</th><th>when</th><th>changes</th>' +
+    '</tr></thead><tbody>' + rows + "</tbody></table></section>" +
 
-    '<section class="card"><h2>History — who touched it</h2><div class="body">' +
-    '<table class="hist"><tbody>' + rows + "</tbody></table></div></section>" +
+    '<section><h2>Working copy</h2><div style="padding-top:8px">' + working + "</div></section>" +
 
     (d.revs > 1 ?
-      '<section class="card"><h2>Diff revisions</h2><div class="body">' +
+      '<section><h2>Diff revisions</h2>' +
       '<div class="diffbar"><select id="ra">' + opts + '</select><span class="muted">→</span>' +
       '<select id="rb">' + opts + '</select><button id="dodiff">compare</button></div>' +
       '<pre class="diff" id="diffout"><span class="c">pick two revisions and press compare</span></pre>' +
-      "</div></section>"
+      "</section>"
       : "");
 
   if (d.revs > 1) {
@@ -294,14 +722,81 @@ async function runDiff(id) {
 }
 
 // ---- routing ----
+function setNav(tab, isList) {
+  tabChats.classList.toggle("active", tab === "chats");
+  tabArtifacts.classList.toggle("active", tab === "artifacts");
+  searchBox.classList.toggle("hidden", !isList);
+  if (!isList) filterables = [];
+}
+const UUID_RE = /^[0-9a-fA-F-]{36}$/;
 function route() {
   const hash = location.hash.replace(/^#/, "");
-  if (hash.startsWith("/") && hash.length > 1) renderDetail(hash.slice(1));
-  else renderList();
+  if (hash.startsWith("/chats/")) return renderChatDetail(hash.slice("/chats/".length));
+  if (hash === "/artifacts") return renderArtifacts();
+  if (hash.startsWith("/artifacts/")) return renderArtifactDetail(hash.slice("/artifacts/".length));
+  if (hash.startsWith("/") && UUID_RE.test(hash.slice(1))) return renderArtifactDetail(hash.slice(1)); // legacy links
+  return renderChats();
 }
-navRefresh.onclick = route;
+document.getElementById("nav-refresh").onclick = route;
 window.addEventListener("hashchange", route);
 route();
+
+// ---- auto refresh ----
+// A 5s tick re-fetches the current view's payloads, fingerprints them with the volatile relative-age
+// strings stripped, and re-renders only on a real change (or once a minute, so the ages tick).
+// Scroll, open folds, and diff picks survive the swap; a hidden tab pauses and resyncs on focus;
+// an active text selection defers the tick so a copy in progress is never stomped.
+const REFRESH_MS = 5000, FORCE_AGE_REFRESH_EVERY = 12;
+function viewUrls() {
+  const hash = location.hash.replace(/^#/, "");
+  if (hash.startsWith("/chats/")) {
+    const id = encodeURIComponent(hash.slice("/chats/".length));
+    return ["/api/chats/" + id, "/api/chats/" + id + "/dialogue"];
+  }
+  if (hash === "/artifacts") return ["/api/artifacts"];
+  if (hash.startsWith("/artifacts/")) return ["/api/artifacts/" + encodeURIComponent(hash.slice("/artifacts/".length))];
+  if (hash.startsWith("/") && UUID_RE.test(hash.slice(1))) return ["/api/artifacts/" + hash.slice(1)];
+  return ["/api/chats"];
+}
+const stripVolatile = (k, v) => (k === "ago" || k.endsWith("_ago") ? undefined : v);
+let lastFingerprint = "", tickCount = 0, refreshing = false;
+async function refreshTick() {
+  if (refreshing || document.hidden) return;
+  const selection = getSelection();
+  if (selection && !selection.isCollapsed && app.contains(selection.anchorNode)) return;
+  refreshing = true;
+  try {
+    const urls = viewUrls();
+    const datas = await Promise.all(urls.map(u => getJSON(u, true)));
+    if (viewUrls().join() !== urls.join()) return;   // navigated away mid-fetch
+    const fingerprint = JSON.stringify(datas, stripVolatile);
+    tickCount++;
+    const force = tickCount % FORCE_AGE_REFRESH_EVERY === 0;
+    if (fingerprint === lastFingerprint && !force) return;
+    lastFingerprint = fingerprint;
+    const scroll = { x: scrollX, y: scrollY };
+    const openFolds = Array.from(document.querySelectorAll("details[open] summary")).map(s => s.textContent);
+    const diff = document.getElementById("ra")
+      ? { a: document.getElementById("ra").value, b: document.getElementById("rb").value } : null;
+    await route();
+    document.querySelectorAll("details summary").forEach(s => {
+      if (openFolds.includes(s.textContent)) s.parentElement.open = true;
+    });
+    if (diff && document.getElementById("ra")) {
+      document.getElementById("ra").value = diff.a;
+      document.getElementById("rb").value = diff.b;
+      document.getElementById("dodiff").click();
+    }
+    scrollTo(scroll.x, scroll.y);
+  } catch (e) {
+    // transient fetch failure — the next tick retries
+  } finally {
+    refreshing = false;
+  }
+}
+setInterval(refreshTick, REFRESH_MS);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshTick(); });
+window.addEventListener("hashchange", () => { lastFingerprint = ""; });
 </script>
 </body>
 </html>
