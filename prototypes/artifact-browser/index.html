@@ -44,6 +44,16 @@
   }
   #search:focus { outline: none; border-color: var(--blue); }
   #search.hidden { display: none; }
+  /* Hot-window control: number + unit picking the freshness threshold renderChats reads. */
+  #hot-window { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  #hot-window.hidden { display: none; }
+  #hot-window .hot-label { color: var(--muted); font-size: 12.5px; }
+  #hot-window .hot-label b { color: var(--green); font-weight: 600; }
+  #hot-window input {
+    width: 56px; background: var(--bg); border: 1px solid var(--line); color: var(--text);
+    padding: 5px 4px 5px 8px; font: 12.5px var(--mono);
+  }
+  #hot-window input:focus { outline: none; border-color: var(--blue); }
 
   main { width: 100%; padding: 22px 28px 80px; }
 
@@ -99,8 +109,9 @@
      same green time — matching values connect the pair. */
   .fresh { color: var(--green); }
   .own { color: var(--dim); }
-  /* A hot session (interaction < 1h) nested in a tree: green name — both when promoted under a
-     collapsed ancestor and at its true position once the tree is expanded. */
+  /* A hot session (interaction inside the header's hot window) nested in a tree: green name —
+     both when promoted under a collapsed ancestor and at its true position once the tree is
+     expanded. */
   .grid b.hot { color: var(--green); }
   .empty { color: var(--muted); text-align: center; padding: 70px 0; }
   .err { color: var(--red); font-family: var(--mono); font-size: 13px; }
@@ -187,6 +198,11 @@
   </nav>
   <span class="spacer"></span>
   <input id="search" type="search" placeholder="filter…" autocomplete="off">
+  <span id="hot-window" title="hot window — a session interacted with inside it gets a green name and surfaces out of collapsed trees">
+    <span class="hot-label"><b>hot</b> &lt;</span>
+    <input id="hot-value" type="number" min="1" step="1" autocomplete="off">
+    <select id="hot-unit"><option value="min">min</option><option value="h">h</option></select>
+  </span>
   <a class="muted" id="nav-refresh" style="font-size:13px">↻</a>
 </header>
 <main id="app"><div class="empty">loading…</div></main>
@@ -197,6 +213,9 @@ const app = document.getElementById("app");
 const searchBox = document.getElementById("search");
 const tabChats = document.getElementById("tab-chats");
 const tabArtifacts = document.getElementById("tab-artifacts");
+const hotWindowControl = document.getElementById("hot-window");
+const hotValueInput = document.getElementById("hot-value");
+const hotUnitSelect = document.getElementById("hot-unit");
 
 // ---- helpers ----
 function esc(s) {
@@ -363,6 +382,39 @@ function toggleSubtree(id, tbody) {
   applyFilter();
 }
 
+// ---- hot window ----
+// How recent a session's last interaction must be to count as "hot" — green name, promotion out
+// of collapsed trees (renderChats). Number + unit in the header, persisted like the fold state;
+// the default matches the previously hardcoded one hour.
+const HOT_KEY = "txide-chats-hot-window";
+let hotWindow = { value: 1, unit: "h" };
+try {
+  const saved = JSON.parse(localStorage.getItem(HOT_KEY) || "null");
+  if (saved && Number.isInteger(saved.value) && saved.value >= 1 &&
+      (saved.unit === "min" || saved.unit === "h")) hotWindow = saved;
+} catch (e) {}
+function hotWindowSeconds() { return hotWindow.value * (hotWindow.unit === "h" ? 3600 : 60); }
+function syncHotControl() { hotValueInput.value = hotWindow.value; hotUnitSelect.value = hotWindow.unit; }
+syncHotControl();
+// Applies live on every valid edit. An invalid number (empty, 0, junk) is never persisted; the
+// "change" commit (blur/Enter) snaps the field back to the last good value instead. The re-render
+// must be explicit — the auto-refresh tick fingerprints server payloads only.
+function applyHotWindow(commit) {
+  const value = Math.round(Number(hotValueInput.value));
+  if (hotValueInput.value.trim() === "" || !Number.isFinite(value) || value < 1) {
+    if (commit) syncHotControl();
+    return;
+  }
+  if (value !== hotWindow.value || hotUnitSelect.value !== hotWindow.unit) {
+    hotWindow = { value, unit: hotUnitSelect.value };
+    localStorage.setItem(HOT_KEY, JSON.stringify(hotWindow));
+    route();
+  } else if (commit) syncHotControl();
+}
+hotValueInput.addEventListener("input", () => applyHotWindow(false));
+hotValueInput.addEventListener("change", () => applyHotWindow(true));
+hotUnitSelect.addEventListener("change", () => applyHotWindow(false));
+
 // ---- chats list ----
 // The list is a forest: a session spawned from another session (record `parent`) indents under it.
 // Ordering standard: a family sorts by its subtree's NEWEST interaction (a subsession update
@@ -417,13 +469,12 @@ async function renderChats() {
   try { data = await getJSON("/api/chats"); }
   catch (e) { app.innerHTML = '<div class="err">' + esc(e.message) + "</div>"; return; }
   if (!data.sessions.length) { app.innerHTML = '<div class="empty">No chat sessions recorded yet.</div>'; return; }
-  const HOT_SECONDS = 3600;
   const now = Date.now() / 1000;
-  const isHot = s => now - s.last_epoch < HOT_SECONDS;
+  const isHot = s => now - s.last_epoch < hotWindowSeconds();
   const entries = sessionForest(data.sessions);
-  // Hot descendants per ancestor: a nested session with interaction < 1h gets one PROMOTED row
-  // under every ancestor; visibility rules make exactly the one under the visible collapsed
-  // ancestor show, so a folded tree surfaces the session responsible for its freshness.
+  // Hot descendants per ancestor: a nested session with interaction inside the hot window gets one
+  // PROMOTED row under every ancestor; visibility rules make exactly the one under the visible
+  // collapsed ancestor show, so a folded tree surfaces the session responsible for its freshness.
   const promotedByAnchor = new Map();
   for (const entry of entries) {
     if (!entry.ancestors.length || !isHot(entry.s)) continue;
@@ -726,6 +777,7 @@ function setNav(tab, isList) {
   tabChats.classList.toggle("active", tab === "chats");
   tabArtifacts.classList.toggle("active", tab === "artifacts");
   searchBox.classList.toggle("hidden", !isList);
+  hotWindowControl.classList.toggle("hidden", !(tab === "chats" && isList));
   if (!isList) filterables = [];
 }
 const UUID_RE = /^[0-9a-fA-F-]{36}$/;
