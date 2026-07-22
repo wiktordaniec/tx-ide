@@ -368,8 +368,13 @@ class ClaudeEngine(EngineAdapter):
             command.append(initial_prompt)
         return command
 
-    def resume_command(self, chat_id: str, *, read_only: bool = False) -> list[str]:
-        return _apply_access([CLAUDE_BIN, "--resume", chat_id], read_only)
+    def resume_command(
+        self, chat_id: str, *, read_only: bool = False, source_cmd: str | None = None
+    ) -> list[str]:
+        binary, inherited = (
+            _strip_identity(source_cmd) if source_cmd is not None else (CLAUDE_BIN, [])
+        )
+        return _apply_access([binary, "--resume", chat_id, *inherited], read_only)
 
     def fork_command(
         self, source_cmd: str, chat_id: str, *, read_only: bool = False

@@ -554,7 +554,9 @@ class ResumeCommand(Command):
 
         adapter = engines.registry.get(record.engine)
         resume_cmd = shlex.join(
-            adapter.resume_command(chat.id, read_only=record.read_only)
+            adapter.resume_command(
+                chat.id, read_only=record.read_only, source_cmd=record.initial_cmd
+            )
         )
         # Stamp the source engine on the resumed record so a resumed codex session stays codex
         # (resolving its rollout) instead of defaulting to Claude — set-at-spawn, read-thereafter.

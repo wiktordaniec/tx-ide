@@ -278,9 +278,15 @@ class CodexEngine(EngineAdapter):
             command.append(initial_prompt)
         return command
 
-    def resume_command(self, chat_id: str, *, read_only: bool = False) -> list[str]:
-        """Resume a chat in place via Codex's native `resume` subcommand (bypass flags ride along so hooks fire)."""
-        return _apply_access([CODEX_BIN, "resume", chat_id], read_only)
+    def resume_command(
+        self, chat_id: str, *, read_only: bool = False, source_cmd: str | None = None
+    ) -> list[str]:
+        """Resume a chat in place via Codex's native `resume` subcommand (bypass flags ride along so
+        hooks fire), carrying the source persona when `source_cmd` is given."""
+        binary, inherited = (
+            _strip_identity(source_cmd) if source_cmd is not None else (CODEX_BIN, [])
+        )
+        return _apply_access([binary, "resume", chat_id, *inherited], read_only)
 
     def fork_command(
         self, source_cmd: str, chat_id: str, *, read_only: bool = False

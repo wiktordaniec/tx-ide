@@ -14,6 +14,7 @@ See tx-service-redesign.md §1 (object model) + §4 (no-daemon) + §5 (hooks →
 
 from __future__ import annotations
 
+import os
 import shlex
 import time
 import uuid
@@ -237,15 +238,19 @@ class SessionService:
         client-message limit). A command past it (e.g. a role-primed agent launch) is written to
         `$TX_IDE_HOME/launch/<session-id>.sh` and launched through it; the record still persists
         the full engine command, so chat-op derivation and read-only validation are unaffected.
-        The script is removed on `kill`/reconcile-exit; a rollover respawn reuses (overwrites)
-        its session's script."""
+        The script is unlinked eagerly on `kill` and GC'd by the reconcile sweep for every other
+        ending; a rollover respawn reuses (overwrites) its session's script."""
         if len(command.encode()) <= MAX_COMMAND_BYTES:
             return command
-        script = launch_dir()
-        script.mkdir(parents=True, exist_ok=True)
-        script = script / f"{session_id}.sh"
-        script.write_text(command + "\n")
-        script.chmod(0o700)
+        directory = launch_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        script = directory / f"{session_id}.sh"
+        # Created private (0700) BEFORE the contents land — never world-readable mid-write.
+        descriptor = os.open(
+            script, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o700
+        )
+        with open(descriptor, "w") as handle:
+            handle.write(command + "\n")
         return f"/bin/sh {shlex.quote(str(script))}"
 
     def _spawn(self, spec: SpawnSpec) -> Session:

@@ -63,8 +63,12 @@ class EngineAdapter(Protocol):
         spawned process will, not as this parent process would."""
         ...
 
-    def resume_command(self, chat_id: str, *, read_only: bool = False) -> list[str]:
-        """Argv to resume an existing chat in place."""
+    def resume_command(
+        self, chat_id: str, *, read_only: bool = False, source_cmd: str | None = None
+    ) -> list[str]:
+        """Argv to resume an existing chat in place. `source_cmd`, when given, carries the source
+        persona (model / effort / role priming / unknown value-flags) onto the resumed record, so
+        a later fork/handover/rollover derived from it keeps the persona."""
         ...
 
     def fork_command(

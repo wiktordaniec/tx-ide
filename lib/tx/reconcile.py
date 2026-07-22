@@ -34,6 +34,9 @@ from .tmux import Tmux
 
 # C5 threshold (10 min) — overridable via config.json's `stuck_working_threshold_seconds` (§19).
 DEFAULT_STUCK_WORKING_SECONDS = 600
+# A launch script younger than this is never swept: its session may not be visible in
+# `list-sessions` yet (the write→new-session window).
+LAUNCH_SCRIPT_GRACE_SECONDS = 60
 # Claude shows a version string ("2.1.138") in `pane_current_command` while its TUI loads — treat
 # that as "agent still up" alongside the bare binary name so C5 doesn't demote a loading agent.
 _VERSION_COMMAND = re.compile(r"^\d+\.\d+")
@@ -59,6 +62,7 @@ class Reconciler:
         """Drive every stored record to ground truth. Returns only the records that actually
         changed (the dirty set), so a caller sees what moved without re-reading the store."""
         live = self._live_by_id()
+        self._sweep_launch_scripts(live)
         threshold = self._stuck_threshold()
         changed: list[Session] = []
         for session in self.store.all():
@@ -83,15 +87,28 @@ class Reconciler:
                 live[tx_id] = _Live(name=name, command=command)
         return live
 
+    def _sweep_launch_scripts(self, live: dict[str, _Live]) -> None:
+        """GC oversized-launch scripts whose session is no longer live in tmux — the one sweep that
+        covers every ending (natural exit, archive-while-live, `rm` of a live record) without
+        needing each lifecycle verb to remember cleanup. The grace window protects a just-written
+        script whose session has not yet appeared in `list-sessions`; the FileNotFoundError guard
+        tolerates a concurrent reconcile (picker + command) unlinking first."""
+        directory = launch_dir()
+        if not directory.is_dir():
+            return
+        cutoff = time.time() - LAUNCH_SCRIPT_GRACE_SECONDS
+        for script in directory.glob("*.sh"):
+            try:
+                if script.stem not in live and script.stat().st_mtime < cutoff:
+                    script.unlink(missing_ok=True)
+            except FileNotFoundError:
+                continue
+
     def _mark_exited(self, session: Session) -> bool:
         if not session.transition_to(State.EXITED):  # C3 guard + C4 dirty-check
             return False
         session.ended_at = time.time()
         session.attached_to = []  # a dead session surfaces nowhere (attachment-topology §4)
-        # An oversized launch's script has served its purpose once the session is gone; this sweep
-        # catches every termination path (a `tx kill` unlinks eagerly, but a natural exit only
-        # lands here).
-        (launch_dir() / f"{session.id}.sh").unlink(missing_ok=True)
         self.store.save(session)
         self.log.append("reconcile", f"{session.name} → exited (vanished)")
         return True
