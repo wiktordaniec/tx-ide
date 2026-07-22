@@ -1314,9 +1314,9 @@ class AttachCommand(Command):
 
     def _respawn_into_view_pane(self, target: str) -> bool:
         """If the picker was launched from a shell pane inside a Views home, nest-attach `target` (a
-        tmux session target) INTO that pane via `respawn-pane -k` (the `TMUX= tmux attach …; exec
-        $SHELL` keeps the pane alive after the inner session detaches). True when it did, else fall
-        through."""
+        tmux session target) INTO that pane via `respawn-pane -k`. The bash `set -m` wrapper keeps
+        the pane alive after detach (`exec $SHELL`) while the client owns the tty foreground pgroup
+        (pane_current_command must read `tmux`). True when it did, else fall through."""
         tmux = self.service.tmux
         if not os.environ.get("TMUX"):
             return False
@@ -1327,10 +1327,13 @@ class AttachCommand(Command):
         origin_cmd = tmux.display_message("#{pane_current_command}", target=origin_pane)
         if origin_cmd not in SHELL_COMMANDS:
             return False
-        quoted = shlex.quote(target)
-        tmux.respawn_pane(
-            origin_pane, f"TMUX= tmux attach -t {quoted}; exec ${{SHELL:-zsh}}"
-        )
+        # bash + `set -m` puts the nested client in its own foreground pgroup, so
+        # pane_current_command reads `tmux` during the attach — the nav-keys bind and any
+        # other pane_current_command consumer key off that. A plain `shell -c "tmux attach;
+        # exec zsh"` reports the wrapper shell instead (zsh never reassigns the tty
+        # foreground pgroup non-interactively).
+        wrapper = f"set -m; TMUX= tmux attach -t {shlex.quote(target)}; exec ${{SHELL:-zsh}}"
+        tmux.respawn_pane(origin_pane, f"bash -c {shlex.quote(wrapper)}")
         return True
 
     def _switch_or_attach(self, target: str) -> bool:
