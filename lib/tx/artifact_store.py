@@ -21,15 +21,24 @@ file, never a half-written rev. `current` and an orphan reclaim use the record's
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
 import tempfile
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from .artifact import Artifact, UnsupportedArtifactError
 from .storage import artifacts_dir
+
+# Record-lock tuning (see `ArtifactStore.locked`). The critical sections are load→save windows a
+# few milliseconds long, so waiters spin briefly; a lock older than STALE_LOCK_SECONDS can only be
+# crash debris (no writer holds one across user-scale time) and is broken rather than honored.
+_LOCK_RETRY_INTERVAL = 0.01
+_LOCK_RETRIES = 500
+_STALE_LOCK_SECONDS = 10.0
 
 
 class ArtifactStore:
@@ -38,6 +47,43 @@ class ArtifactStore:
 
     def _record_path(self, artifact_id: str) -> Path:
         return self.directory / f"{artifact_id}.json"
+
+    def _lock_path(self, artifact_id: str) -> Path:
+        return self.directory / f".{artifact_id}.lock"
+
+    @contextlib.contextmanager
+    def locked(self, artifact_id: str) -> Iterator[None]:
+        """Serialize one record's read-modify-write against every other lock-honoring writer — an
+        atomic-`mkdir` mutex held across a load→save window. The rev-slot claim (`claim_rev`) still
+        serializes modify-vs-modify content writes and stays the crash-safe backstop; this lock
+        exists because a record save is whole-file `os.replace` (last write wins), so an UNLOCKED
+        interleaving of two record writers — a `modify` appending a touch vs a `set_group` writing
+        the override — would let the stale one silently revert the other's committed history (the
+        lost-touch P0). A lock directory older than `_STALE_LOCK_SECONDS` is crash debris (the
+        window is milliseconds) and is broken, so an interrupted writer never wedges the store."""
+        self.directory.mkdir(parents=True, exist_ok=True)
+        lock = self._lock_path(artifact_id)
+        for _ in range(_LOCK_RETRIES):
+            try:
+                lock.mkdir()
+                break
+            except FileExistsError:
+                try:
+                    held_for = time.time() - lock.stat().st_mtime
+                except OSError:
+                    continue  # holder released between our mkdir and stat — retry immediately
+                if held_for > _STALE_LOCK_SECONDS:
+                    with contextlib.suppress(OSError):
+                        lock.rmdir()
+                    continue
+                time.sleep(_LOCK_RETRY_INTERVAL)
+        else:
+            raise TimeoutError(f"artifact {artifact_id}: record lock never freed ({lock})")
+        try:
+            yield
+        finally:
+            with contextlib.suppress(OSError):
+                lock.rmdir()
 
     def save(self, artifact: Artifact) -> None:
         """Persist the record atomically (temp file + `os.replace`), like `SessionStore.save`. The

@@ -216,6 +216,10 @@ class SessionService:
         print; there is no `Session` object to return."""
         if self.tmux.has_session(spec.name):
             raise SessionExists(f"session '{spec.name}' already exists")
+        # Cross-type uniqueness, the reverse direction of `_require_name_free`'s view guard: a view
+        # named like a live process would ambiguate name resolution and the parent references the
+        # grouping walk climbs.
+        self._require_name_free(spec.name)
         self.tmux.new_session(
             name=spec.name,
             cwd=spec.cwd,
@@ -329,10 +333,15 @@ class SessionService:
         """Refuse a spawn/rename onto a display name a LIVE record already holds — the human-name
         uniqueness that used to fall out of tmux's unique-session-name rule (now that a process is
         tmux-named by its id, tmux no longer enforces it, so name resolution stays unambiguous).
-        Reconcile first so a vanished session's stale record does not block reuse (D7)."""
+        Reconcile first so a vanished session's stale record does not block reuse (D7). A live
+        VIEW's name is refused too: `parent` stores a view-hosted spawn's executor as that view
+        NAME, so a same-named process would capture those references — the grouping walk (and the
+        graph) would resolve a view parent to an unrelated process and inherit its group."""
         self.reconcile()
         if any(s.name == name and s.is_alive() for s in self.store.all()):
             raise SessionExists(f"session '{name}' already exists")
+        if self.tmux.has_session(name) and self.tmux.is_view(name):
+            raise SessionExists(f"'{name}' is a live view session — pick another name")
 
     # ----- lifecycle -----------------------------------------------------------------------
 

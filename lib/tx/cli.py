@@ -70,6 +70,15 @@ def _split_tags(raw: str) -> list[str]:
     return [part for part in raw.split(",") if part]
 
 
+def _group_value(value: str) -> str:
+    """argparse `type=` for every `--group` flag: an empty value (a hollow shell expansion) would
+    persist `""`, which the resolver's truthiness reads as no-override — a silent no-op the user
+    meant as a group. Reject at the boundary; the positional `tx group` verbs guard themselves."""
+    if not value:
+        raise argparse.ArgumentTypeError("a group cannot be empty")
+    return value
+
+
 def _parse_env(pairs: list[str] | None) -> dict[str, str]:
     """`["K=V", ...]` → dict. `--env` is user input, so the `K=V` shape is validated by the CLI
     (argparse `type=`); here we just split on the first `=`."""
@@ -144,6 +153,7 @@ class SpawnCommand(Command):
         parser.add_argument("--tag", required=True)
         parser.add_argument(
             "--group",
+            type=_group_value,
             help="explicit effort-group override for the record (default: derived at "
             "read time from parent lineage / tags[0] / name)",
         )
@@ -254,6 +264,7 @@ class SpawnNvimCommand(Command):
         parser.add_argument("--tag", required=True)
         parser.add_argument(
             "--group",
+            type=_group_value,
             help="explicit effort-group override for the record (default: derived at "
             "read time from parent lineage / tags[0] / name)",
         )
@@ -814,6 +825,7 @@ class ArtifactCommand(Command):
         parser.add_argument("--title")
         parser.add_argument(
             "--group",
+            type=_group_value,
             help="explicit effort-group override (default: derived at read time from "
             "the creator's resolved group)",
         )
@@ -1731,6 +1743,7 @@ class ForkCommand(Command):
         )
         parser.add_argument(
             "--group",
+            type=_group_value,
             help="explicit effort-group override for the fork (default: derived — the "
             "fork's parent edge points at the source session)",
         )

@@ -1115,6 +1115,9 @@ function syncSim(kept) {
   for (const [id, dataNode] of want) {
     let node = sim.get(id);
     if (!node) { node = newSimNode(id, dataNode); sim.set(id, node); changed = true; }
+    // A re-grouped record (tx group / a re-filed ancestor) changes no membership, but the cohesion
+    // force only acts while the sim is warm — reheat so the node migrates to its new cluster.
+    else if (node.data.group !== dataNode.group) changed = true;
     node.data = dataNode;
     if (!(drag && drag.node === node)) {           // a node mid-drag owns its own fx/fy
       if (pins[id]) { node.pinned = true; node.fx = pins[id].x; node.fy = pins[id].y; }

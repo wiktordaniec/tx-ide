@@ -102,8 +102,9 @@ class ArtifactService:
         authoritative record, then applies the modify. Content identical to the last rev is a no-op —
         no rev, no touch (E3); the CLI prints the notice. Returns the (possibly unchanged) artifact.
         """
-        artifact = self._require(artifact_id)
-        return self._apply_modify(artifact, session_id, content, changes)
+        with self.store.locked(artifact_id):
+            artifact = self._require(artifact_id)
+            return self._apply_modify(artifact, session_id, content, changes)
 
     def snapshot_current(
         self, artifact_id: str, session_id: str, *, changes: str | None = None
@@ -112,8 +113,9 @@ class ArtifactService:
         that closes the loop after editing `current.<ext>` in the nvim view. Reads the working copy
         WITHOUT a read-log line (the read is internal to this mutation), then delegates to the same
         modify body — so an unchanged working copy is the same no-op skip (E3)."""
-        artifact = self._require(artifact_id)
-        return self._apply_modify(artifact, session_id, self.files.read_current(artifact), changes)
+        with self.store.locked(artifact_id):
+            artifact = self._require(artifact_id)
+            return self._apply_modify(artifact, session_id, self.files.read_current(artifact), changes)
 
     def _apply_modify(
         self, artifact: Artifact, session_id: str, content: bytes, changes: str | None
@@ -137,10 +139,13 @@ class ArtifactService:
     def set_group(self, artifact_id: str, session_id: str, group: str | None) -> Artifact:
         """Set (or with None clear) the artifact's EXPLICIT effort-group override. Metadata only —
         no rev, no touch (`history` stays the content/version log; `doctor`'s touch⇄log cross-check
-        is untouched) — but it IS a mutation, so it logs one line (D8)."""
-        artifact = self._require(artifact_id)
-        artifact.group = group
-        self.store.save(artifact)
+        is untouched) — but it IS a mutation, so it logs one line (D8). Runs under the record lock:
+        this load→save rewrites the whole record, so unserialized against a concurrent `modify` the
+        stale side would revert the other's write — a lost touch (the P0) or a lost override."""
+        with self.store.locked(artifact_id):
+            artifact = self._require(artifact_id)
+            artifact.group = group
+            self.store.save(artifact)
         self.log.append(
             "artifact-group",
             f"{artifact.id} {group if group is not None else '(cleared)'}",
@@ -257,7 +262,9 @@ class ArtifactService:
                     )
         if self.store.directory.exists():
             for entry in sorted(self.store.directory.iterdir()):
-                if entry.is_dir() and entry.name not in record_ids:
+                # Dot-entries are never content: a transient `.{id}.lock` mutex dir (store.locked)
+                # or a staging temp must not read as an out-of-band content directory.
+                if entry.is_dir() and not entry.name.startswith(".") and entry.name not in record_ids:
                     problems.append(
                         f"{entry.name}: content directory under artifacts/ has no record "
                         "(out-of-band creation — the record is authoritative)"
