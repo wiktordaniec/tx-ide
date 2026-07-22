@@ -28,6 +28,10 @@ def resolve_role_files(names: list[str]) -> list[Path]:
     `.local.md` extension when present."""
     ordered: list[str] = [COMMON_ROLE]
     for name in names:
+        # A role is a bare file stem inside the role directories — a separator or a dot-name
+        # would escape them (`--role ../secret`), so it is rejected, never resolved.
+        if Path(name).name != name or name in (".", ".."):
+            raise RoleError(f"invalid role name '{name}' (must be a bare name, no path components)")
         if name not in ordered:
             ordered.append(name)
     files: list[Path] = []

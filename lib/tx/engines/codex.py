@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import tomllib
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
@@ -22,8 +23,11 @@ CODEX_EFFORT = DEFAULT_EFFORT
 REASONING_EFFORT_KEY = "model_reasoning_effort"
 # Additive instructions channel: appended to codex's base instructions, never replacing them
 # (contrast experimental_instructions_file, which replaces). The multi-line contents fail `-c`'s
-# TOML parse and fall back to the raw string literal, arriving intact as one argv token.
+# TOML parse and fall back to the raw string literal, arriving intact as one argv token. A `-c`
+# override DOES replace a `config.toml`-configured value of the same key, so the launch builder
+# composes with the configured value instead of clobbering it.
 DEVELOPER_INSTRUCTIONS_KEY = "developer_instructions"
+CONFIG_FILE_NAME = "config.toml"
 
 # Writable workers bypass approvals+sandbox AND hook trust. Read-only workers deliberately avoid a
 # nested native sandbox and run inside tx's outer process sandbox; hook trust remains headless so tx
@@ -54,6 +58,20 @@ def codex_home() -> Path:
 
 def sessions_root() -> Path:
     return codex_home() / SESSIONS_DIR
+
+
+def configured_developer_instructions() -> str | None:
+    """The user's own top-level `developer_instructions` from `$CODEX_HOME/config.toml`, or None.
+    Role priming prepends this so the `-c` override composes with the configured value instead of
+    silently replacing it. The file is an external input (system boundary): absent, unreadable, or
+    invalid TOML degrades to None. Profile-scoped values are out of scope — codex's own precedence
+    already lets a `-c` override win there."""
+    try:
+        with (codex_home() / CONFIG_FILE_NAME).open("rb") as handle:
+            value = tomllib.load(handle).get(DEVELOPER_INSTRUCTIONS_KEY)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def find_rollout(chat_id: str) -> Path | None:
@@ -235,8 +253,13 @@ class CodexEngine(EngineAdapter):
             "-c", f"{REASONING_EFFORT_KEY}={EFFORT_LEVELS[selected_effort]}",
         ]
         if role_priming:
-            # A `-c KEY=VALUE` persona pair, so _strip_identity inherits it across chat ops.
-            command += ["-c", f"{DEVELOPER_INSTRUCTIONS_KEY}={role_priming}"]
+            # A `-c KEY=VALUE` persona pair, so _strip_identity inherits it across chat ops. The
+            # configured config.toml value rides in front — the override would replace it otherwise.
+            configured = configured_developer_instructions()
+            instructions = (
+                f"{configured}\n\n{role_priming}" if configured else role_priming
+            )
+            command += ["-c", f"{DEVELOPER_INSTRUCTIONS_KEY}={instructions}"]
         command = _apply_access(command, read_only)
         if initial_prompt:
             command.append(initial_prompt)

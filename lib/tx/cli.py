@@ -246,6 +246,8 @@ class SpawnCommand(Command):
         if args.cmd is not None:
             return args.cmd, requested or engines.registry.engine_for_command(args.cmd)
         role_names = [name for value in args.role or [] for name in _split_tags(value)]
+        if args.role is not None and not role_names:
+            raise RoleError("--role requires at least one role name")
         if (
             requested is not None
             or args.prompt is not None
