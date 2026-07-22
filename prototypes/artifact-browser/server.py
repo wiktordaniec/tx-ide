@@ -48,6 +48,7 @@ from tx.artifact import Artifact  # noqa: E402
 from tx.artifact_store import ArtifactContent, ArtifactStore  # noqa: E402
 from tx.engines import claude as claude_engine  # noqa: E402
 from tx.engines import codex_rollout  # noqa: E402
+from tx.grouping import GroupResolver  # noqa: E402
 from tx.palette import tag_cube  # noqa: E402
 from tx.render import actor_label, reltime  # noqa: E402
 from tx.session import ChatRef, Engine, LlmSession, Role, Session, UnsupportedRecordError  # noqa: E402
@@ -434,6 +435,22 @@ def _tag_colors(tags: list[str]) -> dict[str, str]:
     return {tag: cube_to_hex(tag_cube(tag)) for tag in tags}
 
 
+def _group_resolver() -> GroupResolver:
+    """One read-time resolver over full store snapshots — built per request like every other read
+    here (no second source of truth), reads through the stores only (never a logging service)."""
+    return GroupResolver(SessionStore().all(), ArtifactStore().all())
+
+
+def _group_fields(resolved_group: str, explicit: str | None) -> dict:
+    """The shared group triple a payload row carries: the explicit override (null when derived),
+    the read-time resolution, and its chip colour (same hash palette as tags)."""
+    return {
+        "group": explicit,
+        "resolved_group": resolved_group,
+        "group_color": cube_to_hex(tag_cube(resolved_group)),
+    }
+
+
 def _load_llm_session(session_id: str) -> LlmSession | None:
     """Resolve a route-supplied id to an llm record, or None (→ 404). A persistence boundary read
     driven by user input: a missing record, an unreadable older-schema record, and a non-llm record
@@ -580,6 +597,7 @@ def chats_payload() -> dict:
     sessions = _chat_sessions(store)
     assistant_ids = {session.id for session in sessions if session.name == ASSISTANT_NAME}
     artifact_counts = _artifact_touch_counts(ArtifactStore().all())
+    resolver = _group_resolver()
     rows = []
     for session in sessions:
         if session.name == ASSISTANT_NAME:
@@ -592,6 +610,7 @@ def chats_payload() -> dict:
             "title": _session_title(session),
             "tags": session.tags,
             "tag_colors": _tag_colors(session.tags),
+            **_group_fields(resolver.session_group(session), session.group),
             "state": session.state.value,
             "alive": session.is_alive(),
             "engine": session.engine.value,
@@ -739,6 +758,7 @@ def chat_detail_payload(session_id: str) -> dict | None:
         "title": _session_title(session),
         "tags": session.tags,
         "tag_colors": _tag_colors(session.tags),
+        **_group_fields(_group_resolver().session_group(session), session.group),
         "state": session.state.value,
         "alive": session.is_alive(),
         "engine": session.engine.value,
@@ -814,11 +834,12 @@ def _authors(artifact: Artifact, names: dict[str, str]) -> list[dict]:
 
 def list_payload() -> dict:
     """The artifact list feed — every artifact with the settled columns (title, id, filename, #revs,
-    last touched, touch authors), newest-touched first."""
+    last touched, touch authors, resolved effort group), newest-touched first."""
     artifacts = sorted(ArtifactStore().all(), key=lambda artifact: artifact.updated_at, reverse=True)
     names = SessionStore().names_for(
         touch.session_id for artifact in artifacts for touch in artifact.history
     )
+    resolver = _group_resolver()
     return {
         "artifacts": [
             {
@@ -828,6 +849,7 @@ def list_payload() -> dict:
                 "revs": len(artifact.history),
                 "updated_ago": reltime(artifact.updated_at),
                 "authors": _authors(artifact, names),
+                **_group_fields(resolver.artifact_group(artifact), artifact.group),
             }
             for artifact in artifacts
         ]
@@ -855,6 +877,7 @@ def detail_payload(artifact_id: str) -> dict | None:
         "updated_ago": reltime(artifact.updated_at),
         "revs": len(artifact.history),
         "dirty": dirty,
+        **_group_fields(_group_resolver().artifact_group(artifact), artifact.group),
         "history": [
             {
                 "rev": touch.rev,

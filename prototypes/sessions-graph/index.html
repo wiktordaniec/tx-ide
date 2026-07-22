@@ -295,6 +295,10 @@
     background: color-mix(in srgb, var(--chip) 16%, transparent);
     white-space: nowrap;
   }
+  /* Effort-group chip — the RESOLVED cluster key (⊙-marked), not a scope tag the record carries:
+     outlined only (no tinted fill) + dashed border, so group and tags never read as one family.
+     Shared by the node cards, the table's group column, and the filter bar's group selector. */
+  .chip.gchip, .tagchip.gchip { background: transparent; border-style: dashed; }
   /* Role badge — the labelled type swatch, now carrying the role's OWN colour (matching the left
      stripe + the legend) instead of a neutral grey, so the glanceable stripe and the named badge read
      as one thing. Falls back to the old neutral pill if --role is unset (a defensive default — every
@@ -838,6 +842,9 @@ const COOL = 0.985;         // alpha (temperature) decay per tick
 const ALPHA_MIN = 0.02;     // below this the sim sleeps
 const DRAG_ALPHA = 0.4;     // floor temperature while a node is dragged, so neighbors react
 const MAX_V = 90;           // velocity clamp
+const GROUP_PULL = 0.005;   // same-resolved-group cohesion toward the group centroid — an order above
+                            // GRAVITY so efforts visibly cluster, far below the springs so lineage
+                            // edges keep owning the local layout
 
 // State semantics (kept in sync with lib/tx/session.py State enum docstrings).
 const STATE_INFO = {
@@ -870,6 +877,7 @@ let pendingRender = false;        // a stream push that landed mid-interaction, 
 let activeTab = "graph";          // which view is showing — "graph" (force layout), "table" (grid), or "messages"
 let tableSort = { key: "activity_at", dir: "desc" };   // table: active sort column + direction (newest-first default, matching the feed order)
 let selectedTags = new Set();     // table: tags picked in the tag bar — a row shows if it carries ANY of them (empty ⇒ no tag filter)
+let groupFilter = new Set();      // resolved effort-groups picked in the group bar — graph dims / table hides non-members (empty ⇒ off). NOT selectedGroup, which is the multi-select message set
 let cursorId = null;              // table: record id of the keyboard-highlighted row (arrow keys move it, f focuses it) — independent of focusedId (terminal pane) and selectedId (drawer)
 let messagesFeed = null;          // messages: the /api/messages payload ({ messages:[…] }) — from the SSE `messages` channel or a one-shot fetch
 let messagesSort = { key: "ts", dir: "desc" };   // messages: active sort column + direction (newest-first default)
@@ -994,6 +1002,8 @@ function buildNodes(feed) {
     state: entry.record.state,
     role: entry.record.role,
     tags: entry.record.tags,
+    group: entry.derived.resolved_group,             // read-time effort group (server cascade) — clusters, badges, filters
+    groupColor: entry.derived.group_color,
     activityAt: entry.derived.activity_at,           // uniform recency epoch (server-computed); llm → last_activity, else created_at
     createdAt: entry.record.created_at || 0,         // for the shared time-window filter (visibleForest)
     attachedTo: entry.record.attached_to || [],      // live (server compute-on-read): panes surfacing this session
@@ -1160,6 +1170,25 @@ function tick() {
     node.ax += (WORLD_CX - node.x) * GRAVITY;
     node.ay += (WORLD_CY - node.y) * GRAVITY;
   }
+  // effort-group cohesion — every visible member is pulled toward its resolved group's centroid,
+  // so an effort reads as one cluster even where lineage edges are missing (sibling A/B spawns,
+  // a resumed session whose source is filtered off). Ghosts carry no group; a 1-member group has
+  // nothing to cohere with (its centroid is itself).
+  const centroids = new Map();
+  for (const node of nodes) {
+    const group = node.data && node.data.group;
+    if (!group) continue;
+    const centroid = centroids.get(group) || { x: 0, y: 0, count: 0 };
+    centroid.x += node.x; centroid.y += node.y; centroid.count += 1;
+    centroids.set(group, centroid);
+  }
+  for (const node of nodes) {
+    const group = node.data && node.data.group;
+    const centroid = group && centroids.get(group);
+    if (!centroid || centroid.count < 2) continue;
+    node.ax += (centroid.x / centroid.count - node.x) * GROUP_PULL;
+    node.ay += (centroid.y / centroid.count - node.y) * GROUP_PULL;
+  }
 
   // separation — cards are sized to their labels now, so widths vary. Push any overlapping pair
   // apart along their least-overlapping axis (AABB) so a wide card never covers its neighbour.
@@ -1241,6 +1270,8 @@ const COLUMNS = [
     cell: (e) => `<span class="tstate">${escapeHtml(e.record.state)}</span>` },
   { key: "role", label: "role", sortVal: (e) => e.record.role,
     cell: (e) => `<span class="trole r-${e.record.role}">${escapeHtml(e.record.role)}</span>` },
+  { key: "group", label: "group", sortVal: (e) => (e.derived.resolved_group || "").toLowerCase(),
+    cell: (e) => `<span class="chip gchip" style="--chip:${e.derived.group_color || "var(--dim)"}">⊙ ${escapeHtml(e.derived.resolved_group || "")}</span>` },
   { key: "tags", label: "tags", sortVal: (e) => e.record.tags.join(",").toLowerCase(),
     cell: (e) => `<span class="tchips">${tableChips(e)}</span>` },
   { key: "created_at", label: "created", sortVal: (e) => e.record.created_at || 0,
@@ -1280,6 +1311,14 @@ function matchesTags(record) {
   return record.tags.some((tag) => selectedTags.has(tag));
 }
 
+// The group selector's counterpart to matchesTags: with groups picked, a session shows only if its
+// RESOLVED group is one of them. Callers pass the resolved group string (graph: dataNode.group,
+// table: entry.derived.resolved_group). No picks ⇒ no group constraint.
+function matchesGroupFilter(group) {
+  if (groupFilter.size === 0) return true;
+  return groupFilter.has(group);
+}
+
 // Row visibility by state — reads the same hiddenStates the graph legend drives, so the table's
 // state bar and the graph filter as one (and the table opens on the graph's states).
 function matchesState(record) { return !hiddenStates.has(record.state); }
@@ -1293,7 +1332,9 @@ function renderTable() {
   renderFilterBar();
   const query = $("filter").value.trim().toLowerCase();
   const rows = feed.sessions.filter((entry) =>
-    matchesState(entry.record) && matchesTags(entry.record) && matchesTime(entry) && matchesQuery(entry.record, query));
+    matchesState(entry.record) && matchesTags(entry.record) &&
+    matchesGroupFilter(entry.derived.resolved_group) && matchesTime(entry) &&
+    (matchesQuery(entry.record, query) || (entry.derived.resolved_group || "").toLowerCase().includes(query)));
 
   const column = COLUMNS.find((candidate) => candidate.key === tableSort.key);
   const direction = tableSort.dir === "asc" ? 1 : -1;
@@ -1781,11 +1822,14 @@ function mountNodes(kept) {
       graph.appendChild(el);
       node.el = el;
     }
-    // Dim a node the active filters exclude — failing the search box OR the shared tag selector
-    // (matchesTags). Ghosts (lineage-only) never dim. The graph dims; the table hides the same set.
+    // Dim a node the active filters exclude — failing the search box, the shared tag selector
+    // (matchesTags), or the group selector. Ghosts (lineage-only) never dim. The graph dims; the
+    // table hides the same set.
     const matchesSearch = !query ||
-      dataNode.name.toLowerCase().includes(query) || (dataNode.tags || []).join(" ").toLowerCase().includes(query);
-    const dim = !dataNode.ghost && (!matchesSearch || !matchesTags(dataNode));
+      dataNode.name.toLowerCase().includes(query) || (dataNode.tags || []).join(" ").toLowerCase().includes(query) ||
+      (dataNode.group || "").toLowerCase().includes(query);
+    const dim = !dataNode.ghost &&
+      (!matchesSearch || !matchesTags(dataNode) || !matchesGroupFilter(dataNode.group));
     const className = "node s-" + dataNode.state +
       (dataNode.ghost ? " ghost" : " r-" + dataNode.role) +   // r-* sets --role → the left stripe + badge colour
       (node.pinned ? " pinned" : "") +
@@ -1818,6 +1862,11 @@ function nodeInner(dataNode, simNode) {
   }
   const pin = simNode.pinned ? `<span class="pin" title="pinned — click to release">📌</span>` : "";
   const role = `<span class="role">${escapeHtml(dataNode.role)}</span>`;
+  // The resolved effort group leads the chip row, visually distinct from the tag chips (outlined,
+  // ⊙-marked) — it is a derived cluster key, not a scope tag the record carries.
+  const group = dataNode.group
+    ? `<span class="chip gchip" style="--chip:${dataNode.groupColor || "var(--dim)"}" title="effort group (resolved)">⊙ ${escapeHtml(dataNode.group)}</span>`
+    : "";
   const chips = (dataNode.tags || []).map((tag) => {
     const color = (dataNode.derived.tag_colors && dataNode.derived.tag_colors[tag]) || "var(--dim)";
     return `<span class="chip" style="--chip:${color}">${escapeHtml(tag)}</span>`;
@@ -1829,7 +1878,7 @@ function nodeInner(dataNode, simNode) {
     : `<span class="dot"></span>`;
   return `<div class="row1">${dot}` +
          `<span class="name">${escapeHtml(dataNode.name)}</span>${pin}</div>` +
-         `<div class="chips">${role}${chips}</div>` +
+         `<div class="chips">${role}${group}${chips}</div>` +
          locationRow(dataNode.attachedTo);
 }
 
@@ -1914,7 +1963,7 @@ function renderFilterBar() {
   const pinHint = activeTab === "graph"
     ? `<span class="spacer"></span><span class="hint">drag a node to pin it · click for actions</span>` : "";
   const attachKey = activeTab === "graph" ? attachmentLegendHtml() : "";   // decodes the per-node 📍/○ location readout (graph only)
-  bar.innerHTML = `<span class="hint">states — click to show / hide:</span>${stateChipsHtml()}${tagSectionHtml()}${roleLegendHtml()}${attachKey}${pinHint}`;
+  bar.innerHTML = `<span class="hint">states — click to show / hide:</span>${stateChipsHtml()}${groupSectionHtml()}${tagSectionHtml()}${roleLegendHtml()}${attachKey}${pinHint}`;
 }
 
 // The role legend — a STATIC key (not a filter) decoding the per-role node colours (the left stripe +
@@ -1975,6 +2024,31 @@ function tagSectionHtml() {
   return `<span class="fsep"></span><span class="hint">tags — click to filter:</span>${chips}${clear}`;
 }
 
+// The effort-group selector — one chip per RESOLVED group over the visible states + time window
+// (per-group counts, server-derived colours), mirroring the tag selector one section over. Groups
+// cluster whole efforts, so this is the "show me just this effort" switch shared by graph + table.
+function groupSectionHtml() {
+  const counts = new Map();
+  const colors = {};
+  if (feed) for (const entry of feed.sessions) {
+    if (hiddenStates.has(entry.record.state)) continue;
+    if (!matchesTime(entry)) continue;
+    const group = entry.derived.resolved_group;
+    if (!group) continue;
+    counts.set(group, (counts.get(group) || 0) + 1);
+    if (!(group in colors)) colors[group] = entry.derived.group_color || "var(--dim)";
+  }
+  for (const group of [...groupFilter]) if (!counts.has(group)) groupFilter.delete(group);
+  if (counts.size === 0) return "";
+  const chips = [...counts.keys()].sort().map((group) => {
+    const on = groupFilter.has(group);
+    return `<button class="tagchip gchip${on ? " on" : ""}" data-effortgroup="${escapeHtml(group)}" style="--chip:${colors[group]}" ` +
+           `aria-pressed="${on}">⊙ ${escapeHtml(group)}<span class="n">${counts.get(group)}</span></button>`;
+  }).join("");
+  const clear = groupFilter.size ? `<button class="tagclear" data-cleargroups="1">clear ${groupFilter.size}</button>` : "";
+  return `<span class="fsep"></span><span class="hint">groups — click to filter:</span>${chips}${clear}`;
+}
+
 // The kind selector (messages tab) — all / agent↔agent / you, with live counts over the text+scope-
 // filtered set (minus the kind itself, so each count is what picking it would reveal). State and tags
 // don't apply to messages, so the bar shows only this here.
@@ -2008,6 +2082,14 @@ $("filterbar").addEventListener("click", (event) => {
     return;
   }
   if (event.target.closest("[data-cleartags]")) { selectedTags.clear(); paintActive(); return; }
+  if (event.target.closest("[data-cleargroups]")) { groupFilter.clear(); paintActive(); return; }
+  const groupChip = event.target.closest("[data-effortgroup]");
+  if (groupChip) {
+    const group = groupChip.dataset.effortgroup;
+    if (groupFilter.has(group)) groupFilter.delete(group); else groupFilter.add(group);
+    paintActive();
+    return;
+  }
   const tagChip = event.target.closest(".tagchip");
   if (tagChip) {
     const tag = tagChip.dataset.tag;

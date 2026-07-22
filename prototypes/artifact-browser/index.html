@@ -60,6 +60,10 @@
   /* ---- chips / badges / state dots ---- */
   /* Tag chips exactly as the sessions-graph dashboard draws them: per-tag color (the terminal
      picker's tag_cube palette, served as --chip), pill outline, 16% tinted fill. */
+  /* Effort-group chip — the RESOLVED cluster key (⊙-marked), not a stored scope tag: outlined
+     only + dashed border, mirroring the sessions-graph dashboard, so groups and tags never read
+     as one family. */
+  .chip.gchip { background: transparent; border-style: dashed; }
   .chip {
     display: inline-block; margin-right: 6px; font-size: 10.5px; padding: 1px 6px;
     border-radius: 999px; color: var(--chip, var(--dim)); border: 1px solid var(--chip, var(--dim));
@@ -257,6 +261,14 @@ function chips(tags, colors) {
     const color = (colors && colors[t]) || "var(--dim)";
     return '<span class="chip" style="--chip:' + esc(color) + '">' + esc(t) + "</span>";
   }).join("");
+}
+// The resolved effort-group chip for any payload row carrying the server's group triple
+// (resolved_group / group_color / group — the last non-null only for an explicit override).
+function groupChip(row) {
+  if (!row.resolved_group) return "";
+  const how = row.group ? "explicit override" : "derived from lineage";
+  return '<span class="chip gchip" style="--chip:' + esc(row.group_color || "var(--dim)") +
+    '" title="effort group (' + how + ')">⊙ ' + esc(row.resolved_group) + "</span>";
 }
 function stateHtml(state) {
   return '<span class="state st-' + esc(state) + '"><span class="dot"></span>' + esc(state) + "</span>";
@@ -485,7 +497,7 @@ async function renderChats() {
   }
 
   const cells = (s, last) =>
-    '<td>' + chips(s.tags, s.tag_colors) + '</td>' +
+    '<td>' + groupChip(s) + chips(s.tags, s.tag_colors) + '</td>' +
     '<td>' + stateHtml(s.state) + '</td>' +
     '<td class="muted mono" style="font-size:12px">' + esc(s.engine) + '</td>' +
     '<td class="right num">' + s.chats + '</td>' +
@@ -530,7 +542,7 @@ async function renderChats() {
   }).join("");
   app.innerHTML =
     '<table class="grid"><thead><tr>' +
-    '<th>session</th><th>tags</th><th>state</th><th>engine</th>' +
+    '<th>session</th><th>group · tags</th><th>state</th><th>engine</th>' +
     '<th class="right">chats</th><th class="right">artifacts</th><th class="right">last</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table>';
   const tbody = app.querySelector("tbody");
@@ -553,6 +565,7 @@ async function renderChatDetail(id) {
 
   const props = [];
   props.push(["state", stateHtml(d.state) + (d.read_only ? ' <span class="chip">read-only</span>' : "")]);
+  props.push(["group", groupChip(d) || '<span class="muted">—</span>']);
   props.push(["tags", chips(d.tags, d.tag_colors) || '<span class="muted">—</span>']);
   props.push(["engine", '<span class="mono" style="font-size:12.5px">' + esc(d.engine) + "</span>"]);
   props.push(["cwd", '<span class="mono" style="font-size:12.5px">' + esc(d.cwd) + "</span>"]);
@@ -685,6 +698,7 @@ async function renderArtifacts() {
     const authors = a.authors.map(x => '<span class="chip" title="' + esc(x.id) + '">' + esc(x.name) + "</span>").join("");
     return '<tr class="rowlink" data-href="#/artifacts/' + esc(a.id) + '">' +
       '<td><b>' + esc(a.title || a.filename) + '</b></td>' +
+      '<td>' + groupChip(a) + '</td>' +
       '<td class="mono muted" style="font-size:12px">' + esc(a.filename) + '</td>' +
       '<td class="right num">' + a.revs + '</td>' +
       '<td>' + authors + '</td>' +
@@ -692,7 +706,7 @@ async function renderArtifacts() {
   }).join("");
   app.innerHTML =
     '<table class="grid"><thead><tr>' +
-    '<th>artifact</th><th>file</th><th class="right">revs</th><th>authors</th><th class="right">updated</th>' +
+    '<th>artifact</th><th>group</th><th>file</th><th class="right">revs</th><th>authors</th><th class="right">updated</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table>';
   const tbody = app.querySelector("tbody");
   tbody.addEventListener("click", e => {
@@ -732,7 +746,8 @@ async function renderArtifactDetail(id) {
     '<h1 class="doc">' + esc(d.title || d.filename) + "</h1>" +
     '<p class="subhead"><span class="mono" style="font-size:12px">' + esc(d.id) + '</span><br>' +
     '<span class="mono">' + esc(d.filename) + '</span> · ' + d.revs + ' revision' + (d.revs === 1 ? "" : "s") +
-    ' · created ' + esc(d.created_ago) + ' ago · updated ' + esc(d.updated_ago) + " ago" + dirty + "</p>" +
+    ' · created ' + esc(d.created_ago) + ' ago · updated ' + esc(d.updated_ago) + " ago" +
+    ' · ' + groupChip(d) + dirty + "</p>" +
 
     '<section><h2>Touched by</h2><table class="grid"><thead><tr>' +
     '<th>rev</th><th>session</th><th>when</th><th>changes</th>' +
