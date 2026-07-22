@@ -258,6 +258,7 @@ The tmux integration reads these user-options (all default `on`). Set them in yo
 set -g @tx-ide-popups          on                 # prefix+t (tx attach), prefix+/ (tx-assistant)
 set -g @tx-ide-pane-borders    on                 # pane-border integration + colors
 set -g @tx-ide-agent-scroll    on                 # C-u / C-d → PageUp / PageDown in agent panes
+set -g @tx-ide-nav-keys        on                 # C-h/j/k/l seamless nav (see below)
 set -g @tx-ide-pane-keys       on                 # M-1..9 → select-pane
 set -g @tx-ide-window-keys     on                 # User0..8 → select-window
 set -g @tx-ide-session-labels  on                 # prefix+s shows each session's name + tags
@@ -266,6 +267,20 @@ set -g @tx-ide-palette         tokyonight-night   # or 'off' to skip color overr
 
 tmux's "last write wins" means anything you bind *after* the source line overrides tx-ide's
 defaults.
+
+### Seamless C-h/j/k/l navigation
+
+With `@tx-ide-nav-keys` on, `C-h/j/k/l` move focus in one keypress across **nvim splits, tmux
+panes, and tx's nested sessions** — a nested session is a `TMUX= tmux attach` client-in-a-pane
+on the same server, so the root bind re-fires per nesting level and `bin/tmux-nav` walks back
+out at a session's edge (nvim split → inner pane → view pane, any depth). An nvim pane handles
+the keys itself via `nvim/lua/config/tmux-nav.lua`, calling the same `bin/tmux-nav` when a
+`wincmd` hits the tabpage edge.
+
+The cost: `C-h/j/k/l` no longer reach shells or agent TUIs (zsh's `C-l` clear, claude's `C-j`
+newline). `prefix + C-h/j/k/l` sends the literal key into the pane instead — through any
+nesting depth. Copy-mode and popups (the tx picker) are untouched, and `M-1..9` direct pane
+jumps still work.
 
 ### Theme
 
