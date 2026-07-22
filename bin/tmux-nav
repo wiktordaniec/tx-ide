@@ -45,19 +45,21 @@ esac
 
 # Pane id of the pane whose tty hosts a client of `session_id` — the pane one nesting level
 # up, empty at the top level (the terminal's client tty is no pane's tty). Candidates are
-# filtered to DISPLAYED panes (active in their window, window current in its session):
-# every link in the key's delivery chain was necessarily displayed at press time, so when a
-# session is nest-attached in several places this picks the chain the user pressed through,
-# not tmux listing order. Two simultaneously displayed attachments of the same session
-# remain ambiguous — first match wins there.
+# filtered to DISPLAYED panes: active in their window, window current in its session, and
+# the host session itself attached — the active flags alone are layout selection and stay 1
+# in a fully detached session. Every link in the key's delivery chain was necessarily
+# displayed at press time, so when a session is nest-attached in several places this picks
+# the chain the user pressed through, not tmux listing order. Residual ambiguity (the same
+# session displayed through two live chains at once) resolves to the first match.
 host_pane_of() {
   local session_id="$1" ttys
   ttys=$(tmux list-clients -t "$session_id" -F '#{client_tty}' 2>/dev/null | tr '\n' ' ')
   [[ -z "$ttys" ]] && return 0
-  tmux list-panes -a -F '#{pane_tty} #{pane_id} #{pane_active} #{window_active}' 2>/dev/null |
+  tmux list-panes -a \
+    -F '#{pane_tty} #{pane_id} #{pane_active} #{window_active} #{session_attached}' 2>/dev/null |
     awk -v ttys="$ttys" '
       BEGIN { n = split(ttys, list, " "); for (i = 1; i <= n; i++) wanted[list[i]] = 1 }
-      ($1 in wanted) && $3 == 1 && $4 == 1 { print $2; exit }'
+      ($1 in wanted) && $3 == 1 && $4 == 1 && $5 >= 1 { print $2; exit }'
 }
 
 # Depth cap: a nest chain is 2-3 levels in practice; the cap only guards a pathological

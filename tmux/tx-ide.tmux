@@ -181,6 +181,17 @@ j D pane_at_bottom
 k U pane_at_top
 l R pane_at_right
 NAVSPEC
+else
+  # A re-source with the option off must CLEAR previously installed binds — last-write-wins
+  # would otherwise leave navigation live until a server restart. Unbind only bindings that
+  # are recognizably ours (they test pane_current_command; a user's own C-h/j/k/l binds
+  # from before the source line won't), so toggling off never strips a personal scheme.
+  for key in h j k l; do
+    tmux list-keys -T root "C-$key" 2>/dev/null | grep -q 'pane_current_command' &&
+      printf 'unbind -n C-%s\n' "$key" >>"$CONF"
+    tmux list-keys -T prefix "C-$key" 2>/dev/null | grep -q 'pane_current_command' &&
+      printf 'unbind C-%s\n' "$key" >>"$CONF"
+  done
 fi
 
 # --- Pane keys (M-1..9 → select-pane) ---
