@@ -513,6 +513,10 @@ class ChatOps:
         command = self.service.worker_launch_command(
             command, record.cwd, record.read_only
         )
+        # respawn-pane shares new-session's client-message limit — an inherited role-primed
+        # command exceeds it, so the same launch-script transport applies (keyed by the SAME
+        # session id the rotated pane keeps).
+        command = self.service.transportable_command(spec.source_txid, command)
         self.service.tmux.respawn_pane(spec.pane, command)
         self._record_seeded_chat(
             spec.source_txid,

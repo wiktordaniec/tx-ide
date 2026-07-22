@@ -232,11 +232,13 @@ class SessionService:
         self.log.append("spawn-view", f"{spec.name} {spec.cwd}")
         return spec.name
 
-    def _transportable_command(self, session_id: str, command: str) -> str:
-        """The command string handed to tmux. A command past tmux's client-command message limit
-        (e.g. a role-primed agent launch) is written to `$TX_IDE_HOME/launch/<session-id>.sh` and
-        launched through it; the record still persists the full engine command, so chat-op
-        derivation and read-only validation are unaffected. The script is removed on `kill`."""
+    def transportable_command(self, session_id: str, command: str) -> str:
+        """The command string handed to tmux (`new-session` and `respawn-pane` share the same
+        client-message limit). A command past it (e.g. a role-primed agent launch) is written to
+        `$TX_IDE_HOME/launch/<session-id>.sh` and launched through it; the record still persists
+        the full engine command, so chat-op derivation and read-only validation are unaffected.
+        The script is removed on `kill`/reconcile-exit; a rollover respawn reuses (overwrites)
+        its session's script."""
         if len(command.encode()) <= MAX_COMMAND_BYTES:
             return command
         script = launch_dir()
@@ -288,7 +290,7 @@ class SessionService:
         pid = self.tmux.new_session(
             name=tmux_name,
             cwd=spec.cwd,
-            command=self._transportable_command(
+            command=self.transportable_command(
                 session_id, spec.launch_cmd or spec.cmd
             ),
             env=launch_env,

@@ -22,12 +22,12 @@ via your spawn priming.
 The human spawns **you** and hands you the plan; **you spawn the orchestrator** and hand it the plan
 path, then watch it run. Nothing spawns you but the human, and the orchestrator is yours — that is
 what puts oversight genuinely on top. Spawn it per **COMMON § Spawning workers** (that section owns
-the full engine-built launch), primed to read COMMON + `agents/ORCHESTRATOR.md`:
+the full engine-built launch), primed with COMMON + `ORCHESTRATOR` injected via `--role`:
 
 ```bash
 tx spawn <prefix>-orchestrator --tag <scope> --cwd <repo> \
   --engine claude --model "opus[1m]" --effort 4 \
-  --prompt '<role-file priming>  Then drive the build at <plan-path>.'
+  --role ORCHESTRATOR --prompt 'Drive the build at <plan-path>.'
 ```
 
 The orchestrator is **not** your peer for spawning — you created it, it never spawns you. It **is**

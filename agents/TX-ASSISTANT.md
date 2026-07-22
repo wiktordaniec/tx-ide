@@ -139,7 +139,7 @@ The schema is open — unknown keys are ignored. If the user names a knob you do
 
 When the user asks for a worker, follow **COMMON § Spawning workers** for the engine-built launch,
 the automatic worktree placement for writable workers, any adapter-specific model/effort conventions, and
-the role-file priming string. Two things are yours as the assistant, layered on that recipe:
+the `--role` priming. Two things are yours as the assistant, layered on that recipe:
 
 - `<cwd>` — if the user said "here", use `pane-path` / `inner-pane-path` from the focus envelope; otherwise resolve the project root they named.
 - After spawning, tell the user the attach command: `tx attach`, filtered by the scope tag.
@@ -150,11 +150,11 @@ startup:
 
 ```bash
 tx spawn <name> --tag <scope> --cwd <project-root> \
-  --engine <engine> --prompt "<priming>"
+  --engine <engine> --role <roles> --prompt "<task>"
 
 # When the role conventions or user request specifies model or effort:
 tx spawn <name> --tag <scope> --cwd <project-root> \
-  --engine <engine> --model <model> --effort <1-5> --prompt "<priming>"
+  --engine <engine> --model <model> --effort <1-5> --role <roles> --prompt "<task>"
 ```
 
 tx creates a detached `$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<name>` checkout and
