@@ -271,13 +271,8 @@ class SessionService:
 
         # The work-ancestor edge: a chat-op (fork / resume / handover) passes its SOURCE session id
         # on the spec so lineage — and the grouping walk — climbs real work history; a plain spawn
-        # records the executor (grouping design, decision 2). A VIEW executor records no parent at
-        # all: views are home bases, not lineage (every consumer already drops them), and a view
-        # NAME is reusable after the view dies — persisted, it could later resolve to an unrelated
-        # same-named process and silently capture this session's lineage and group.
-        parent = spec.parent or self.tmux.current_session_name()
-        if spec.parent is None and parent is not None and self.tmux.is_view(parent):
-            parent = None
+        # records its MANAGED executor (grouping design, decision 2).
+        parent = spec.parent if spec.parent is not None else self._executor_parent()
         pid = self.tmux.new_session(
             name=tmux_name,
             cwd=spec.cwd,
@@ -333,6 +328,17 @@ class SessionService:
         self.store.save(session)
         self.log.append("spawn", f"{spec.name} [{spec.role.value}] {spec.cwd}")
         return session
+
+    def _executor_parent(self) -> str | None:
+        """The session ID this spawn is executed from, or None when the executor is not a managed
+        process — a view, an unmanaged tmux session, or a plain terminal. Only a managed executor
+        is lineage: its `@tx_id` is a stable record key, while a view's or unmanaged session's
+        reusable human NAME, persisted, could later be captured by a same-named record and
+        silently rewrite this session's lineage and resolved group."""
+        current = self.tmux.current_session_name()
+        if current is None:
+            return None
+        return self.tmux.get_tx_id(current)
 
     def _require_name_free(self, name: str) -> None:
         """Refuse a spawn/rename onto a display name a LIVE record already holds — the human-name

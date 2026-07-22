@@ -86,14 +86,14 @@ class GroupResolver:
             return session.group
         visited = {session.id}
         if session.name not in HUB_SESSION_NAMES:
-            ancestor = self._resolve_reference(session.parent)
+            ancestor = self._resolve_reference(session.parent, referrer=session)
             while ancestor is not None and ancestor.id not in visited:
                 if ancestor.group:
                     return ancestor.group
                 if ancestor.name in HUB_SESSION_NAMES:
                     break
                 visited.add(ancestor.id)
-                ancestor = self._resolve_reference(ancestor.parent)
+                ancestor = self._resolve_reference(ancestor.parent, referrer=ancestor)
         artifact = (
             self._artifacts_by_id.get(session.artifact_id)
             if isinstance(session, OtherSession)
@@ -121,18 +121,27 @@ class GroupResolver:
             return self._session_group(author, resolving_artifacts)
         return None
 
-    def _resolve_reference(self, reference: str | None) -> Session | None:
+    def _resolve_reference(self, reference: str | None, referrer: Session) -> Session | None:
         """A `parent` value as a record: by id first (a process executor / a chat-op source),
-        then by display name (a pre-v4 record; live-preferred, then newest — mirrors
-        `SessionService._resolve_name`). An unknown name — e.g. a dead view's, off a legacy
-        record — resolves to nothing, which is exactly how the walk ends below a view-hosted
-        root (new spawns no longer persist view executors at all)."""
+        then by display name — a LEGACY shape (pre-v4 records; new spawns persist only session
+        ids or nothing). Names are reusable, so a name written into `referrer` can only have
+        meant a session that already existed when the referrer was born: later same-named
+        records are excluded, or a fresh spawn would retroactively capture old lineage and
+        re-file its descendants. Among the era-valid candidates, prefer live then newest
+        (mirrors `SessionService._resolve_name`). An unknown name — e.g. a dead view's —
+        resolves to nothing, which is exactly how the walk ends below a legacy view-hosted
+        root."""
         if reference is None:
             return None
         by_id = self._sessions_by_id.get(reference)
         if by_id is not None:
             return by_id
-        candidates = self._sessions_by_name.get(reference)
+        born = referrer.created_at
+        candidates = [
+            candidate
+            for candidate in self._sessions_by_name.get(reference, [])
+            if born is None or (candidate.created_at or 0.0) <= born
+        ]
         if not candidates:
             return None
         return max(candidates, key=lambda session: (session.is_alive(), session.created_at or 0.0))

@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -72,10 +73,11 @@ class ArtifactStore:
         self.directory.mkdir(parents=True, exist_ok=True)
         lock = self._lock_path(artifact_id)
         owner_file = lock / "owner"
+        our_token = _owner_token(os.getpid())
         for _ in range(_LOCK_RETRIES):
             try:
                 lock.mkdir()
-                owner_file.write_text(str(os.getpid()))
+                owner_file.write_text(our_token)
                 break
             except FileExistsError:
                 if self._lock_is_stale(lock):
@@ -91,30 +93,27 @@ class ArtifactStore:
             yield
         finally:
             try:
-                if owner_file.read_text() == str(os.getpid()):
+                if owner_file.read_text() == our_token:
                     owner_file.unlink()
                     lock.rmdir()
             except OSError:
                 pass  # broken while we (over)held, or already gone — nothing of ours to release
 
     def _lock_is_stale(self, lock: Path) -> bool:
-        """Whether a held lock is crash debris. Owner pid readable: stale exactly when that process
-        is gone (a LIVE owner is never expired, however long it writes). Owner unreadable (the
-        mkdir→write-owner gap, or a breaker mid-teardown): fall back to age."""
+        """Whether a held lock is crash debris. Owner token readable: stale exactly when that
+        process is gone OR the pid now belongs to a different process — the start-time half of the
+        token catches a reused pid (post-crash, post-reboot), which a bare kill-0 would honor as
+        the owner forever. A genuinely LIVE owner is never expired, however long it writes. Owner
+        unreadable (the mkdir→write-owner gap, or a breaker mid-teardown): fall back to age."""
         try:
-            owner_pid = int((lock / "owner").read_text())
+            recorded = (lock / "owner").read_text()
+            owner_pid = int(recorded.partition(" ")[0])
         except (OSError, ValueError):
             try:
                 return time.time() - lock.stat().st_mtime > _OWNERLESS_LOCK_STALE_SECONDS
             except OSError:
                 return False  # vanished under us — the next mkdir attempt decides
-        try:
-            os.kill(owner_pid, 0)
-        except ProcessLookupError:
-            return True
-        except PermissionError:
-            return False  # alive, just not ours to signal
-        return False
+        return _owner_token(owner_pid) != recorded
 
     def _break_lock(self, lock: Path) -> None:
         with contextlib.suppress(OSError):
@@ -276,6 +275,19 @@ class ArtifactContent:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
             raise
+
+
+def _owner_token(pid: int) -> str:
+    """The lock-owner identity: `<pid> <process start time>`. The start-time half (`ps -o
+    lstart=`, fixed-format on both darwin and linux) pins the token to ONE incarnation of the
+    pid — after a crash or reboot a reused pid yields a different start time, so the breaker
+    sees crash debris where a bare pid liveness probe would honor the impostor as a live owner
+    forever. A gone process yields the bare `<pid> ` token (ps prints nothing), which never
+    matches a live recording."""
+    completed = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "lstart="], capture_output=True, text=True
+    )
+    return f"{pid} {completed.stdout.strip()}"
 
 
 def _rev_number(path: Path) -> int | None:
