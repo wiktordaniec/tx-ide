@@ -210,14 +210,14 @@ class SpawnCommand(Command):
             parser.error(
                 "--read-only requires an engine-built launch; it cannot enforce --cmd"
             )
+        environment = _parse_env(args.env)
         try:
-            command, engine = self._resolve_command(args)
+            command, engine = self._resolve_command(args, environment)
         except RoleError as error:
             parser.error(str(error))
         role = infer_role(command)
         if args.read_only and role != Role.LLM:
             parser.error("--read-only requires an agent launch")
-        environment = _parse_env(args.env)
         spec = SpawnSpec.for_process(
             name=args.name,
             tags=tags,
@@ -236,7 +236,9 @@ class SpawnCommand(Command):
         print(f"Spawned '{session.name}' (cwd={session.cwd}, tag={args.tag})")
         return 0
 
-    def _resolve_command(self, args: argparse.Namespace) -> tuple[str, Engine | None]:
+    def _resolve_command(
+        self, args: argparse.Namespace, environment: dict[str, str]
+    ) -> tuple[str, Engine | None]:
         """Resolve the launch command + the engine to stamp. Three paths: --cmd → that exact command
         (engine = --engine if given, else inferred from the command's binary so e.g. `--cmd 'codex …'`
         is stamped codex, not blind-defaulted to claude); an agent spawn
@@ -263,6 +265,7 @@ class SpawnCommand(Command):
                     initial_prompt=args.prompt,
                     read_only=args.read_only,
                     role_priming=load_role_priming(role_names) if role_names else None,
+                    env=environment,
                 )
             )
             return command, engine

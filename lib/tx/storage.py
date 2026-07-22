@@ -95,6 +95,13 @@ def hooks_dir() -> Path:
     return tx_ide_home() / "hooks"
 
 
+def launch_dir() -> Path:
+    """`$TX_IDE_HOME/launch/` — per-session launch scripts for commands too large for tmux's
+    client-command message (~16 KiB on 3.6a, e.g. a role-primed agent launch). Written by
+    `SessionService._spawn`, removed on `kill`."""
+    return tx_ide_home() / "launch"
+
+
 def ensure_home() -> Path:
     """Create the `$TX_IDE_HOME` skeleton if absent (idempotent) and return the home path.
 
@@ -111,6 +118,7 @@ def ensure_home() -> Path:
         worktrees_dir(),
         user_agents_dir(),
         artifacts_dir(),
+        launch_dir(),
     ):
         directory.mkdir(parents=True, exist_ok=True)
     return home

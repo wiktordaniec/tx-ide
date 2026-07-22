@@ -53,10 +53,14 @@ class EngineAdapter(Protocol):
         initial_prompt: str | None = None,
         read_only: bool = False,
         role_priming: str | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> list[str]:
         """Argv for a fresh session, including the requested repository access mode.
         `role_priming` is injected ADDITIVELY into the engine's system prompt (the base prompt is
-        never replaced) as a persona value-flag, so chat-op identity stripping inherits it."""
+        never replaced) as a persona value-flag, so chat-op identity stripping inherits it.
+        `env` is the SESSION'S launch environment (`--env` overrides) — an engine that consults its
+        own home while building (codex's configured developer_instructions) must resolve it as the
+        spawned process will, not as this parent process would."""
         ...
 
     def resume_command(self, chat_id: str, *, read_only: bool = False) -> list[str]:

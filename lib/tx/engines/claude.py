@@ -350,8 +350,10 @@ class ClaudeEngine(EngineAdapter):
         initial_prompt: str | None = None,
         read_only: bool = False,
         role_priming: str | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> list[str]:
-        # A positional prompt auto-submits in interactive mode (measured).
+        # A positional prompt auto-submits in interactive mode (measured). `env` is unused: claude
+        # consults no engine home while building.
         command = [CLAUDE_BIN]
         if model:
             command += ["--model", model]

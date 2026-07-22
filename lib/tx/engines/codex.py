@@ -52,22 +52,25 @@ TRANSCRIPT_SUFFIX = ".jsonl"
 
 # ----- transcript / path internals ----------------------------------------------------------
 
-def codex_home() -> Path:
-    return Path(os.environ.get(CODEX_HOME_ENV, DEFAULT_CODEX_HOME)).expanduser()
+def codex_home(env: Mapping[str, str] | None = None) -> Path:
+    """Codex's home as the SPAWNED process will resolve it: a launch-env override (`--env
+    CODEX_HOME=…`) wins over this parent process's environment."""
+    overridden = (env or {}).get(CODEX_HOME_ENV) or os.environ.get(CODEX_HOME_ENV)
+    return Path(overridden or DEFAULT_CODEX_HOME).expanduser()
 
 
 def sessions_root() -> Path:
     return codex_home() / SESSIONS_DIR
 
 
-def configured_developer_instructions() -> str | None:
+def configured_developer_instructions(env: Mapping[str, str] | None = None) -> str | None:
     """The user's own top-level `developer_instructions` from `$CODEX_HOME/config.toml`, or None.
     Role priming prepends this so the `-c` override composes with the configured value instead of
     silently replacing it. The file is an external input (system boundary): absent, unreadable, or
     invalid TOML degrades to None. Profile-scoped values are out of scope — codex's own precedence
     already lets a `-c` override win there."""
     try:
-        with (codex_home() / CONFIG_FILE_NAME).open("rb") as handle:
+        with (codex_home(env) / CONFIG_FILE_NAME).open("rb") as handle:
             value = tomllib.load(handle).get(DEVELOPER_INSTRUCTIONS_KEY)
     except (OSError, tomllib.TOMLDecodeError):
         return None
@@ -243,6 +246,7 @@ class CodexEngine(EngineAdapter):
         initial_prompt: str | None = None,
         read_only: bool = False,
         role_priming: str | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> list[str]:
         """Argv for a fresh session. A positional prompt auto-submits in the interactive TUI, so the
         seed needs no send-keys."""
@@ -255,7 +259,7 @@ class CodexEngine(EngineAdapter):
         if role_priming:
             # A `-c KEY=VALUE` persona pair, so _strip_identity inherits it across chat ops. The
             # configured config.toml value rides in front — the override would replace it otherwise.
-            configured = configured_developer_instructions()
+            configured = configured_developer_instructions(env)
             instructions = (
                 f"{configured}\n\n{role_priming}" if configured else role_priming
             )
