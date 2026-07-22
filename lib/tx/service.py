@@ -265,7 +265,10 @@ class SessionService:
                 )
             )
 
-        parent = self.tmux.current_session_name()
+        # The work-ancestor edge: a chat-op (fork / resume / handover) passes its SOURCE session id
+        # on the spec so lineage — and the grouping walk — climbs real work history; a plain spawn
+        # records the executor (grouping design, decision 2).
+        parent = spec.parent or self.tmux.current_session_name()
         pid = self.tmux.new_session(
             name=tmux_name,
             cwd=spec.cwd,
@@ -293,6 +296,7 @@ class SessionService:
                 initial_cmd=spec.cmd,
                 engine=engine or Engine.CLAUDE,
                 tags=list(spec.tags),
+                group=spec.group,
                 spawn_env=dict(spec.env),
                 parent=parent,
                 pid=pid,
@@ -311,6 +315,7 @@ class SessionService:
                 cwd=spec.cwd,
                 initial_cmd=spec.cmd,
                 tags=list(spec.tags),
+                group=spec.group,
                 spawn_env=dict(spec.env),
                 parent=parent,
                 pid=pid,
@@ -387,6 +392,19 @@ class SessionService:
         )  # ride-along snapshot (§4)
         self.store.save(session)
         self.log.append("tag", f"{session.name} {','.join(tags)}")
+        return session
+
+    def set_group(self, name_or_id: str, group: str | None) -> Session:
+        """Set (or with None clear) a session's EXPLICIT effort-group override — the only stored
+        rung of the read-time resolution cascade (grouping.py). Clearing returns the session to
+        derived grouping. Mirrors `tag`, including the ride-along attachment snapshot."""
+        session = self._require(name_or_id)
+        session.group = group
+        session.attached_to = self.tmux.attached_to(
+            session.tmux_name
+        )  # ride-along snapshot (§4)
+        self.store.save(session)
+        self.log.append("group", f"{session.name} {group if group is not None else '(cleared)'}")
         return session
 
     def bind_artifact(self, session_id: str, artifact_id: str) -> Session:

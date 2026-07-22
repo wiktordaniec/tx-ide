@@ -166,11 +166,18 @@ class ChatOps:
     # ----- fork (§4) -----------------------------------------------------------------------
 
     def fork(
-        self, source: str, new_name: str | None = None, read_only: bool = False
+        self,
+        source: str,
+        new_name: str | None = None,
+        read_only: bool = False,
+        group: str | None = None,
     ) -> Session:
         """Branch the source's active chat into a NEW tx session that starts with the full history,
         then diverges. Native `--fork-session`, interactive, no `-p`. The source `.jsonl` is
-        read-only under `--fork-session` (#8) — safe to fork a session you are actively using."""
+        read-only under `--fork-session` (#8) — safe to fork a session you are actively using.
+        `parent` is the SOURCE session (the work ancestor, decision 2); the fork's own `group` stays
+        the `--group` override or None (derived through that parent edge — settled: no automatic
+        explicit copy of the source's group)."""
         source_session = self.service.get(source)
         if source_session is None:
             raise SessionNotFound(f"fork: source session '{source}' not found")
@@ -193,6 +200,7 @@ class ChatOps:
             ),
             env=_inherited_env(source_session), records_own_chat=True,
             engine=source_session.engine, read_only=read_only,
+            group=group, parent=source_session.id,
         )
         new_session = self.service.spawn_worker(
             spec,
@@ -404,10 +412,13 @@ class ChatOps:
                 source.initial_cmd, seed, read_only=spec.read_only
             )
         )
+        # `parent` is the SOURCE session, not whoever runs the finish (the distiller, or nothing
+        # when the detached watchdog fires it) — the handover worker continues the source's work,
+        # so lineage/grouping climb to the source (decision 2, handover included).
         worker = self.service.spawn_worker(SpawnSpec.for_process(
             name=spec.worker_name, tags=list(source.tags), cwd=spec.cwd, cmd=launch,
             env=_inherited_env(source), records_own_chat=True,
-            engine=source.engine, read_only=spec.read_only,
+            engine=source.engine, read_only=spec.read_only, parent=spec.source_txid,
         ))
         self._record_seeded_chat(
             worker.id, worker.cwd, "handover", spec.source_txid, spec.source_chat

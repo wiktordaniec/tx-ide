@@ -66,18 +66,22 @@ class ArtifactService:
         *,
         title: str | None = None,
         filename: str | None = None,
+        group: str | None = None,
     ) -> Artifact:
         """Register a new artifact from `content`: write `revs/0.<ext>` + `current.<ext>`, persist
         the record with one `Touch(rev=0)` (the create), log one line. `filename` preserves the
         source name so revs keep their extension (D1); it defaults to a bare `artifact` when the
         caller has none. `session_id` is the creator — a tx session id or the `USER_ACTOR` sentinel.
-        A fresh uuid means the rev-0 claim never contends, so create cannot conflict."""
+        `group` is the optional explicit effort-group override (`--group`); left None the artifact
+        groups under its creator's resolved group at read time (grouping.py). A fresh uuid means the
+        rev-0 claim never contends, so create cannot conflict."""
         now = time.time()
         artifact = Artifact(
             id=str(uuid.uuid4()),
             title=title,
             filename=filename if filename is not None else "artifact",
             created_at=now,
+            group=group,
             history=[Touch(session_id=session_id, at=now, rev=0, changes=None)],
         )
         self.files.claim_rev(artifact, 0, content)
@@ -128,6 +132,20 @@ class ArtifactService:
         artifact.history.append(Touch(session_id=session_id, at=now, rev=next_rev, changes=changes))
         self.store.save(artifact)
         self.log.append("artifact-modify", f"{artifact.id} rev{next_rev}", actor=session_id)
+        return artifact
+
+    def set_group(self, artifact_id: str, session_id: str, group: str | None) -> Artifact:
+        """Set (or with None clear) the artifact's EXPLICIT effort-group override. Metadata only —
+        no rev, no touch (`history` stays the content/version log; `doctor`'s touch⇄log cross-check
+        is untouched) — but it IS a mutation, so it logs one line (D8)."""
+        artifact = self._require(artifact_id)
+        artifact.group = group
+        self.store.save(artifact)
+        self.log.append(
+            "artifact-group",
+            f"{artifact.id} {group if group is not None else '(cleared)'}",
+            actor=session_id,
+        )
         return artifact
 
     def _write_next_rev(self, artifact: Artifact, rev: int, content: bytes) -> None:

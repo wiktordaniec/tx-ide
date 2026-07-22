@@ -29,11 +29,13 @@ from datetime import datetime
 from pathlib import Path
 
 from . import chat, engines, history, hooks, palette, sync
-from .artifact import USER_ACTOR
+from .artifact import ARTIFACT_SCHEMA_VERSION, USER_ACTOR
 from .artifact_service import ArtifactService
+from .artifact_store import ArtifactStore
 from .chat import ChatOps
 from .engines import claude
 from .events import EventLog
+from .grouping import GroupResolver
 from .render import (
     LOCATION_W,
     ROLE_W,
@@ -58,9 +60,9 @@ from .session import (
     UnsupportedRecordError,
 )
 from .spawn import SHELL_COMMANDS, SpawnSpec, infer_role
-from .storage import LocalStorage, ensure_home, sessions_dir, tx_ide_home
+from .storage import LocalStorage, artifacts_dir, ensure_home, sessions_dir, tx_ide_home
 from .store import SessionStore
-from .migrations import migrate_sessions
+from .migrations import migrate_artifacts, migrate_sessions
 from .tmux import TmuxError
 
 
@@ -140,6 +142,11 @@ class SpawnCommand(Command):
         parser = self._parser()
         parser.add_argument("name")
         parser.add_argument("--tag", required=True)
+        parser.add_argument(
+            "--group",
+            help="explicit effort-group override for the record (default: derived at "
+            "read time from parent lineage / tags[0] / name)",
+        )
         parser.add_argument("--cwd")
         parser.add_argument(
             "--cmd",
@@ -199,6 +206,7 @@ class SpawnCommand(Command):
             env=environment,
             engine=engine,
             read_only=args.read_only,
+            group=args.group,
         )
         session = (
             self.service.spawn_worker(spec)
@@ -244,6 +252,11 @@ class SpawnNvimCommand(Command):
         parser = self._parser()
         parser.add_argument("name")
         parser.add_argument("--tag", required=True)
+        parser.add_argument(
+            "--group",
+            help="explicit effort-group override for the record (default: derived at "
+            "read time from parent lineage / tags[0] / name)",
+        )
         parser.add_argument("--cwd")
         parser.add_argument("--diff", nargs="?", const="main", default=None)
         parser.add_argument("--open", default=None)
@@ -259,6 +272,7 @@ class SpawnNvimCommand(Command):
             env=_parse_env(args.env),
             diff_base=args.diff,
             open_file=args.open,
+            group=args.group,
         )
         session = self.service.spawn_nvim(spec)
         details = [
@@ -516,6 +530,8 @@ class ResumeCommand(Command):
         )
         # Stamp the source engine on the resumed record so a resumed codex session stays codex
         # (resolving its rollout) instead of defaulting to Claude — set-at-spawn, read-thereafter.
+        # `parent` is the SOURCE record (the work ancestor, grouping decision 2), not whoever ran
+        # `tx resume`; the new record's own group stays derived through that edge.
         spec = SpawnSpec.for_process(
             name=name,
             tags=list(record.tags),
@@ -525,6 +541,7 @@ class ResumeCommand(Command):
             records_own_chat=True,
             engine=record.engine,
             read_only=record.read_only,
+            parent=record.id,
         )
         new = self.service.spawn_worker(
             spec,
@@ -583,6 +600,40 @@ class TagCommand(Command):
             return 0
         session = self.service.tag(args.name, _split_tags(args.tags))
         print(f"Tagged '{session.name}' (tag={args.tags})")
+        return 0
+
+
+class GroupCommand(Command):
+    name = "group"
+    summary = "Read or set a session's effort-group override (--clear returns to derived)."
+
+    def run(self, argv: list[str]) -> int:
+        parser = self._parser()
+        parser.add_argument("name")
+        parser.add_argument("group", nargs="?", help="the explicit group to set")
+        parser.add_argument(
+            "--clear", action="store_true", help="drop the override — back to derived"
+        )
+        args = parser.parse_args(argv)
+        if args.clear and args.group is not None:
+            parser.error("give a group or --clear, not both")
+        if args.group == "":
+            parser.error("a group cannot be empty — use --clear to drop the override")
+        if args.clear:
+            session = self.service.set_group(args.name, None)
+            print(f"Cleared group override on '{session.name}' (back to derived)")
+            return 0
+        if args.group is not None:
+            session = self.service.set_group(args.name, args.group)
+            print(f"Grouped '{session.name}' (group={args.group})")
+            return 0
+        session = self.service.get(args.name)
+        if session is None:
+            print(f"tx group: session '{args.name}' not found", file=sys.stderr)
+            return 1
+        resolver = GroupResolver(self.service.store.all(), ArtifactStore().all())
+        print(f"own:      {session.group if session.group is not None else '—'}")
+        print(f"resolved: {resolver.session_group(session)}")
         return 0
 
 
@@ -695,6 +746,7 @@ class ArtifactCommand(Command):
         return {
             "create": self._create,
             "modify": self._modify,
+            "group": self._group,
             "ls": self._ls,
             "show": self._show,
             "diff": self._diff,
@@ -717,8 +769,9 @@ class ArtifactCommand(Command):
         print("usage: tx artifact <subcommand> [args]\n")
         print("subcommands:")
         for usage, summary in (
-            ("create <file> [--title T]", "register a new artifact from a file"),
+            ("create <file> [--title T] [--group G]", "register a new artifact from a file"),
             ("modify <id> [<file>] [--changes ...]", "snapshot a new revision (no file = the working copy)"),
+            ("group <id> [<group> | --clear]", "read or set the effort-group override"),
             ("ls [--session S]", "list artifacts (--session: what a session touched)"),
             ("show <id>", "metadata + the full touch/version log"),
             ("diff <id> [<revA> <revB>]", "difflib diff between two revisions (default: last two)"),
@@ -759,14 +812,47 @@ class ArtifactCommand(Command):
         parser = self._sub_parser("create")
         parser.add_argument("file")
         parser.add_argument("--title")
+        parser.add_argument(
+            "--group",
+            help="explicit effort-group override (default: derived at read time from "
+            "the creator's resolved group)",
+        )
         args = parser.parse_args(argv)
         path = Path(args.file)
         if not path.is_file():
             parser.error(f"no such file: {args.file}")
         artifact = self.artifacts.create(
-            self._actor(), path.read_bytes(), title=args.title, filename=path.name
+            self._actor(), path.read_bytes(), title=args.title, filename=path.name,
+            group=args.group,
         )
         print(f"Created artifact {artifact.id} ({artifact.filename})")
+        return 0
+
+    def _group(self, argv: list[str]) -> int:
+        parser = self._sub_parser("group")
+        parser.add_argument("id")
+        parser.add_argument("group", nargs="?", help="the explicit group to set")
+        parser.add_argument(
+            "--clear", action="store_true", help="drop the override — back to derived"
+        )
+        args = parser.parse_args(argv)
+        if args.clear and args.group is not None:
+            parser.error("give a group or --clear, not both")
+        if args.group == "":
+            parser.error("a group cannot be empty — use --clear to drop the override")
+        artifact_id = self.artifacts.resolve_id(args.id)
+        if args.clear:
+            self.artifacts.set_group(artifact_id, self._actor(), None)
+            print(f"Cleared group override on artifact {artifact_id} (back to derived)")
+            return 0
+        if args.group is not None:
+            self.artifacts.set_group(artifact_id, self._actor(), args.group)
+            print(f"Grouped artifact {artifact_id} (group={args.group})")
+            return 0
+        artifact = self.artifacts.store.load(artifact_id)
+        resolver = GroupResolver(SessionStore().all(), self.artifacts.store.all())
+        print(f"own:      {artifact.group if artifact.group is not None else '—'}")
+        print(f"resolved: {resolver.artifact_group(artifact)}")
         return 0
 
     def _modify(self, argv: list[str]) -> int:
@@ -833,7 +919,10 @@ class ArtifactCommand(Command):
         artifact = self.artifacts.store.load(self.artifacts.resolve_id(args.id))
         dirty = self.artifacts.files.current_is_dirty(artifact)  # show flags a dirty current
         names = SessionStore().names_for(touch.session_id for touch in artifact.history)
-        print(render_artifact_show(artifact, dirty, names))
+        resolver = GroupResolver(SessionStore().all(), self.artifacts.store.all())
+        print(render_artifact_show(
+            artifact, dirty, names, resolved_group=resolver.artifact_group(artifact)
+        ))
         return 0
 
     def _diff(self, argv: list[str]) -> int:
@@ -1582,15 +1671,15 @@ class SelfCheckCommand(Command):
 
 
 # ----- schema migration ----------------------------------------------------------------------
-# `tx migrate` (the v3 → v4 migrator) lives in tx.migrations; this command is a thin wrapper.
+# `tx migrate` lives in tx.migrations; this command is a thin wrapper over both store legs.
 
 
 class MigrateCommand(Command):
     name = "migrate"
-    summary = "Upgrade $TX_IDE_HOME session records to the current schema (idempotent; chains v3→v4→v5)."
+    summary = "Upgrade $TX_IDE_HOME records to the current schemas (sessions v3→v6, artifacts v1→v2)."
 
     def run(self, argv: list[str]) -> int:
-        # No flags: the target is $TX_IDE_HOME/sessions, so a sandbox run is `TX_IDE_HOME=<tmp> tx
+        # No flags: the target is $TX_IDE_HOME, so a sandbox run is `TX_IDE_HOME=<tmp> tx
         # migrate` (a newer checkout must never migrate a live older home). Explicit + idempotent. The
         # live tmux server is needed to stamp @tx_view onto view sessions as their records are retired.
         self._parser().parse_args(argv)  # reject stray args; serve `-h`
@@ -1606,6 +1695,15 @@ class MigrateCommand(Command):
         print(
             f"migrated {len(migrated)} record(s) to v{SCHEMA_VERSION}; "
             f"retired {len(views_removed)} view record(s); left {len(skipped)} untouched."
+        )
+        artifacts_migrated, artifacts_skipped = migrate_artifacts(artifacts_dir())
+        for name in artifacts_migrated:
+            print(f"  migrated {name} → artifact v{ARTIFACT_SCHEMA_VERSION}")
+        for name, reason in artifacts_skipped:
+            print(f"  skipped  {name} ({reason})")
+        print(
+            f"migrated {len(artifacts_migrated)} artifact record(s) to "
+            f"v{ARTIFACT_SCHEMA_VERSION}; left {len(artifacts_skipped)} untouched."
         )
         return 0
 
@@ -1631,9 +1729,14 @@ class ForkCommand(Command):
             action="store_true",
             help="create the new fork in a tx worktree with repository edits blocked",
         )
+        parser.add_argument(
+            "--group",
+            help="explicit effort-group override for the fork (default: derived — the "
+            "fork's parent edge points at the source session)",
+        )
         args = parser.parse_args(argv)
         new = ChatOps(self.service).fork(
-            args.source, args.new_name, read_only=args.read_only
+            args.source, args.new_name, read_only=args.read_only, group=args.group
         )
         forked = chat.active_chat(new)
         chat_label = forked.id[:8] if forked and forked.id else "pending"
@@ -1752,6 +1855,7 @@ PUBLIC_COMMANDS: list[type[Command]] = [
     SpawnNvimCommand,
     SpawnViewCommand,
     TagCommand,
+    GroupCommand,
     RenameCommand,
     WhoamiCommand,
     SendMessageCommand,
