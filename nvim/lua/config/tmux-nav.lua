@@ -1,14 +1,11 @@
--- Seamless <C-h/j/k/l> between nvim splits and tmux panes (the nvim half of tx-ide's
--- @tx-ide-nav-keys; see tmux/tx-ide.tmux). The tmux bind forwards C-h/j/k/l into any pane
--- running nvim; here they move between splits, and when `wincmd` hits the tabpage edge the
--- key hands off to bin/tmux-nav, which selects the neighboring tmux pane — walking OUT of
--- tx's nested client-in-a-pane sessions when this nvim runs inside one.
+-- <C-h/j/k/l>: nvim splits first, then tmux panes — the nvim half of tx-ide's
+-- @tx-ide-nav-keys (tmux/tx-ide.tmux). At the tabpage edge, hand off to bin/tmux-nav,
+-- which walks out of tx's nested client-in-a-pane sessions.
 
 local M = {}
 
--- bin/tmux-nav, resolved relative to this file THROUGH the ~/.config/nvim symlink into the
--- repo checkout (plain dirname math on the symlinked path would escape into ~/.config).
--- Outside a repo checkout (this file copied elsewhere), fall back to $PATH.
+-- Resolve bin/tmux-nav THROUGH the ~/.config/nvim symlink (plain dirname math on the
+-- symlinked path would escape into ~/.config); $PATH fallback outside a checkout.
 local source_file = debug.getinfo(1, "S").source:sub(2)
 local navigator = vim.uv.fs_realpath(vim.fs.dirname(source_file) .. "/../../../bin/tmux-nav")
   or "tmux-nav"

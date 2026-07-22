@@ -23,7 +23,7 @@ set -u
 RELABEL="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tmux-session-relabel"
 # Repo-relative poke the focus hooks run (backgrounded) to nudge the session-graph dashboard's ring.
 FOCUS_POKE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tx-graph-focus-poke"
-# Repo-relative navigator the nav-keys binds call on a session-edge press (the bubble path).
+# Repo-relative navigator for the nav-keys edge path.
 NAV="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tmux-nav"
 
 option() {
@@ -136,25 +136,16 @@ EOF
 fi
 
 # --- Nav keys (C-h/j/k/l: nvim splits ↔ panes ↔ nested sessions) ---
-# One root-table bind per direction, evaluated PER CLIENT — and tx nests sessions as a
-# client-in-a-pane on the SAME server (`TMUX= tmux attach`), so the same bind re-fires one
-# nesting level down whenever the key is forwarded into a nested client. That collapses the
-# navigation to two cases and recurses to any depth for free:
-#   - pane runs nvim or a nested tmux client → send the key INTO the pane. nvim moves between
-#     its splits (lua/config/tmux-nav.lua) and calls bin/tmux-nav itself at the tabpage edge;
-#     a nested client re-evaluates this same bind against the inner session.
-#   - otherwise → select-pane, or — when already at the session's edge — bin/tmux-nav, which
-#     hops to the pane hosting this session's client and continues the walk in the outer
-#     session (`#{client_tty}` pins that first hop to the client that pressed the key).
-# `pane_current_command` is exact here precisely BECAUSE the nesting is a client-in-a-pane:
-# the pane's foreground process IS `tmux` (the nested client) or `nvim` — no ps hackery.
-# Root-table binds don't fire in copy-mode or popups, so those keep their keys.
-#
-# Cost: C-h/j/k/l no longer reach shells or agent TUIs (zsh C-l clear, claude C-j newline…).
-# prefix+C-h/j/k/l sends the literal key instead — re-wrapping the prefix per nesting level,
-# so each hop unwraps once and the innermost non-tmux pane receives the bare key. The prefix
-# is read at compose time (run-shell executes after the user's tmux.conf set it); a `none`
-# prefix skips the escape binds. M-1..9 direct pane jumps are unaffected.
+# Root binds are evaluated per client, and tx nests as a client-in-a-pane on the SAME
+# server — so send-keys into a nested (`tmux`) pane re-fires this bind one level down,
+# recursing to any depth. pane_current_command is exact at that boundary for the same
+# reason: the pane's process IS `tmux` or `nvim`. nvim moves its own splits and calls
+# bin/tmux-nav at the tabpage edge; the bind calls it at a session edge, #{client_tty}
+# pinning the first hop. Copy-mode and popups never see root binds.
+# Cost: these keys no longer reach shells/agent TUIs. prefix+C-h/j/k/l sends the
+# literal key, re-wrapped per nest level so the innermost non-tmux pane gets the bare
+# key. The prefix is read at compose time (run-shell runs after the user's conf set
+# it); a `none` prefix skips the escape binds.
 if [ "$nav_keys" = on ]; then
   nav_pass='#{||:#{==:#{pane_current_command},nvim},#{==:#{pane_current_command},tmux}}'
   nav_nested='#{==:#{pane_current_command},tmux}'
@@ -182,10 +173,8 @@ k U pane_at_top
 l R pane_at_right
 NAVSPEC
 else
-  # A re-source with the option off must CLEAR previously installed binds — last-write-wins
-  # would otherwise leave navigation live until a server restart. Unbind only bindings that
-  # are recognizably ours (they test pane_current_command; a user's own C-h/j/k/l binds
-  # from before the source line won't), so toggling off never strips a personal scheme.
+  # Re-sourcing with the option off must clear previously installed binds. Unbind only
+  # bindings that test pane_current_command — ours — never a personal C-h/j/k/l scheme.
   for key in h j k l; do
     tmux list-keys -T root "C-$key" 2>/dev/null | grep -q 'pane_current_command' &&
       printf 'unbind -n C-%s\n' "$key" >>"$CONF"

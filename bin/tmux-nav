@@ -1,24 +1,12 @@
 #!/usr/bin/env bash
-# Directional pane navigation that bubbles OUT of nested sessions. Usage:
-#
+# Directional pane navigation that bubbles OUT of nested sessions:
 #   tmux-nav {L|D|U|R} [pane_id] [client_tty]
-#
-# Selects the neighboring pane in the given direction from `pane_id` (default: $TMUX_PANE,
-# for the nvim caller). When the pane is at its session's edge and that session is
-# nest-attached INTO a pane of an outer session (tx's `TMUX= tmux attach` client-in-a-pane,
-# same server), the walk hops to the hosting pane and retries there — so navigation flows
-# nvim split → inner pane → view pane in one keypress. At the top level's edge it stops.
-#
-# Two callers, both only on the edge/slow path (the tx-ide binding handles the in-session
-# fast path with a plain `select-pane`):
-#   - tmux/tx-ide.tmux nav-keys bind, passing `#{pane_id} #{client_tty}` — the client that
-#     pressed the key, which pins the first hop when a session has several clients.
-#   - nvim (lua/config/tmux-nav.lua), when `wincmd` hits the tabpage edge — no client_tty,
-#     so the hop resolves through the session's client list instead.
-#
-# The client_tty↔pane_tty join below is the same-server attachment join — the inverse
-# direction (session → hosting pane) of `tmux-pane-session-name` (pane → inner session).
-# Keep all mirrors in lockstep with lib/tx/tmux.py `Tmux._attachment_join`.
+# At a session's edge, hop to the pane hosting this session's client (tx nests via
+# `TMUX= tmux attach` on the same server) and retry there; stop at the top level.
+# Both callers are edge-only: the tx-ide nav bind (passes #{client_tty}, pinning the
+# first hop) and nvim's config/tmux-nav.lua (no client_tty; resolves via client list).
+# The client_tty↔pane_tty join is the inverse of tmux-pane-session-name's; keep every
+# mirror in lockstep with lib/tx/tmux.py `Tmux._attachment_join`.
 set -u
 
 direction="${1:-}"
@@ -38,19 +26,14 @@ esac
 
 [[ -z "$pane" ]] && exit 0
 
-# Feature toggle: both callers funnel through this script, so one guard here disables the
-# cross-pane handoff everywhere (the binds are absent when off; nvim's maps degrade to
-# plain in-nvim wincmd). Unset means the default, on.
+# One toggle guard covers both callers; when off, nvim's maps degrade to plain wincmd.
 [[ "$(tmux show-option -gqv @tx-ide-nav-keys 2>/dev/null)" == off ]] && exit 0
 
-# Pane id of the pane whose tty hosts a client of `session_id` — the pane one nesting level
-# up, empty at the top level (the terminal's client tty is no pane's tty). Candidates are
-# filtered to DISPLAYED panes: active in their window, window current in its session, and
-# the host session itself attached — the active flags alone are layout selection and stay 1
-# in a fully detached session. Every link in the key's delivery chain was necessarily
-# displayed at press time, so when a session is nest-attached in several places this picks
-# the chain the user pressed through, not tmux listing order. Residual ambiguity (the same
-# session displayed through two live chains at once) resolves to the first match.
+# Pane hosting a client of `session_id`; empty at the top level. Only DISPLAYED panes
+# qualify — active + current window + attached session (the active flags alone are
+# layout state, still 1 when detached): every link of the delivery chain was displayed
+# at press time, so this picks the chain the key traveled, not tmux listing order.
+# A session displayed through two live chains at once resolves to the first match.
 host_pane_of() {
   local session_id="$1" ttys
   ttys=$(tmux list-clients -t "$session_id" -F '#{client_tty}' 2>/dev/null | tr '\n' ' ')
@@ -62,8 +45,7 @@ host_pane_of() {
       ($1 in wanted) && $3 == 1 && $4 == 1 && $5 >= 1 { print $2; exit }'
 }
 
-# Depth cap: a nest chain is 2-3 levels in practice; the cap only guards a pathological
-# attach cycle (a session hosting a client of itself) from spinning forever.
+# Depth cap only guards a pathological attach cycle; real nests are 2-3 levels.
 for _ in 1 2 3 4 5 6 7 8; do
   at_edge=$(tmux display-message -p -t "$pane" "$edge_format" 2>/dev/null) || exit 0
   if [[ "$at_edge" != 1 ]]; then
@@ -71,7 +53,6 @@ for _ in 1 2 3 4 5 6 7 8; do
     exit 0
   fi
   if [[ -n "$client_tty" ]]; then
-    # First hop: the pressing client's tty names the hosting pane directly.
     host=$(tmux list-panes -a -F '#{pane_tty} #{pane_id}' 2>/dev/null |
       awk -v tty="$client_tty" '$1 == tty { print $2; exit }')
     client_tty=""
