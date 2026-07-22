@@ -185,8 +185,9 @@ class Tmux:
 
     def respawn_pane(self, pane_id: str, command: str) -> None:
         """Replace a pane's process with `command` (`respawn-pane -k`). The picker uses this to
-        nest-attach a chosen session INTO the launching view pane — the command is a `TMUX= tmux
-        attach …; exec $SHELL` that keeps the pane alive after the inner session detaches."""
+        nest-attach a chosen session INTO the launching view pane — a `bash -c 'set -m; TMUX= tmux
+        attach …; exec $SHELL'` that keeps the pane alive after detach while `pane_current_command`
+        reads `tmux` during the attach (the client gets its own tty foreground pgroup)."""
         self._run(["respawn-pane", "-k", "-t", pane_id, command])
 
     def attach_session(self, name: str) -> int:
