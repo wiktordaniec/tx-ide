@@ -69,6 +69,27 @@ tagged the same `auth-review` so the two surface together. Set tags at spawn (`-
 non-interactively with `tx tag`, or in the picker with `Ctrl-T`. The ROLE column is searchable, so
 filtering by `llm` / `nvim` still works.
 
+### Groups
+
+A **group** clusters sessions *and artifacts* by effort — the unit the sessions-graph and the
+artifact-browser visualize by. Unlike tags (many-to-many scope chips), a session has exactly one
+effective group, and it is **resolved at read time** — records store only an explicit override
+(`group`, null by default):
+
+    resolved(session)  = own override ?? first override up the parent chain ?? tags[0] ?? name
+    resolved(artifact) = own override ?? its creator's resolved group
+                         ?? newest surviving toucher's ?? "ungrouped"
+
+`parent` carries real work lineage: `fork` / `resume` / `handover` record the SOURCE session as the
+new record's parent (a plain spawn records the executor), so a whole effort hangs off its root.
+Re-group the root (`tx group <root> <name>`) and every descendant — and their artifacts —
+re-files retroactively; `--clear` returns to derived. Artifacts derive from their **creator**, so a
+later touch from another effort never re-files them.
+
+**Hub sessions (`tx-assistant`, views) stay ungrouped by convention** — they carry no override, so
+nothing inherits a group from them (documented, not enforced). Sibling spawns that share no
+ancestor (claude/codex A/B twins) get the same `--group` at spawn.
+
 ### Chats and chat-operations
 
 A session can host several **chats** over its life. Each is a `ChatRef` with an `origin`
@@ -105,8 +126,8 @@ session, retag, message a peer. It follows `agents/TX-ASSISTANT.md`.
 
 | Command | What it does |
 |---|---|
-| `tx spawn <name> --tag TAGS [--cwd DIR] [--cmd CMD] [--engine ENGINE] [--prompt TEXT] [--model MODEL] [--effort {1,2,3,4,5}] [--read-only] [--env K=V …]` | Spawn a detached tmux session. Claude/Codex agents launch from a detached `$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<name>` checkout. Both footers show `<repository>--<name>` without a branch. Engine-built launches translate effort as `1=low`, `2=medium`, `3=high`, `4=xhigh`, and `5=max`; omission defaults to `3`. `--read-only` keeps shell inspection available while blocking repository edits. LLM chats are captured automatically. |
-| `tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--env K=V …]` | Spawn a detached nvim companion. `--diff [BASE]` opens a diffview (base defaults to `main`). The plugins this relies on (diffview.nvim, gitsigns, tokyonight) ship in the repo's `nvim/` config — provision it with `setup/nvim.sh install` (or the installer's nvim prompt). |
+| `tx spawn <name> --tag TAGS [--group G] [--cwd DIR] [--cmd CMD] [--engine ENGINE] [--prompt TEXT] [--model MODEL] [--effort {1,2,3,4,5}] [--read-only] [--env K=V …]` | Spawn a detached tmux session. Claude/Codex agents launch from a detached `$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<name>` checkout. Both footers show `<repository>--<name>` without a branch. Engine-built launches translate effort as `1=low`, `2=medium`, `3=high`, `4=xhigh`, and `5=max`; omission defaults to `3`. `--read-only` keeps shell inspection available while blocking repository edits. LLM chats are captured automatically. |
+| `tx spawn-nvim <name> --tag TAGS [--group G] [--cwd DIR] [--diff [BASE]] [--env K=V …]` | Spawn a detached nvim companion. `--diff [BASE]` opens a diffview (base defaults to `main`). The plugins this relies on (diffview.nvim, gitsigns, tokyonight) ship in the repo's `nvim/` config — provision it with `setup/nvim.sh install` (or the installer's nvim prompt). |
 | `tx spawn-view <name> [--cwd DIR] [--cmd CMD] [--env K=V …]` | Spawn a detached view session — a live `@tx_view` tmux home, not a store record (carries no tags). |
 
 ### Inspect
@@ -123,7 +144,7 @@ session, retag, message a peer. It follows `agents/TX-ASSISTANT.md`.
 
 | Command | What it does |
 |---|---|
-| `tx fork <source> [new_name] [--read-only]` | Fork a session's chat into a NEW worktree-backed session that starts with the full history. The fork is writable unless explicitly read-only. |
+| `tx fork <source> [new_name] [--read-only] [--group G]` | Fork a session's chat into a NEW worktree-backed session that starts with the full history. The fork is writable unless explicitly read-only. |
 | `tx handover <source> <task> [new_name] [--self-catch-up] [--read-only]` | Distill a session's chat into a focused brief for a NEW worktree-backed worker session. The worker is writable unless explicitly read-only. |
 | `tx rollover [session] [--self-catch-up]` | Rotate a session onto a fresh chat in the SAME pane (context exhausted). |
 | `tx resume <id\|name> [--as NAME] [--cwd DIR]` | Re-spawn a past session and reattach its chat (`claude --resume`); collision-safe. |
@@ -133,6 +154,7 @@ session, retag, message a peer. It follows `agents/TX-ASSISTANT.md`.
 | Command | What it does |
 |---|---|
 | `tx tag <name> [tags]` | Read (no arg) or set a session's tags (comma-separated). |
+| `tx group <name> [group \| --clear]` | Read (no arg: own + resolved) or set a session's effort-group override; `--clear` returns to derived. |
 | `tx rename <name> <new_name>` | Rename a session — both the tmux session and its record. |
 | `tx kill <name>` | End a tmux session and mark its record EXITED. |
 | `tx archive <name>` | Retire a session (mark ARCHIVED, keep the record) and force a full history ingest. |
