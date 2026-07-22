@@ -28,7 +28,7 @@ from .engines import registry
 from .events import EventLog
 from .read_only import READ_ONLY_WRAPPER_BINARIES
 from .session import LlmSession, Session, State
-from .storage import config_path
+from .storage import config_path, launch_dir
 from .store import SessionStore
 from .tmux import Tmux
 
@@ -88,6 +88,10 @@ class Reconciler:
             return False
         session.ended_at = time.time()
         session.attached_to = []  # a dead session surfaces nowhere (attachment-topology §4)
+        # An oversized launch's script has served its purpose once the session is gone; this sweep
+        # catches every termination path (a `tx kill` unlinks eagerly, but a natural exit only
+        # lands here).
+        (launch_dir() / f"{session.id}.sh").unlink(missing_ok=True)
         self.store.save(session)
         self.log.append("reconcile", f"{session.name} → exited (vanished)")
         return True

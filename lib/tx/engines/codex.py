@@ -13,6 +13,8 @@ from .registry import registry
 
 # Codex's own home (where it writes rollouts), honoring $CODEX_HOME like the CLI does. NOT $TX_IDE_HOME.
 CODEX_HOME_ENV = "CODEX_HOME"
+HOME_ENV = "HOME"
+DEFAULT_CODEX_HOME_BASENAME = ".codex"
 DEFAULT_CODEX_HOME = "~/.codex"
 
 CODEX_BIN = "codex"
@@ -53,10 +55,17 @@ TRANSCRIPT_SUFFIX = ".jsonl"
 # ----- transcript / path internals ----------------------------------------------------------
 
 def codex_home(env: Mapping[str, str] | None = None) -> Path:
-    """Codex's home as the SPAWNED process will resolve it: a launch-env override (`--env
-    CODEX_HOME=…`) wins over this parent process's environment."""
-    overridden = (env or {}).get(CODEX_HOME_ENV) or os.environ.get(CODEX_HOME_ENV)
-    return Path(overridden or DEFAULT_CODEX_HOME).expanduser()
+    """Codex's home as the SPAWNED process will resolve it: launch-env overrides (`--env
+    CODEX_HOME=…`, and `--env HOME=…` for the `~/.codex` default) win over this parent
+    process's environment."""
+    launch = env or {}
+    explicit = launch.get(CODEX_HOME_ENV) or os.environ.get(CODEX_HOME_ENV)
+    if explicit:
+        return Path(explicit).expanduser()
+    home = launch.get(HOME_ENV)
+    if home:
+        return Path(home) / DEFAULT_CODEX_HOME_BASENAME
+    return Path(DEFAULT_CODEX_HOME).expanduser()
 
 
 def sessions_root() -> Path:
