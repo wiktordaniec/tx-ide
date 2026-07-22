@@ -4,10 +4,10 @@ Derivations are never stored — records persist only the explicit `group` overr
 effective group is computed here, on read, from the record graph:
 
     resolved(session)  = session.group
-                         ?? first explicit group up the parent chain (cycle-guarded; hub
-                            sessions carry none by convention, so nothing inherits from them)
+                         ?? first explicit group up the parent chain (cycle-guarded; the walk
+                            STOPS at a hub — hubs isolate efforts, nothing inherits through them)
                          ?? the bound artifact's group (an nvim view opened via `tx artifact
-                            open` files where its artifact files)
+                            open` files exactly where its artifact files)
                          ?? tags[0]
                          ?? session.name
 
@@ -17,9 +17,11 @@ effective group is computed here, on read, from the record graph:
                          ?? "ungrouped"
 
 The artifact derives from its CREATOR, not "whoever modified it" — later touches from other
-efforts must not re-file it; `USER_ACTOR` touches are skipped. Both walks are mutually
-recursive (session → bound artifact → creator session), so one module owns both with a shared
-visited set of session ids as the single cycle guard.
+efforts must not re-file it; `USER_ACTOR` touches are skipped. The two cascades are mutually
+recursive (a view consults its bound artifact; an artifact consults its authors), and the one true
+cycle runs through artifacts (session → artifact → toucher session → same artifact), so recursion
+is guarded by the set of artifact ids currently being resolved — never by excluding sessions,
+whose tags/name floors must stay consultable from every rung.
 
 One `GroupResolver` is built per read over full store snapshots (`SessionStore.all()` +
 `ArtifactStore.all()`) — the same read-everything-per-request pattern every consumer already
@@ -35,6 +37,13 @@ from .session import OtherSession, Session
 # override was ever set. Display-only — it never feeds back into session resolution.
 UNGROUPED = "ungrouped"
 
+# Hub sessions are infrastructure, not lineage: the parent walk stops AT one, so an effort's group
+# never leaks through a hub into unrelated work spawned from it (the assistant itself may carry a
+# grouped parent — whoever first spawned it). Name-keyed, the same identification the dashboards
+# settled on for the standing orchestrator; views are hubs too but are never records, so their
+# absence from the store already ends the walk.
+HUB_SESSION_NAMES = frozenset({"tx-assistant"})
+
 
 class GroupResolver:
     def __init__(self, sessions: list[Session], artifacts: list[Artifact]):
@@ -49,64 +58,75 @@ class GroupResolver:
     def session_group(self, session: Session) -> str:
         """The session's effective group — the cascade above; always a non-empty string (the
         name rung is the floor, so an untagged, unparented session groups alone)."""
-        derived = self._session_override(session, visited=set())
+        return self._session_group(session, resolving_artifacts=set())
+
+    def artifact_group(self, artifact: Artifact) -> str:
+        """The artifact's effective group — its own override, else its creator lineage, else
+        the `UNGROUPED` display fallback."""
+        derived = self._artifact_override(artifact, resolving_artifacts=set())
+        return derived if derived is not None else UNGROUPED
+
+    # ----- the cascades ---------------------------------------------------------------------
+
+    def _session_group(self, session: Session, resolving_artifacts: set[str]) -> str:
+        derived = self._session_override(session, resolving_artifacts)
         if derived is not None:
             return derived
         if session.tags:
             return session.tags[0]
         return session.name
 
-    def artifact_group(self, artifact: Artifact) -> str:
-        """The artifact's effective group — its own override, else its creator lineage, else
-        the `UNGROUPED` display fallback."""
-        derived = self._artifact_override(artifact, visited=set())
-        return derived if derived is not None else UNGROUPED
-
-    # ----- the override walks (nullable — the callers append their own display floors) -------
-
-    def _session_override(self, session: Session, visited: set[str]) -> str | None:
-        """The first explicit group visible from `session`: its own, one up the parent chain,
-        or its bound artifact's resolution. None when no override is reachable — the caller
-        falls through to the session's own tags[0]/name floor (an ancestor's tags never leak
-        down; only explicit overrides inherit, which is what keeps hubs inert)."""
+    def _session_override(self, session: Session, resolving_artifacts: set[str]) -> str | None:
+        """The first explicit group visible from `session`: its own, one up the parent chain, or
+        its bound artifact's resolution. None when no override is reachable — the caller falls
+        through to the session's own tags[0]/name floor. Two hard stops in the walk: a CYCLE
+        (visited ids) and a HUB (an ancestor's tags never leak down — only explicit overrides
+        inherit — and a hub's whole lineage is fenced off so efforts never bleed through it)."""
         if session.group:
             return session.group
-        visited.add(session.id)
-        ancestor = self._resolve_reference(session.parent)
-        while ancestor is not None and ancestor.id not in visited:
-            if ancestor.group:
-                return ancestor.group
-            visited.add(ancestor.id)
-            ancestor = self._resolve_reference(ancestor.parent)
-        if isinstance(session, OtherSession) and session.artifact_id in self._artifacts_by_id:
-            return self._artifact_override(self._artifacts_by_id[session.artifact_id], visited)
+        visited = {session.id}
+        if session.name not in HUB_SESSION_NAMES:
+            ancestor = self._resolve_reference(session.parent)
+            while ancestor is not None and ancestor.id not in visited:
+                if ancestor.group:
+                    return ancestor.group
+                if ancestor.name in HUB_SESSION_NAMES:
+                    break
+                visited.add(ancestor.id)
+                ancestor = self._resolve_reference(ancestor.parent)
+        artifact = (
+            self._artifacts_by_id.get(session.artifact_id)
+            if isinstance(session, OtherSession)
+            else None
+        )
+        if artifact is not None and artifact.id not in resolving_artifacts:
+            return self._artifact_override(artifact, resolving_artifacts)
         return None
 
-    def _artifact_override(self, artifact: Artifact, visited: set[str]) -> str | None:
-        """The artifact's derivable group: its own override, else the creator's FULL session
-        resolution, else the newest surviving toucher's. Touch authors that are the user
-        sentinel, already on the visited walk (recursion guard), or gone from the store
-        contribute nothing. None when nothing survives."""
+    def _artifact_override(self, artifact: Artifact, resolving_artifacts: set[str]) -> str | None:
+        """The artifact's derivable group: its own override, else the CREATOR's full session
+        resolution, else the newest surviving toucher's. A present author always resolves (the
+        name floor), so later touchers are consulted only when the creator is the user sentinel or
+        gone from the store — later touches never re-file a creator-resolved artifact. Marking
+        this artifact as in-resolution breaks the one true recursion cycle (a toucher that is an
+        nvim view bound back to this same artifact)."""
         if artifact.group:
             return artifact.group
+        resolving_artifacts = resolving_artifacts | {artifact.id}
         creator_first = [artifact.history[0], *reversed(artifact.history[1:])]
         for touch in creator_first:
             author = self._sessions_by_id.get(touch.session_id)
-            if touch.session_id == USER_ACTOR or author is None or author.id in visited:
+            if touch.session_id == USER_ACTOR or author is None:
                 continue
-            derived = self._session_override(author, visited)
-            if derived is not None:
-                return derived
-            if author.tags:
-                return author.tags[0]
-            return author.name
+            return self._session_group(author, resolving_artifacts)
         return None
 
     def _resolve_reference(self, reference: str | None) -> Session | None:
         """A `parent` value as a record: by id first (a process executor / a chat-op source),
         then by display name (a pre-v4 record; live-preferred, then newest — mirrors
-        `SessionService._resolve_name`). A view name resolves to nothing (views are not
-        records), which is exactly how the walk ends below a view-hosted root."""
+        `SessionService._resolve_name`). An unknown name — e.g. a dead view's, off a legacy
+        record — resolves to nothing, which is exactly how the walk ends below a view-hosted
+        root (new spawns no longer persist view executors at all)."""
         if reference is None:
             return None
         by_id = self._sessions_by_id.get(reference)
