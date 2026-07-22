@@ -27,14 +27,12 @@ from ..tmux import Tmux
 #     factory would load a view as a terminal OtherSession and pollute `tx history` with phantoms.
 #   - v4 -> v5: a v4 record (no `kind`, no view records) simply gains the nullable `artifact_id` on a
 #     non-llm record; everything else is already current.
-#   - v5 -> v6: every record gains the nullable `group` override on the shared base (grouping design
-#     73a934a5) — an add-default step, no records leave the store.
+#   - v5 -> v6: every record gains the nullable `group` override (add-default step).
 # The loader refuses any non-current schema (no auto-upgrade-on-load), so pre-v3 records must be
-# upgraded out-of-band first. `tx migrate` also runs `migrate_artifacts` (below) — the artifact store
-# has its own version line with the same strict boundary, so its v1 -> v2 step (add the null `group`)
-# rides the same deploy. SAFETY: run ONCE at deploy against the real $TX_IDE_HOME; a newer checkout
-# must never migrate a live older home (it would brick the running crew). Sandbox run:
-# `TX_IDE_HOME=$(mktemp -d) tx migrate`.
+# upgraded out-of-band first. `tx migrate` also runs `migrate_artifacts` (below) — the artifact
+# store's own v1 -> v2 step rides the same deploy. SAFETY: run ONCE at deploy against the real
+# $TX_IDE_HOME; a newer checkout must never migrate a live older home (it would brick the running
+# crew). Sandbox run: `TX_IDE_HOME=$(mktemp -d) tx migrate`.
 
 _UPGRADABLE_FROM = frozenset({3, 4, 5})  # source versions the migrator chains to the current schema
 _ARTIFACT_UPGRADABLE_FROM = frozenset({1})
@@ -82,9 +80,7 @@ def migrate_sessions(
             # dead older keys, defaults genuinely-new fields, and stamps the current schema_version
             # (see the module note) — a v3 or a v4 source lands on the current shape identically.
             store.save(Session.from_dict({**raw, "schema_version": SCHEMA_VERSION}))
-        # AttributeError / TypeError cover structurally malformed JSON — a non-object record (a
-        # bare list/string parses fine but has no `.get`) or a null where a list belongs — so one
-        # corrupt file is skipped with its error, per the contract, instead of aborting the run.
+        # AttributeError / TypeError: structurally malformed JSON (non-object record, null list).
         except (
             OSError, json.JSONDecodeError, AttributeError, TypeError, KeyError, ValueError,
             UnsupportedRecordError,
@@ -103,12 +99,9 @@ def _artifact_skip_reason(raw: dict) -> str:
 
 
 def migrate_artifacts(directory: Path) -> tuple[list[str], list[tuple[str, str]]]:
-    """Migrate every upgradable artifact record under `directory` to the CURRENT artifact schema in
-    place; return (migrated, skipped). v1 -> v2 is an add-default step: the record gains a null
-    `group` and the version stamp. The strict `Artifact.from_dict` tolerates no missing key, so the
-    default is injected BEFORE the boundary re-validates the record and the current serializer
-    writes it back. Same discipline as `migrate_sessions`: explicit target directory, idempotent
-    (a current record is skipped), and one bad file is skipped with its error, never fatal."""
+    """Upgrade artifact records in place (v1 -> v2 adds a null `group`); return (migrated,
+    skipped). The strict boundary tolerates no missing key, so the default is injected before
+    re-validation. Same discipline as `migrate_sessions`: idempotent, one bad file skips."""
     store = ArtifactStore(directory=directory)
     migrated: list[str] = []
     skipped: list[tuple[str, str]] = []
@@ -124,8 +117,7 @@ def migrate_artifacts(directory: Path) -> tuple[list[str], list[tuple[str, str]]
                 "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
                 "group": raw.get("group"),
             }))
-        # Same malformed-shape tolerance as migrate_sessions: AttributeError / TypeError catch a
-        # non-object record or a null field where the boundary walks a list.
+        # Same malformed-shape tolerance as migrate_sessions.
         except (
             OSError, json.JSONDecodeError, AttributeError, TypeError, KeyError, ValueError,
             UnsupportedArtifactError,

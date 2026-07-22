@@ -436,14 +436,12 @@ def _tag_colors(tags: list[str]) -> dict[str, str]:
 
 
 def _group_resolver() -> GroupResolver:
-    """One read-time resolver over full store snapshots — built per request like every other read
-    here (no second source of truth), reads through the stores only (never a logging service)."""
+    """Per-request read-time resolver over full store snapshots (store reads only, never logs)."""
     return GroupResolver(SessionStore().all(), ArtifactStore().all())
 
 
 def _group_fields(resolved_group: str, explicit: str | None) -> dict:
-    """The shared group triple a payload row carries: the explicit override (null when derived),
-    the read-time resolution, and its chip colour (same hash palette as tags)."""
+    """The group triple a payload row carries: override (null when derived), resolution, colour."""
     return {
         "group": explicit,
         "resolved_group": resolved_group,

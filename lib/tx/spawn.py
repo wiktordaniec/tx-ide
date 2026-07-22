@@ -53,12 +53,10 @@ class SpawnSpec:
     cwd: str
     cmd: str
     tags: list[str] = field(default_factory=list)
-    # An explicit effort-group override to stamp on the record (`--group`); None means derived at
-    # read time (grouping.py) — the common case.
+    # Explicit effort-group override (`--group`); None = derived at read time.
     group: str | None = None
-    # An explicit work-ancestor for the record's `parent`: the chat-ops (fork / resume / handover)
-    # pass their SOURCE session id so the grouping walk climbs real work lineage (design decision
-    # 2). None means a plain spawn — `_spawn` records the executor.
+    # Work-ancestor override: chat-ops pass their SOURCE session id; None = plain spawn
+    # (`_spawn` records the managed executor).
     parent: str | None = None
     env: dict[str, str] = field(default_factory=dict)
     # Every agent worker is placed in a linked tx-owned worktree by SessionService.spawn_worker.

@@ -295,9 +295,7 @@
     background: color-mix(in srgb, var(--chip) 16%, transparent);
     white-space: nowrap;
   }
-  /* Effort-group chip — the RESOLVED cluster key (⊙-marked), not a scope tag the record carries:
-     outlined only (no tinted fill) + dashed border, so group and tags never read as one family.
-     Shared by the node cards, the table's group column, and the filter bar's group selector. */
+  /* Effort-group chip (⊙, dashed outline, no fill) — reads distinct from tag chips. */
   .chip.gchip, .tagchip.gchip { background: transparent; border-style: dashed; }
   /* Role badge — the labelled type swatch, now carrying the role's OWN colour (matching the left
      stripe + the legend) instead of a neutral grey, so the glanceable stripe and the named badge read
@@ -842,9 +840,7 @@ const COOL = 0.985;         // alpha (temperature) decay per tick
 const ALPHA_MIN = 0.02;     // below this the sim sleeps
 const DRAG_ALPHA = 0.4;     // floor temperature while a node is dragged, so neighbors react
 const MAX_V = 90;           // velocity clamp
-const GROUP_PULL = 0.005;   // same-resolved-group cohesion toward the group centroid — an order above
-                            // GRAVITY so efforts visibly cluster, far below the springs so lineage
-                            // edges keep owning the local layout
+const GROUP_PULL = 0.005;   // same-group cohesion — above GRAVITY, well below the springs
 
 // State semantics (kept in sync with lib/tx/session.py State enum docstrings).
 const STATE_INFO = {
@@ -877,7 +873,7 @@ let pendingRender = false;        // a stream push that landed mid-interaction, 
 let activeTab = "graph";          // which view is showing — "graph" (force layout), "table" (grid), or "messages"
 let tableSort = { key: "activity_at", dir: "desc" };   // table: active sort column + direction (newest-first default, matching the feed order)
 let selectedTags = new Set();     // table: tags picked in the tag bar — a row shows if it carries ANY of them (empty ⇒ no tag filter)
-let groupFilter = new Set();      // resolved effort-groups picked in the group bar — graph dims / table hides non-members (empty ⇒ off). NOT selectedGroup, which is the multi-select message set
+let groupFilter = new Set();      // group-bar picks (empty ⇒ off). NOT selectedGroup (the multi-select message set)
 let cursorId = null;              // table: record id of the keyboard-highlighted row (arrow keys move it, f focuses it) — independent of focusedId (terminal pane) and selectedId (drawer)
 let messagesFeed = null;          // messages: the /api/messages payload ({ messages:[…] }) — from the SSE `messages` channel or a one-shot fetch
 let messagesSort = { key: "ts", dir: "desc" };   // messages: active sort column + direction (newest-first default)
@@ -1002,7 +998,7 @@ function buildNodes(feed) {
     state: entry.record.state,
     role: entry.record.role,
     tags: entry.record.tags,
-    group: entry.derived.resolved_group,             // read-time effort group (server cascade) — clusters, badges, filters
+    group: entry.derived.resolved_group,             // clusters, badges, filters
     groupColor: entry.derived.group_color,
     activityAt: entry.derived.activity_at,           // uniform recency epoch (server-computed); llm → last_activity, else created_at
     createdAt: entry.record.created_at || 0,         // for the shared time-window filter (visibleForest)
@@ -1115,8 +1111,7 @@ function syncSim(kept) {
   for (const [id, dataNode] of want) {
     let node = sim.get(id);
     if (!node) { node = newSimNode(id, dataNode); sim.set(id, node); changed = true; }
-    // A re-grouped record (tx group / a re-filed ancestor) changes no membership, but the cohesion
-    // force only acts while the sim is warm — reheat so the node migrates to its new cluster.
+    // A regroup changes no membership — reheat so the cohesion force can re-cluster it.
     else if (node.data.group !== dataNode.group) changed = true;
     node.data = dataNode;
     if (!(drag && drag.node === node)) {           // a node mid-drag owns its own fx/fy
@@ -1173,10 +1168,8 @@ function tick() {
     node.ax += (WORLD_CX - node.x) * GRAVITY;
     node.ay += (WORLD_CY - node.y) * GRAVITY;
   }
-  // effort-group cohesion — every visible member is pulled toward its resolved group's centroid,
-  // so an effort reads as one cluster even where lineage edges are missing (sibling A/B spawns,
-  // a resumed session whose source is filtered off). Ghosts carry no group; a 1-member group has
-  // nothing to cohere with (its centroid is itself).
+  // effort-group cohesion — pull members toward their group centroid so an effort clusters
+  // even without connecting edges. Ghosts carry no group; a 1-member group has no pull.
   const centroids = new Map();
   for (const node of nodes) {
     const group = node.data && node.data.group;
@@ -1314,9 +1307,7 @@ function matchesTags(record) {
   return record.tags.some((tag) => selectedTags.has(tag));
 }
 
-// The group selector's counterpart to matchesTags: with groups picked, a session shows only if its
-// RESOLVED group is one of them. Callers pass the resolved group string (graph: dataNode.group,
-// table: entry.derived.resolved_group). No picks ⇒ no group constraint.
+// matchesTags counterpart over the RESOLVED group string. No picks ⇒ no constraint.
 function matchesGroupFilter(group) {
   if (groupFilter.size === 0) return true;
   return groupFilter.has(group);
@@ -1825,9 +1816,7 @@ function mountNodes(kept) {
       graph.appendChild(el);
       node.el = el;
     }
-    // Dim a node the active filters exclude — failing the search box, the shared tag selector
-    // (matchesTags), or the group selector. Ghosts (lineage-only) never dim. The graph dims; the
-    // table hides the same set.
+    // Dim what the search box / tag selector / group selector exclude; ghosts never dim.
     const matchesSearch = !query ||
       dataNode.name.toLowerCase().includes(query) || (dataNode.tags || []).join(" ").toLowerCase().includes(query) ||
       (dataNode.group || "").toLowerCase().includes(query);
@@ -1865,8 +1854,7 @@ function nodeInner(dataNode, simNode) {
   }
   const pin = simNode.pinned ? `<span class="pin" title="pinned — click to release">📌</span>` : "";
   const role = `<span class="role">${escapeHtml(dataNode.role)}</span>`;
-  // The resolved effort group leads the chip row, visually distinct from the tag chips (outlined,
-  // ⊙-marked) — it is a derived cluster key, not a scope tag the record carries.
+  // Resolved group leads the chip row — ⊙-marked and outlined, distinct from tag chips.
   const group = dataNode.group
     ? `<span class="chip gchip" style="--chip:${dataNode.groupColor || "var(--dim)"}" title="effort group (resolved)">⊙ ${escapeHtml(dataNode.group)}</span>`
     : "";
@@ -2027,9 +2015,8 @@ function tagSectionHtml() {
   return `<span class="fsep"></span><span class="hint">tags — click to filter:</span>${chips}${clear}`;
 }
 
-// The effort-group selector — one chip per RESOLVED group over the visible states + time window
-// (per-group counts, server-derived colours), mirroring the tag selector one section over. Groups
-// cluster whole efforts, so this is the "show me just this effort" switch shared by graph + table.
+// Group selector — one chip per RESOLVED group over the visible states + time window;
+// mirrors the tag selector. Shared by graph + table.
 function groupSectionHtml() {
   const counts = new Map();
   const colors = {};

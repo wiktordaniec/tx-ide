@@ -27,8 +27,7 @@ from pathlib import Path
 # Bumped only when the on-disk artifact record shape changes. The strict boundary means ANY change —
 # a field added, removed, or re-meaned — bumps it; there are no tolerated unknown fields. Independent
 # of the session `SCHEMA_VERSION`: artifacts are a separate store with their own version line.
-# v2 adds the nullable `group` override (grouping design 73a934a5): stored only when explicitly set;
-# the effective group is resolved at read time from the creator's session lineage (`grouping.py`).
+# v2 adds the nullable `group` override; None = derived at read time (grouping.py).
 ARTIFACT_SCHEMA_VERSION = 2
 
 # Sentinel actor for a touch made outside any tx session — a manual edit by the human, or a
@@ -101,8 +100,7 @@ class Artifact:
     title: str | None
     filename: str
     created_at: float
-    # v2: the EXPLICIT effort-group override, or None for "derived at read time" (grouping.py
-    # files the artifact under its CREATOR's resolved group — later touches never re-file it).
+    # v2: explicit effort-group override; None = derived from the CREATOR at read time.
     group: str | None = None
     history: list[Touch] = field(default_factory=list)
     artifact_schema_version: int = ARTIFACT_SCHEMA_VERSION

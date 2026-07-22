@@ -72,9 +72,8 @@ class ArtifactService:
         the record with one `Touch(rev=0)` (the create), log one line. `filename` preserves the
         source name so revs keep their extension (D1); it defaults to a bare `artifact` when the
         caller has none. `session_id` is the creator — a tx session id or the `USER_ACTOR` sentinel.
-        `group` is the optional explicit effort-group override (`--group`); left None the artifact
-        groups under its creator's resolved group at read time (grouping.py). A fresh uuid means the
-        rev-0 claim never contends, so create cannot conflict."""
+        `group` is the optional explicit override (None ⇒ derived at read time). A fresh uuid means
+        the rev-0 claim never contends, so create cannot conflict."""
         now = time.time()
         artifact = Artifact(
             id=str(uuid.uuid4()),
@@ -87,7 +86,9 @@ class ArtifactService:
         self.files.claim_rev(artifact, 0, content)
         self.files.write_current(artifact, content)
         self.store.save(artifact)
-        self.log.append("artifact-create", f"{artifact.id} {artifact.filename}", actor=session_id)
+        self.log.append(
+            "artifact-create", f"{artifact.id} {artifact.filename}", actor=session_id
+        )
         return artifact
 
     def modify(
@@ -113,7 +114,9 @@ class ArtifactService:
         WITHOUT a read-log line (the read is internal to this mutation), then delegates to the same
         modify body — so an unchanged working copy is the same no-op skip (E3)."""
         artifact = self._require(artifact_id)
-        return self._apply_modify(artifact, session_id, self.files.read_current(artifact), changes)
+        return self._apply_modify(
+            artifact, session_id, self.files.read_current(artifact), changes
+        )
 
     def _apply_modify(
         self, artifact: Artifact, session_id: str, content: bytes, changes: str | None
@@ -129,18 +132,20 @@ class ArtifactService:
         self._write_next_rev(artifact, next_rev, content)
         self.files.write_current(artifact, content)
         now = time.time()
-        artifact.history.append(Touch(session_id=session_id, at=now, rev=next_rev, changes=changes))
+        artifact.history.append(
+            Touch(session_id=session_id, at=now, rev=next_rev, changes=changes)
+        )
         self.store.save(artifact)
-        self.log.append("artifact-modify", f"{artifact.id} rev{next_rev}", actor=session_id)
+        self.log.append(
+            "artifact-modify", f"{artifact.id} rev{next_rev}", actor=session_id
+        )
         return artifact
 
-    def set_group(self, artifact_id: str, session_id: str, group: str | None) -> Artifact:
-        """Set (or with None clear) the artifact's EXPLICIT effort-group override. Metadata only —
-        no rev, no touch (`history` stays the content/version log; `doctor`'s touch⇄log cross-check
-        is untouched) — but it IS a mutation, so it logs one line (D8). A plain load→save: record
-        writes are last-write-wins across the whole system (the session store's settled stance —
-        `tag`/`rename`/hooks are the same shape), so a group set racing a `modify` is accepted;
-        the rev files stay protected by `claim_rev`, and `doctor` flags any resulting drift."""
+    def set_group(
+        self, artifact_id: str, session_id: str, group: str | None
+    ) -> Artifact:
+        """Set (or with None clear) the explicit effort-group override — metadata only, no
+        rev/touch; logs one line (D8). Last-write-wins like every record save."""
         artifact = self._require(artifact_id)
         artifact.group = group
         self.store.save(artifact)
@@ -182,7 +187,8 @@ class ArtifactService:
             else self.files.read_rev(artifact, rev)
         )
         self.log.append(
-            "artifact-read", f"{artifact_id} {'current' if rev is None else f'rev{rev}'}"
+            "artifact-read",
+            f"{artifact_id} {'current' if rev is None else f'rev{rev}'}",
         )
         return data
 
@@ -196,9 +202,13 @@ class ArtifactService:
         """Record that a session opened the artifact's view — read-visibility in the EventLog (G2).
         The open is a read, so it stays OUT of `history` (no rev noise) but IS logged. Called by
         `tx artifact open` once the nvim companion is up and bound."""
-        self.log.append("artifact-open", f"{artifact_id} → {session_id}", actor=session_id)
+        self.log.append(
+            "artifact-open", f"{artifact_id} → {session_id}", actor=session_id
+        )
 
-    def diff(self, artifact_id: str, rev_a: int | None = None, rev_b: int | None = None) -> str:
+    def diff(
+        self, artifact_id: str, rev_a: int | None = None, rev_b: int | None = None
+    ) -> str:
         """A unified `difflib` diff between two revisions (default: the last two). We store versions,
         not diffs, so this is computed on demand. Refuses cleanly when either rev is not utf-8 text —
         content is bytes-clean, but a textual diff is not meaningful over binary."""
@@ -221,7 +231,9 @@ class ArtifactService:
         query across the store (NOT denormalized onto the session record; keeps session writes
         non-chatty, mirroring `SessionService.live_sessions`)."""
         return self.store.query(
-            lambda artifact: any(touch.session_id == session_id for touch in artifact.history)
+            lambda artifact: any(
+                touch.session_id == session_id for touch in artifact.history
+            )
         )
 
     # ----- diagnostics ---------------------------------------------------------------------
@@ -301,7 +313,11 @@ class ArtifactService:
             kind, fields = entry.get("type"), entry.get("msg", "").split()
             if kind == "artifact-create" and fields:
                 signatures.add(("create", fields[0]))
-            elif kind == "artifact-modify" and len(fields) >= 2 and fields[1].startswith("rev"):
+            elif (
+                kind == "artifact-modify"
+                and len(fields) >= 2
+                and fields[1].startswith("rev")
+            ):
                 try:
                     signatures.add(("modify", fields[0], int(fields[1][3:])))
                 except ValueError:
@@ -315,7 +331,9 @@ class ArtifactService:
         if artifact.latest_rev in missing_revs:
             return []
         if not self.files.current_path(artifact).exists():
-            return [f"{artifact.id}: working copy current{artifact.extension} is missing"]
+            return [
+                f"{artifact.id}: working copy current{artifact.extension} is missing"
+            ]
         if self.files.current_is_dirty(artifact):
             return [
                 f"{artifact.id}: working copy differs from last rev {artifact.latest_rev} "
@@ -333,7 +351,9 @@ class ArtifactService:
         if rev_a is not None and rev_b is not None:
             return rev_a, rev_b
         if artifact.latest_rev == 0:
-            raise ArtifactError(f"artifact {artifact.id} has only one revision — nothing to diff")
+            raise ArtifactError(
+                f"artifact {artifact.id} has only one revision — nothing to diff"
+            )
         return artifact.latest_rev - 1, artifact.latest_rev
 
     def _decoded_rev(self, artifact: Artifact, rev: int) -> str:
@@ -353,7 +373,11 @@ class ArtifactService:
         ambiguous."""
         if self.store.load(token) is not None:
             return token
-        matches = [artifact.id for artifact in self.store.all() if artifact.id.startswith(token)]
+        matches = [
+            artifact.id
+            for artifact in self.store.all()
+            if artifact.id.startswith(token)
+        ]
         if not matches:
             raise ArtifactNotFound(f"artifact '{token}' not found")
         if len(matches) > 1:

@@ -71,9 +71,8 @@ def _split_tags(raw: str) -> list[str]:
 
 
 def _group_value(value: str) -> str:
-    """argparse `type=` for every `--group` flag: an empty value (a hollow shell expansion) would
-    persist `""`, which the resolver's truthiness reads as no-override — a silent no-op the user
-    meant as a group. Reject at the boundary; the positional `tx group` verbs guard themselves."""
+    """`type=` for every `--group`: an empty value would persist "" and silently resolve as
+    no-override."""
     if not value:
         raise argparse.ArgumentTypeError("a group cannot be empty")
     return value
@@ -154,8 +153,7 @@ class SpawnCommand(Command):
         parser.add_argument(
             "--group",
             type=_group_value,
-            help="explicit effort-group override for the record (default: derived at "
-            "read time from parent lineage / tags[0] / name)",
+            help="explicit effort-group override (default: derived at read time)",
         )
         parser.add_argument("--cwd")
         parser.add_argument(
@@ -265,8 +263,7 @@ class SpawnNvimCommand(Command):
         parser.add_argument(
             "--group",
             type=_group_value,
-            help="explicit effort-group override for the record (default: derived at "
-            "read time from parent lineage / tags[0] / name)",
+            help="explicit effort-group override (default: derived at read time)",
         )
         parser.add_argument("--cwd")
         parser.add_argument("--diff", nargs="?", const="main", default=None)
@@ -826,8 +823,7 @@ class ArtifactCommand(Command):
         parser.add_argument(
             "--group",
             type=_group_value,
-            help="explicit effort-group override (default: derived at read time from "
-            "the creator's resolved group)",
+            help="explicit effort-group override (default: derived from the creator)",
         )
         args = parser.parse_args(argv)
         path = Path(args.file)
@@ -1744,8 +1740,7 @@ class ForkCommand(Command):
         parser.add_argument(
             "--group",
             type=_group_value,
-            help="explicit effort-group override for the fork (default: derived — the "
-            "fork's parent edge points at the source session)",
+            help="explicit effort-group override (default: derived via the source)",
         )
         args = parser.parse_args(argv)
         new = ChatOps(self.service).fork(

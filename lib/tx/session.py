@@ -26,9 +26,8 @@ from enum import Enum
 # store: it drops the dead `kind` key, drops the non-llm `engine`/`chats`/`last_activity` keys, and
 # deletes view records. v5 adds a nullable `artifact_id` back-link to `OtherSession` ONLY — an nvim
 # view opened on an artifact (Plan 2, sequencing step 3); no other role gains a field. v6 adds the
-# nullable `group` override to the shared base (grouping design 73a934a5): the STORED field is only
-# ever an explicit override — the effective group is resolved at read time (`grouping.py`), never
-# persisted. `tx migrate` upgrades older records in place, chaining v3 -> v4 -> v5 -> v6 in one run.
+# nullable `group` override to the shared base — only overrides are stored; the effective group is
+# resolved at read time (grouping.py). `tx migrate` chains v3 -> v4 -> v5 -> v6 in one run.
 SCHEMA_VERSION = 6
 
 # Access-mode markers live in the already-persisted session environment, so v3 records remain
@@ -248,16 +247,12 @@ class Session:
     cwd: str = ""
     initial_cmd: str = ""  # the resolved engine/launch command (JSON key stays "cmd")
     tags: list[str] = field(default_factory=list)  # free-form scope chips
-    # v6: the EXPLICIT effort-group override, or None for "derived at read time" (grouping.py
-    # walks parent -> tags[0] -> name). Only overrides are ever stored — no derivation is
-    # persisted, so re-grouping an ancestor retroactively re-files every descendant.
+    # v6: explicit effort-group override; None = derived at read time (grouping.py).
     group: str | None = None
     spawn_env: dict[str, str] = field(
         default_factory=dict
     )  # spawn-time environment (JSON key stays "env")
-    # The closest work ancestor: fork/resume/handover record the SOURCE session id here; a plain
-    # spawn records the executor (tmux session name — a uuid for a process, a human name for a
-    # view). The grouping walk climbs this chain (grouping design, decision 2).
+    # Work ancestor: chat-ops record the SOURCE session id; a plain spawn its managed executor.
     parent: str | None = None
     pid: int | None = None  # provenance only (C1)
     attached_to: list[Location] = field(default_factory=list)
@@ -381,8 +376,7 @@ class Session:
             cwd=data["cwd"],
             initial_cmd=data["cmd"],
             tags=list(data["tags"]),
-            # `.get()` because `group` is the v6 addition — absent on a v3/v4/v5 record the
-            # migrator is upgrading in one from_dict+to_dict pass (same rationale as artifact_id).
+            # `.get()`: the v6 addition, absent mid-migration (same rationale as artifact_id).
             group=data.get("group"),
             spawn_env=dict(data["env"]),
             parent=data["parent"],

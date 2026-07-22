@@ -60,9 +60,7 @@
   /* ---- chips / badges / state dots ---- */
   /* Tag chips exactly as the sessions-graph dashboard draws them: per-tag color (the terminal
      picker's tag_cube palette, served as --chip), pill outline, 16% tinted fill. */
-  /* Effort-group chip — the RESOLVED cluster key (⊙-marked), not a stored scope tag: outlined
-     only + dashed border, mirroring the sessions-graph dashboard, so groups and tags never read
-     as one family. */
+  /* Effort-group chip (⊙, dashed outline, no fill) — reads distinct from tag chips. */
   .chip.gchip { background: transparent; border-style: dashed; }
   .chip {
     display: inline-block; margin-right: 6px; font-size: 10.5px; padding: 1px 6px;
@@ -262,8 +260,7 @@ function chips(tags, colors) {
     return '<span class="chip" style="--chip:' + esc(color) + '">' + esc(t) + "</span>";
   }).join("");
 }
-// The resolved effort-group chip for any payload row carrying the server's group triple
-// (resolved_group / group_color / group — the last non-null only for an explicit override).
+// Group chip for any row carrying the server's group triple.
 function groupChip(row) {
   if (!row.resolved_group) return "";
   const how = row.group ? "explicit override" : "derived from lineage";

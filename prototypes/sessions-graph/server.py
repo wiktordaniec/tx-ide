@@ -90,10 +90,8 @@ def cube_to_hex(cube_index: int) -> str:
 
 def session_payload(session: Session, now: float, resolver: GroupResolver) -> dict:
     """The per-session bundle the page consumes: the on-disk record verbatim (the graph reads
-    `parent`/`name`/`state` from it), a few derived display fields, and the pretty-printed JSON
-    shown in the click-through preview. `resolved_group` is the read-time grouping cascade
-    (grouping.py) — the page clusters, badges, and filters by it; the record's own `group` is
-    only the explicit override."""
+    `parent`/`name`/`state` from it), a few derived display fields — `resolved_group` is what the
+    page clusters/badges/filters by — and the pretty-printed JSON for the click-through preview."""
     record = session.to_dict()
     resolved_group = resolver.session_group(session)
     return {
@@ -138,9 +136,7 @@ def build_feed() -> dict:
     attachment = Tmux().attachment_map()
     for session in sessions:
         session.attached_to = attachment.get(_tmux_name(session), [])
-    # One resolver over the full store snapshot serves every row (the artifact store feeds the
-    # artifact-view rung of the session cascade). Built after the view-parent nulling above, which
-    # is equivalence, not order-dependence: a view name resolves to no record either way.
+    # One resolver per feed build; artifacts feed the artifact-view rung of the cascade.
     resolver = GroupResolver(sessions, ArtifactStore().all())
     return {
         "generated_at": now,
