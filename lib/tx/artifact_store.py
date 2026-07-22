@@ -21,28 +21,15 @@ file, never a half-written rev. `current` and an orphan reclaim use the record's
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
-import subprocess
 import sys
 import tempfile
-import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 from .artifact import Artifact, UnsupportedArtifactError
 from .storage import artifacts_dir
-
-# Record-lock tuning (see `ArtifactStore.locked`). The critical sections are load→save windows a
-# few milliseconds long, so waiters spin briefly. Staleness is OWNERSHIP-based (the owner pid is
-# dead), never age-based for a live owner — an overlong content write keeps its lock; the age
-# fallback exists only for a lock with no readable owner (a crash inside the mkdir→write-owner
-# gap). The wait budget deliberately exceeds that fallback age, so a waiter always reaches
-# recovery instead of timing out first.
-_LOCK_RETRY_INTERVAL = 0.01
-_LOCK_RETRIES = 1500
-_OWNERLESS_LOCK_STALE_SECONDS = 10.0
 
 
 class ArtifactStore:
@@ -51,75 +38,6 @@ class ArtifactStore:
 
     def _record_path(self, artifact_id: str) -> Path:
         return self.directory / f"{artifact_id}.json"
-
-    def _lock_path(self, artifact_id: str) -> Path:
-        return self.directory / f".{artifact_id}.lock"
-
-    @contextlib.contextmanager
-    def locked(self, artifact_id: str) -> Iterator[None]:
-        """Serialize one record's read-modify-write against every other lock-honoring writer — an
-        atomic-`mkdir` mutex (an `owner` file inside carries the holder's pid) held across a
-        load→save window. The rev-slot claim (`claim_rev`) still serializes modify-vs-modify
-        content writes and stays the crash-safe backstop; this lock exists because a record save is
-        whole-file `os.replace` (last write wins), so an UNLOCKED interleaving of two record
-        writers — a `modify` appending a touch vs a `set_group` writing the override — would let
-        the stale one silently revert the other's committed history (the lost-touch P0).
-
-        Crash recovery is ownership-aware (`_lock_is_stale`): a dead owner is broken immediately,
-        a live owner is honored forever, and release deletes the lock only while it still holds our
-        own pid. The one residual TOCTOU — a breaker removing a lock re-acquired in the microsecond
-        after its staleness check — needs crash debris plus two concurrent waiters interleaving at
-        microsecond scale; `claim_rev` still hard-serializes the rev slots underneath it."""
-        self.directory.mkdir(parents=True, exist_ok=True)
-        lock = self._lock_path(artifact_id)
-        owner_file = lock / "owner"
-        our_token = _owner_token(os.getpid())
-        for _ in range(_LOCK_RETRIES):
-            try:
-                lock.mkdir()
-                owner_file.write_text(our_token)
-                break
-            except FileExistsError:
-                if self._lock_is_stale(lock):
-                    self._break_lock(lock)
-                    continue
-                time.sleep(_LOCK_RETRY_INTERVAL)
-        else:
-            raise TimeoutError(
-                f"artifact {artifact_id}: record lock held by a live process for "
-                f"{_LOCK_RETRIES * _LOCK_RETRY_INTERVAL:.0f}s — giving up ({lock})"
-            )
-        try:
-            yield
-        finally:
-            try:
-                if owner_file.read_text() == our_token:
-                    owner_file.unlink()
-                    lock.rmdir()
-            except OSError:
-                pass  # broken while we (over)held, or already gone — nothing of ours to release
-
-    def _lock_is_stale(self, lock: Path) -> bool:
-        """Whether a held lock is crash debris. Owner token readable: stale exactly when that
-        process is gone OR the pid now belongs to a different process — the start-time half of the
-        token catches a reused pid (post-crash, post-reboot), which a bare kill-0 would honor as
-        the owner forever. A genuinely LIVE owner is never expired, however long it writes. Owner
-        unreadable (the mkdir→write-owner gap, or a breaker mid-teardown): fall back to age."""
-        try:
-            recorded = (lock / "owner").read_text()
-            owner_pid = int(recorded.partition(" ")[0])
-        except (OSError, ValueError):
-            try:
-                return time.time() - lock.stat().st_mtime > _OWNERLESS_LOCK_STALE_SECONDS
-            except OSError:
-                return False  # vanished under us — the next mkdir attempt decides
-        return _owner_token(owner_pid) != recorded
-
-    def _break_lock(self, lock: Path) -> None:
-        with contextlib.suppress(OSError):
-            (lock / "owner").unlink()
-        with contextlib.suppress(OSError):
-            lock.rmdir()
 
     def save(self, artifact: Artifact) -> None:
         """Persist the record atomically (temp file + `os.replace`), like `SessionStore.save`. The
@@ -275,19 +193,6 @@ class ArtifactContent:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
             raise
-
-
-def _owner_token(pid: int) -> str:
-    """The lock-owner identity: `<pid> <process start time>`. The start-time half (`ps -o
-    lstart=`, fixed-format on both darwin and linux) pins the token to ONE incarnation of the
-    pid — after a crash or reboot a reused pid yields a different start time, so the breaker
-    sees crash debris where a bare pid liveness probe would honor the impostor as a live owner
-    forever. A gone process yields the bare `<pid> ` token (ps prints nothing), which never
-    matches a live recording."""
-    completed = subprocess.run(
-        ["ps", "-p", str(pid), "-o", "lstart="], capture_output=True, text=True
-    )
-    return f"{pid} {completed.stdout.strip()}"
 
 
 def _rev_number(path: Path) -> int | None:

@@ -20,12 +20,10 @@ list reads, like `tx ls`.
 
 from __future__ import annotations
 
-import contextlib
 import difflib
 import json
 import time
 import uuid
-from collections.abc import Iterator
 
 from .artifact import Artifact, Touch
 from .artifact_store import ArtifactContent, ArtifactStore
@@ -104,9 +102,8 @@ class ArtifactService:
         authoritative record, then applies the modify. Content identical to the last rev is a no-op —
         no rev, no touch (E3); the CLI prints the notice. Returns the (possibly unchanged) artifact.
         """
-        with self._locked_record(artifact_id):
-            artifact = self._require(artifact_id)
-            return self._apply_modify(artifact, session_id, content, changes)
+        artifact = self._require(artifact_id)
+        return self._apply_modify(artifact, session_id, content, changes)
 
     def snapshot_current(
         self, artifact_id: str, session_id: str, *, changes: str | None = None
@@ -115,9 +112,8 @@ class ArtifactService:
         that closes the loop after editing `current.<ext>` in the nvim view. Reads the working copy
         WITHOUT a read-log line (the read is internal to this mutation), then delegates to the same
         modify body — so an unchanged working copy is the same no-op skip (E3)."""
-        with self._locked_record(artifact_id):
-            artifact = self._require(artifact_id)
-            return self._apply_modify(artifact, session_id, self.files.read_current(artifact), changes)
+        artifact = self._require(artifact_id)
+        return self._apply_modify(artifact, session_id, self.files.read_current(artifact), changes)
 
     def _apply_modify(
         self, artifact: Artifact, session_id: str, content: bytes, changes: str | None
@@ -141,30 +137,19 @@ class ArtifactService:
     def set_group(self, artifact_id: str, session_id: str, group: str | None) -> Artifact:
         """Set (or with None clear) the artifact's EXPLICIT effort-group override. Metadata only —
         no rev, no touch (`history` stays the content/version log; `doctor`'s touch⇄log cross-check
-        is untouched) — but it IS a mutation, so it logs one line (D8). Runs under the record lock:
-        this load→save rewrites the whole record, so unserialized against a concurrent `modify` the
-        stale side would revert the other's write — a lost touch (the P0) or a lost override."""
-        with self._locked_record(artifact_id):
-            artifact = self._require(artifact_id)
-            artifact.group = group
-            self.store.save(artifact)
+        is untouched) — but it IS a mutation, so it logs one line (D8). A plain load→save: record
+        writes are last-write-wins across the whole system (the session store's settled stance —
+        `tag`/`rename`/hooks are the same shape), so a group set racing a `modify` is accepted;
+        the rev files stay protected by `claim_rev`, and `doctor` flags any resulting drift."""
+        artifact = self._require(artifact_id)
+        artifact.group = group
+        self.store.save(artifact)
         self.log.append(
             "artifact-group",
             f"{artifact.id} {group if group is not None else '(cleared)'}",
             actor=session_id,
         )
         return artifact
-
-    @contextlib.contextmanager
-    def _locked_record(self, artifact_id: str) -> Iterator[None]:
-        """`store.locked` with its lock-wait timeout translated into the service's error family:
-        the CLI boundary maps `ServiceError` to a clean message + exit 1, so a writer that gives up
-        waiting must not escape as a raw `TimeoutError` traceback."""
-        try:
-            with self.store.locked(artifact_id):
-                yield
-        except TimeoutError as error:
-            raise ArtifactError(str(error)) from error
 
     def _write_next_rev(self, artifact: Artifact, rev: int, content: bytes) -> None:
         """Claim `revs/<rev>` exclusively as the linearity lock. `claim_rev` fails `FileExistsError`
@@ -275,9 +260,7 @@ class ArtifactService:
                     )
         if self.store.directory.exists():
             for entry in sorted(self.store.directory.iterdir()):
-                # Dot-entries are never content: a transient `.{id}.lock` mutex dir (store.locked)
-                # or a staging temp must not read as an out-of-band content directory.
-                if entry.is_dir() and not entry.name.startswith(".") and entry.name not in record_ids:
+                if entry.is_dir() and entry.name not in record_ids:
                     problems.append(
                         f"{entry.name}: content directory under artifacts/ has no record "
                         "(out-of-band creation — the record is authoritative)"
