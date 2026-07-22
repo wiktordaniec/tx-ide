@@ -108,6 +108,10 @@ _BARE_FLAGS = frozenset(
     {
         "--dangerously-skip-permissions",
         "--allow-dangerously-skip-permissions",
+        "--ax-screen-reader",
+        "--background",
+        "--bg",
+        "--forward-subagent-text",
         "--verbose",
         "--print",
         "-p",
