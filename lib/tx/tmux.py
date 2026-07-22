@@ -156,6 +156,13 @@ class Tmux:
         return value or None
 
     def current_session_name(self) -> str | None:
+        """The session THIS process runs inside, or None outside tmux. Gated on `$TMUX`: without
+        it, `display-message -p '#S'` resolves the server's DEFAULT session, which would
+        misattribute a plain-terminal operation to an unrelated session (the same QA P1 the
+        artifact actor path guards) — as a spawn's `parent`, that would even mis-group the new
+        session under whatever explicit group that stranger carries."""
+        if not os.environ.get("TMUX"):
+            return None
         return self.display_message("#S")
 
     def current_pane_id(self) -> str | None:

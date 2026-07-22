@@ -20,10 +20,12 @@ list reads, like `tx ls`.
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import json
 import time
 import uuid
+from collections.abc import Iterator
 
 from .artifact import Artifact, Touch
 from .artifact_store import ArtifactContent, ArtifactStore
@@ -102,7 +104,7 @@ class ArtifactService:
         authoritative record, then applies the modify. Content identical to the last rev is a no-op —
         no rev, no touch (E3); the CLI prints the notice. Returns the (possibly unchanged) artifact.
         """
-        with self.store.locked(artifact_id):
+        with self._locked_record(artifact_id):
             artifact = self._require(artifact_id)
             return self._apply_modify(artifact, session_id, content, changes)
 
@@ -113,7 +115,7 @@ class ArtifactService:
         that closes the loop after editing `current.<ext>` in the nvim view. Reads the working copy
         WITHOUT a read-log line (the read is internal to this mutation), then delegates to the same
         modify body — so an unchanged working copy is the same no-op skip (E3)."""
-        with self.store.locked(artifact_id):
+        with self._locked_record(artifact_id):
             artifact = self._require(artifact_id)
             return self._apply_modify(artifact, session_id, self.files.read_current(artifact), changes)
 
@@ -142,7 +144,7 @@ class ArtifactService:
         is untouched) — but it IS a mutation, so it logs one line (D8). Runs under the record lock:
         this load→save rewrites the whole record, so unserialized against a concurrent `modify` the
         stale side would revert the other's write — a lost touch (the P0) or a lost override."""
-        with self.store.locked(artifact_id):
+        with self._locked_record(artifact_id):
             artifact = self._require(artifact_id)
             artifact.group = group
             self.store.save(artifact)
@@ -152,6 +154,17 @@ class ArtifactService:
             actor=session_id,
         )
         return artifact
+
+    @contextlib.contextmanager
+    def _locked_record(self, artifact_id: str) -> Iterator[None]:
+        """`store.locked` with its lock-wait timeout translated into the service's error family:
+        the CLI boundary maps `ServiceError` to a clean message + exit 1, so a writer that gives up
+        waiting must not escape as a raw `TimeoutError` traceback."""
+        try:
+            with self.store.locked(artifact_id):
+                yield
+        except TimeoutError as error:
+            raise ArtifactError(str(error)) from error
 
     def _write_next_rev(self, artifact: Artifact, rev: int, content: bytes) -> None:
         """Claim `revs/<rev>` exclusively as the linearity lock. `claim_rev` fails `FileExistsError`

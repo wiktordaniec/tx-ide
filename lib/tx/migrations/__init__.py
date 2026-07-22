@@ -82,7 +82,13 @@ def migrate_sessions(
             # dead older keys, defaults genuinely-new fields, and stamps the current schema_version
             # (see the module note) — a v3 or a v4 source lands on the current shape identically.
             store.save(Session.from_dict({**raw, "schema_version": SCHEMA_VERSION}))
-        except (OSError, json.JSONDecodeError, KeyError, ValueError, UnsupportedRecordError) as error:
+        # AttributeError / TypeError cover structurally malformed JSON — a non-object record (a
+        # bare list/string parses fine but has no `.get`) or a null where a list belongs — so one
+        # corrupt file is skipped with its error, per the contract, instead of aborting the run.
+        except (
+            OSError, json.JSONDecodeError, AttributeError, TypeError, KeyError, ValueError,
+            UnsupportedRecordError,
+        ) as error:
             skipped.append((path.name, f"{type(error).__name__}: {error}"))
             continue
         migrated.append(path.name)
@@ -118,7 +124,12 @@ def migrate_artifacts(directory: Path) -> tuple[list[str], list[tuple[str, str]]
                 "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
                 "group": raw.get("group"),
             }))
-        except (OSError, json.JSONDecodeError, KeyError, ValueError, UnsupportedArtifactError) as error:
+        # Same malformed-shape tolerance as migrate_sessions: AttributeError / TypeError catch a
+        # non-object record or a null field where the boundary walks a list.
+        except (
+            OSError, json.JSONDecodeError, AttributeError, TypeError, KeyError, ValueError,
+            UnsupportedArtifactError,
+        ) as error:
             skipped.append((path.name, f"{type(error).__name__}: {error}"))
             continue
         migrated.append(path.name)
