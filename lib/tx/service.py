@@ -234,18 +234,14 @@ class SessionService:
         return spec.name
 
     def transportable_command(self, session_id: str, command: str) -> str:
-        """The command string handed to tmux (`new-session` and `respawn-pane` share the same
-        client-message limit). A command past it (e.g. a role-primed agent launch) is written to
-        `$TX_IDE_HOME/launch/<session-id>.sh` and launched through it; the record still persists
-        the full engine command, so chat-op derivation and read-only validation are unaffected.
-        The script is unlinked eagerly on `kill` and GC'd by the reconcile sweep for every other
-        ending; a rollover respawn reuses (overwrites) its session's script."""
+        """A command past tmux's client-message limit is launched through
+        `$TX_IDE_HOME/launch/<session-id>.sh` (the record keeps the full engine command)."""
         if len(command.encode()) <= MAX_COMMAND_BYTES:
             return command
         directory = launch_dir()
         directory.mkdir(parents=True, exist_ok=True)
         script = directory / f"{session_id}.sh"
-        # Created private (0700) BEFORE the contents land — never world-readable mid-write.
+        # Created private (0700) BEFORE the contents land.
         descriptor = os.open(
             script, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o700
         )

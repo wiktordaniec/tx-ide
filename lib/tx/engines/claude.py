@@ -356,16 +356,14 @@ class ClaudeEngine(EngineAdapter):
         role_priming: str | None = None,
         env: Mapping[str, str] | None = None,
     ) -> list[str]:
-        # A positional prompt auto-submits in interactive mode (measured). `env` is unused: claude
-        # consults no engine home while building.
+        # A positional prompt auto-submits in interactive mode (measured); `env` is unused.
         command = [CLAUDE_BIN]
         if model:
             command += ["--model", model]
         selected_effort = effort if effort is not None else DEFAULT_EFFORT
         command += ["--effort", EFFORT_LEVELS[selected_effort]]
         if role_priming:
-            # Additive by contract ("Append a system prompt to the default"); a persona
-            # value-flag, so _strip_identity carries it into forks/handovers/rollovers.
+            # A persona value-flag, so _strip_identity carries it across chat ops.
             command += [APPEND_SYSTEM_PROMPT_FLAG, role_priming]
         command = _apply_access(command, read_only)
         if initial_prompt:

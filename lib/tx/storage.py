@@ -96,9 +96,8 @@ def hooks_dir() -> Path:
 
 
 def launch_dir() -> Path:
-    """`$TX_IDE_HOME/launch/` — per-session launch scripts for commands too large for tmux's
-    client-command message (~16 KiB on 3.6a, e.g. a role-primed agent launch). Written by
-    `SessionService._spawn`, removed on `kill`."""
+    """`$TX_IDE_HOME/launch/` — per-session scripts for commands too large for tmux's client
+    message (e.g. a role-primed agent launch)."""
     return tx_ide_home() / "launch"
 
 

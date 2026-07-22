@@ -1,11 +1,5 @@
-"""Role-file resolution for `tx spawn --role` — names → concatenated system-prompt contents.
-
-Mirrors the documented override semantics (COMMON.md § Worker priming): for a role NAME the
-base file is `user-agents/NAME.md` (replaces the shipped file) or `agents/NAME.md`, and
-`user-agents/NAME.local.md` extends it. `COMMON` is always injected first — every session must
-follow it — so callers pass only the roles a worker plays. The concatenation is baked into the
-launch command by the engine adapters (additive system prompt), never sent via send-keys.
-"""
+"""Role-file resolution for `tx spawn --role`: names → concatenated system-prompt contents,
+following COMMON.md's override semantics (user-agents/NAME.md replaces, NAME.local.md extends)."""
 
 from __future__ import annotations
 
@@ -19,17 +13,15 @@ LOCAL_SUFFIX = ".local.md"
 
 
 class RoleError(RuntimeError):
-    """A named role has no file — unknown roles fail loudly, never guessed (COMMON.md)."""
+    """A bad role name — fail loudly, never guess (COMMON.md)."""
 
 
 def resolve_role_files(names: list[str]) -> list[Path]:
-    """The ordered files backing `names`: COMMON first (auto-prepended, deduplicated), then each
-    name in the given order — per name the base file (user override replaces shipped) plus the
-    `.local.md` extension when present."""
+    """The ordered files backing `names`: COMMON auto-prepended, deduplicated, user override
+    replaces shipped, `.local.md` extends."""
     ordered: list[str] = [COMMON_ROLE]
     for name in names:
-        # A role is a bare file stem inside the role directories — a separator or a dot-name
-        # would escape them (`--role ../secret`), so it is rejected, never resolved.
+        # A separator or dot-name would escape the role directories (`--role ../secret`).
         if Path(name).name != name or name in (".", ".."):
             raise RoleError(f"invalid role name '{name}' (must be a bare name, no path components)")
         if name not in ordered:
@@ -52,8 +44,8 @@ def resolve_role_files(names: list[str]) -> list[Path]:
 
 
 def load_role_priming(names: list[str]) -> str:
-    """The concatenated contents to inject additively into the engine's system prompt. Files are
-    joined by a blank line and carry their own `#` titles, so no synthetic headers are added."""
+    """The concatenated contents to inject additively into the engine's system prompt (files carry
+    their own `#` titles, so no synthetic headers)."""
     return "\n\n".join(
         path.read_text().strip() for path in resolve_role_files(names)
     )

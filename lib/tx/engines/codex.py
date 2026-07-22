@@ -23,11 +23,8 @@ CODEX_BIN = "codex"
 CODEX_MODEL = "gpt-5.6-sol"
 CODEX_EFFORT = DEFAULT_EFFORT
 REASONING_EFFORT_KEY = "model_reasoning_effort"
-# Additive instructions channel: appended to codex's base instructions, never replacing them
-# (contrast experimental_instructions_file, which replaces). The multi-line contents fail `-c`'s
-# TOML parse and fall back to the raw string literal, arriving intact as one argv token. A `-c`
-# override DOES replace a `config.toml`-configured value of the same key, so the launch builder
-# composes with the configured value instead of clobbering it.
+# Additive instructions channel (appended to codex's base prompt); the multi-line value fails
+# `-c`'s TOML parse and falls back to a raw string literal, arriving intact.
 DEVELOPER_INSTRUCTIONS_KEY = "developer_instructions"
 CONFIG_FILE_NAME = "config.toml"
 
@@ -55,10 +52,9 @@ TRANSCRIPT_SUFFIX = ".jsonl"
 # ----- transcript / path internals ----------------------------------------------------------
 
 def codex_home(env: Mapping[str, str] | None = None) -> Path:
-    """Codex's home as the SPAWNED process will resolve it: launch-env overrides (`--env
-    CODEX_HOME=…`, and `--env HOME=…` for the `~/.codex` default) win over this parent
-    process's environment. A PRESENT-but-empty launch override clears an inherited
-    CODEX_HOME rather than restoring the parent's (codex treats empty as unset — measured)."""
+    """Codex's home as the SPAWNED process will resolve it: launch-env overrides win over the
+    parent's environment, and a present-but-empty CODEX_HOME clears rather than inherits (codex
+    treats empty as unset — measured)."""
     launch = env or {}
     explicit = (
         launch[CODEX_HOME_ENV]
@@ -78,11 +74,9 @@ def sessions_root() -> Path:
 
 
 def configured_developer_instructions(env: Mapping[str, str] | None = None) -> str | None:
-    """The user's own top-level `developer_instructions` from `$CODEX_HOME/config.toml`, or None.
-    Role priming prepends this so the `-c` override composes with the configured value instead of
-    silently replacing it. The file is an external input (system boundary): absent, unreadable, or
-    invalid TOML degrades to None. Profile-scoped values are out of scope — codex's own precedence
-    already lets a `-c` override win there."""
+    """The configured `developer_instructions` from config.toml (or None), prepended to role
+    priming because a `-c` override would otherwise replace it; the file is external input, so
+    absent/unreadable/invalid degrades to None."""
     try:
         with (codex_home(env) / CONFIG_FILE_NAME).open("rb") as handle:
             value = tomllib.load(handle).get(DEVELOPER_INSTRUCTIONS_KEY)
@@ -271,8 +265,7 @@ class CodexEngine(EngineAdapter):
             "-c", f"{REASONING_EFFORT_KEY}={EFFORT_LEVELS[selected_effort]}",
         ]
         if role_priming:
-            # A `-c KEY=VALUE` persona pair, so _strip_identity inherits it across chat ops. The
-            # configured config.toml value rides in front — the override would replace it otherwise.
+            # A `-c KEY=VALUE` persona pair, so _strip_identity carries it across chat ops.
             configured = configured_developer_instructions(env)
             instructions = (
                 f"{configured}\n\n{role_priming}" if configured else role_priming
@@ -286,8 +279,8 @@ class CodexEngine(EngineAdapter):
     def resume_command(
         self, chat_id: str, *, read_only: bool = False, source_cmd: str | None = None
     ) -> list[str]:
-        """Resume a chat in place via Codex's native `resume` subcommand (bypass flags ride along so
-        hooks fire), carrying the source persona when `source_cmd` is given."""
+        """Resume via Codex's native `resume` subcommand, carrying the source persona when
+        `source_cmd` is given."""
         binary, inherited = (
             _strip_identity(source_cmd) if source_cmd is not None else (CODEX_BIN, [])
         )

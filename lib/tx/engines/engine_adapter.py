@@ -55,20 +55,16 @@ class EngineAdapter(Protocol):
         role_priming: str | None = None,
         env: Mapping[str, str] | None = None,
     ) -> list[str]:
-        """Argv for a fresh session, including the requested repository access mode.
-        `role_priming` is injected ADDITIVELY into the engine's system prompt (the base prompt is
-        never replaced) as a persona value-flag, so chat-op identity stripping inherits it.
-        `env` is the SESSION'S launch environment (`--env` overrides) — an engine that consults its
-        own home while building (codex's configured developer_instructions) must resolve it as the
-        spawned process will, not as this parent process would."""
+        """Argv for a fresh session. `role_priming` is injected additively (never replacing the base
+        prompt) as a persona value-flag so chat ops inherit it; `env` is the session's launch
+        environment, which an engine consulting its own home must resolve as the child will."""
         ...
 
     def resume_command(
         self, chat_id: str, *, read_only: bool = False, source_cmd: str | None = None
     ) -> list[str]:
-        """Argv to resume an existing chat in place. `source_cmd`, when given, carries the source
-        persona (model / effort / role priming / unknown value-flags) onto the resumed record, so
-        a later fork/handover/rollover derived from it keeps the persona."""
+        """Argv to resume an existing chat in place; `source_cmd` carries the source persona onto
+        the resumed record so later chat ops derived from it keep it."""
         ...
 
     def fork_command(

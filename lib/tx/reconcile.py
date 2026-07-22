@@ -34,8 +34,7 @@ from .tmux import Tmux
 
 # C5 threshold (10 min) — overridable via config.json's `stuck_working_threshold_seconds` (§19).
 DEFAULT_STUCK_WORKING_SECONDS = 600
-# A launch script younger than this is never swept: its session may not be visible in
-# `list-sessions` yet (the write→new-session window).
+# Never sweep a script younger than this — its session may not be in `list-sessions` yet.
 LAUNCH_SCRIPT_GRACE_SECONDS = 60
 # Claude shows a version string ("2.1.138") in `pane_current_command` while its TUI loads — treat
 # that as "agent still up" alongside the bare binary name so C5 doesn't demote a loading agent.
@@ -88,11 +87,8 @@ class Reconciler:
         return live
 
     def _sweep_launch_scripts(self, live: dict[str, _Live]) -> None:
-        """GC oversized-launch scripts whose session is no longer live in tmux — the one sweep that
-        covers every ending (natural exit, archive-while-live, `rm` of a live record) without
-        needing each lifecycle verb to remember cleanup. The grace window protects a just-written
-        script whose session has not yet appeared in `list-sessions`; the FileNotFoundError guard
-        tolerates a concurrent reconcile (picker + command) unlinking first."""
+        """GC launch scripts whose session is gone from tmux — one sweep covers every ending; the
+        FileNotFoundError guard tolerates a concurrent reconcile unlinking first."""
         directory = launch_dir()
         if not directory.is_dir():
             return
