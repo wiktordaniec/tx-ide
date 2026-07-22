@@ -52,12 +52,19 @@ class EngineAdapter(Protocol):
         effort: int | None = None,
         initial_prompt: str | None = None,
         read_only: bool = False,
+        role_priming: str | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> list[str]:
-        """Argv for a fresh session, including the requested repository access mode."""
+        """Argv for a fresh session. `role_priming` is injected additively (never replacing the base
+        prompt) as a persona value-flag so chat ops inherit it; `env` is the session's launch
+        environment, which an engine consulting its own home must resolve as the child will."""
         ...
 
-    def resume_command(self, chat_id: str, *, read_only: bool = False) -> list[str]:
-        """Argv to resume an existing chat in place."""
+    def resume_command(
+        self, chat_id: str, *, read_only: bool = False, source_cmd: str | None = None
+    ) -> list[str]:
+        """Argv to resume an existing chat in place; `source_cmd` carries the source persona onto
+        the resumed record so later chat ops derived from it keep it."""
         ...
 
     def fork_command(

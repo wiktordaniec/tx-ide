@@ -47,6 +47,7 @@ from .render import (
     render_history,
     render_ls,
 )
+from .roles import RoleError, load_role_priming
 from .service import ServiceError, SessionService
 from .session import (
     SCHEMA_VERSION,
@@ -183,6 +184,14 @@ class SpawnCommand(Command):
             help="reasoning-effort tier for an --engine agent spawn (default: 3)",
         )
         parser.add_argument(
+            "--role",
+            action="append",
+            metavar="NAME[,NAME…]",
+            help="role file(s) to inject additively into the agent's system prompt "
+            "(COMMON is always included first). NAME resolves to user-agents/NAME.md "
+            "(replaces) or agents/NAME.md, plus user-agents/NAME.local.md (extends)",
+        )
+        parser.add_argument(
             "--read-only",
             action="store_true",
             help="run an engine-built agent in a tx worktree with repository edits blocked",
@@ -192,20 +201,23 @@ class SpawnCommand(Command):
         tags = _split_tags(args.tag)
         if not tags:
             parser.error("--tag requires at least one value")
-        if args.cmd is not None and (args.prompt or args.model or args.effort):
+        if args.cmd is not None and (args.prompt or args.model or args.effort or args.role):
             parser.error(
-                "--prompt/--model/--effort build a launch command and cannot be combined "
-                "with --cmd (the full hand-written command)"
+                "--prompt/--model/--effort/--role build a launch command and cannot be "
+                "combined with --cmd (the full hand-written command)"
             )
         if args.read_only and args.cmd is not None:
             parser.error(
                 "--read-only requires an engine-built launch; it cannot enforce --cmd"
             )
-        command, engine = self._resolve_command(args)
+        environment = _parse_env(args.env)
+        try:
+            command, engine = self._resolve_command(args, environment)
+        except RoleError as error:
+            parser.error(str(error))
         role = infer_role(command)
         if args.read_only and role != Role.LLM:
             parser.error("--read-only requires an agent launch")
-        environment = _parse_env(args.env)
         spec = SpawnSpec.for_process(
             name=args.name,
             tags=tags,
@@ -224,20 +236,26 @@ class SpawnCommand(Command):
         print(f"Spawned '{session.name}' (cwd={session.cwd}, tag={args.tag})")
         return 0
 
-    def _resolve_command(self, args: argparse.Namespace) -> tuple[str, Engine | None]:
+    def _resolve_command(
+        self, args: argparse.Namespace, environment: dict[str, str]
+    ) -> tuple[str, Engine | None]:
         """Resolve the launch command + the engine to stamp. Three paths: --cmd → that exact command
         (engine = --engine if given, else inferred from the command's binary so e.g. `--cmd 'codex …'`
         is stamped codex, not blind-defaulted to claude); an agent spawn
-        (--engine/--prompt/--model/--effort) → tx builds the command via the engine adapter; bare →
-        a login shell."""
+        (--engine/--prompt/--model/--effort/--role) → tx builds the command via the engine adapter;
+        bare → a login shell."""
         requested = Engine(args.engine) if args.engine is not None else None
         if args.cmd is not None:
             return args.cmd, requested or engines.registry.engine_for_command(args.cmd)
+        role_names = [name for value in args.role or [] for name in _split_tags(value)]
+        if args.role is not None and not role_names:
+            raise RoleError("--role requires at least one role name")
         if (
             requested is not None
             or args.prompt is not None
             or args.model is not None
             or args.effort is not None
+            or role_names
         ):
             engine = requested or Engine.CLAUDE
             command = shlex.join(
@@ -246,6 +264,8 @@ class SpawnCommand(Command):
                     effort=args.effort,
                     initial_prompt=args.prompt,
                     read_only=args.read_only,
+                    role_priming=load_role_priming(role_names) if role_names else None,
+                    env=environment,
                 )
             )
             return command, engine
@@ -534,7 +554,9 @@ class ResumeCommand(Command):
 
         adapter = engines.registry.get(record.engine)
         resume_cmd = shlex.join(
-            adapter.resume_command(chat.id, read_only=record.read_only)
+            adapter.resume_command(
+                chat.id, read_only=record.read_only, source_cmd=record.initial_cmd
+            )
         )
         # Stamp the source engine on the resumed record so a resumed codex session stays codex
         # (resolving its rollout) instead of defaulting to Claude — set-at-spawn, read-thereafter.

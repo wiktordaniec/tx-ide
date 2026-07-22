@@ -28,12 +28,14 @@ from .engines import registry
 from .events import EventLog
 from .read_only import READ_ONLY_WRAPPER_BINARIES
 from .session import LlmSession, Session, State
-from .storage import config_path
+from .storage import config_path, launch_dir
 from .store import SessionStore
 from .tmux import Tmux
 
 # C5 threshold (10 min) — overridable via config.json's `stuck_working_threshold_seconds` (§19).
 DEFAULT_STUCK_WORKING_SECONDS = 600
+# Never sweep a script younger than this — its session may not be in `list-sessions` yet.
+LAUNCH_SCRIPT_GRACE_SECONDS = 60
 # Claude shows a version string ("2.1.138") in `pane_current_command` while its TUI loads — treat
 # that as "agent still up" alongside the bare binary name so C5 doesn't demote a loading agent.
 _VERSION_COMMAND = re.compile(r"^\d+\.\d+")
@@ -59,6 +61,7 @@ class Reconciler:
         """Drive every stored record to ground truth. Returns only the records that actually
         changed (the dirty set), so a caller sees what moved without re-reading the store."""
         live = self._live_by_id()
+        self._sweep_launch_scripts(live)
         threshold = self._stuck_threshold()
         changed: list[Session] = []
         for session in self.store.all():
@@ -82,6 +85,20 @@ class Reconciler:
             if tx_id:
                 live[tx_id] = _Live(name=name, command=command)
         return live
+
+    def _sweep_launch_scripts(self, live: dict[str, _Live]) -> None:
+        """GC launch scripts whose session is gone from tmux — one sweep covers every ending; the
+        FileNotFoundError guard tolerates a concurrent reconcile unlinking first."""
+        directory = launch_dir()
+        if not directory.is_dir():
+            return
+        cutoff = time.time() - LAUNCH_SCRIPT_GRACE_SECONDS
+        for script in directory.glob("*.sh"):
+            try:
+                if script.stem not in live and script.stat().st_mtime < cutoff:
+                    script.unlink(missing_ok=True)
+            except FileNotFoundError:
+                continue
 
     def _mark_exited(self, session: Session) -> bool:
         if not session.transition_to(State.EXITED):  # C3 guard + C4 dirty-check

@@ -14,6 +14,8 @@ See tx-service-redesign.md §1 (object model) + §4 (no-daemon) + §5 (hooks →
 
 from __future__ import annotations
 
+import os
+import shlex
 import time
 import uuid
 from collections.abc import Callable
@@ -38,8 +40,9 @@ from .session import (
     State,
 )
 from .spawn import SpawnSpec
+from .storage import launch_dir
 from .store import SessionStore
-from .tmux import Tmux, format_envelope
+from .tmux import MAX_COMMAND_BYTES, Tmux, format_envelope
 from .worktree import WorktreeError, WorktreeManager
 
 
@@ -230,6 +233,22 @@ class SessionService:
         self.log.append("spawn-view", f"{spec.name} {spec.cwd}")
         return spec.name
 
+    def transportable_command(self, session_id: str, command: str) -> str:
+        """A command past tmux's client-message limit is launched through
+        `$TX_IDE_HOME/launch/<session-id>.sh` (the record keeps the full engine command)."""
+        if len(command.encode()) <= MAX_COMMAND_BYTES:
+            return command
+        directory = launch_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        script = directory / f"{session_id}.sh"
+        # Created private (0700) BEFORE the contents land.
+        descriptor = os.open(
+            script, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o700
+        )
+        with open(descriptor, "w") as handle:
+            handle.write(command + "\n")
+        return f"/bin/sh {shlex.quote(str(script))}"
+
     def _spawn(self, spec: SpawnSpec) -> Session:
         """The shared spawn mechanics: create the detached session, set `@tx_id`, persist the
         record, log once. Liveness/EXITED is handled globally (C2 — see below), not per-session.
@@ -272,7 +291,9 @@ class SessionService:
         pid = self.tmux.new_session(
             name=tmux_name,
             cwd=spec.cwd,
-            command=spec.launch_cmd or spec.cmd,
+            command=self.transportable_command(
+                session_id, spec.launch_cmd or spec.cmd
+            ),
             env=launch_env,
         )
         self.tmux.set_tx_id(tmux_name, session_id)
@@ -368,6 +389,7 @@ class SessionService:
             )
         if self.tmux.has_session(session.tmux_name):
             self.tmux.kill_session(session.tmux_name)
+        (launch_dir() / f"{session.id}.sh").unlink(missing_ok=True)
         if session.transition_to(State.EXITED):
             session.ended_at = time.time()
             session.attached_to = []

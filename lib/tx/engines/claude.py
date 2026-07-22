@@ -21,6 +21,7 @@ CLAUDE_BIN = "claude"
 TRANSCRIPT_SUFFIX = ".jsonl"
 BUNDLE_TRANSCRIPT_NAME = "transcript.jsonl"
 SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
+APPEND_SYSTEM_PROMPT_FLAG = "--append-system-prompt"
 READ_ONLY_TOOLS = ("Edit", "Write", "NotebookEdit")
 READ_ONLY_ALLOWED_TOOLS = ("Bash",)
 READ_ONLY_SETTING_SOURCES = "user"
@@ -107,6 +108,10 @@ _BARE_FLAGS = frozenset(
     {
         "--dangerously-skip-permissions",
         "--allow-dangerously-skip-permissions",
+        "--ax-screen-reader",
+        "--background",
+        "--bg",
+        "--forward-subagent-text",
         "--verbose",
         "--print",
         "-p",
@@ -348,20 +353,30 @@ class ClaudeEngine(EngineAdapter):
         effort: int | None = None,
         initial_prompt: str | None = None,
         read_only: bool = False,
+        role_priming: str | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> list[str]:
-        # A positional prompt auto-submits in interactive mode (measured).
+        # A positional prompt auto-submits in interactive mode (measured); `env` is unused.
         command = [CLAUDE_BIN]
         if model:
             command += ["--model", model]
         selected_effort = effort if effort is not None else DEFAULT_EFFORT
         command += ["--effort", EFFORT_LEVELS[selected_effort]]
+        if role_priming:
+            # A persona value-flag, so _strip_identity carries it across chat ops.
+            command += [APPEND_SYSTEM_PROMPT_FLAG, role_priming]
         command = _apply_access(command, read_only)
         if initial_prompt:
             command.append(initial_prompt)
         return command
 
-    def resume_command(self, chat_id: str, *, read_only: bool = False) -> list[str]:
-        return _apply_access([CLAUDE_BIN, "--resume", chat_id], read_only)
+    def resume_command(
+        self, chat_id: str, *, read_only: bool = False, source_cmd: str | None = None
+    ) -> list[str]:
+        binary, inherited = (
+            _strip_identity(source_cmd) if source_cmd is not None else (CLAUDE_BIN, [])
+        )
+        return _apply_access([binary, "--resume", chat_id, *inherited], read_only)
 
     def fork_command(
         self, source_cmd: str, chat_id: str, *, read_only: bool = False

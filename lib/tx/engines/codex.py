@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import tomllib
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from .registry import registry
 
 # Codex's own home (where it writes rollouts), honoring $CODEX_HOME like the CLI does. NOT $TX_IDE_HOME.
 CODEX_HOME_ENV = "CODEX_HOME"
+HOME_ENV = "HOME"
+DEFAULT_CODEX_HOME_BASENAME = ".codex"
 DEFAULT_CODEX_HOME = "~/.codex"
 
 CODEX_BIN = "codex"
@@ -20,6 +23,10 @@ CODEX_BIN = "codex"
 CODEX_MODEL = "gpt-5.6-sol"
 CODEX_EFFORT = DEFAULT_EFFORT
 REASONING_EFFORT_KEY = "model_reasoning_effort"
+# Additive instructions channel (appended to codex's base prompt); the multi-line value fails
+# `-c`'s TOML parse and falls back to a raw string literal, arriving intact.
+DEVELOPER_INSTRUCTIONS_KEY = "developer_instructions"
+CONFIG_FILE_NAME = "config.toml"
 
 # Writable workers bypass approvals+sandbox AND hook trust. Read-only workers deliberately avoid a
 # nested native sandbox and run inside tx's outer process sandbox; hook trust remains headless so tx
@@ -44,12 +51,38 @@ TRANSCRIPT_SUFFIX = ".jsonl"
 
 # ----- transcript / path internals ----------------------------------------------------------
 
-def codex_home() -> Path:
-    return Path(os.environ.get(CODEX_HOME_ENV, DEFAULT_CODEX_HOME)).expanduser()
+def codex_home(env: Mapping[str, str] | None = None) -> Path:
+    """Codex's home as the SPAWNED process will resolve it: launch-env overrides win over the
+    parent's environment, and a present-but-empty CODEX_HOME clears rather than inherits (codex
+    treats empty as unset — measured)."""
+    launch = env or {}
+    explicit = (
+        launch[CODEX_HOME_ENV]
+        if CODEX_HOME_ENV in launch
+        else os.environ.get(CODEX_HOME_ENV)
+    )
+    if explicit:
+        return Path(explicit).expanduser()
+    home = launch.get(HOME_ENV)
+    if home:
+        return Path(home) / DEFAULT_CODEX_HOME_BASENAME
+    return Path(DEFAULT_CODEX_HOME).expanduser()
 
 
 def sessions_root() -> Path:
     return codex_home() / SESSIONS_DIR
+
+
+def configured_developer_instructions(env: Mapping[str, str] | None = None) -> str | None:
+    """The configured `developer_instructions` from config.toml (or None), prepended to role
+    priming because a `-c` override would otherwise replace it; the file is external input, so
+    absent/unreadable/invalid degrades to None."""
+    try:
+        with (codex_home(env) / CONFIG_FILE_NAME).open("rb") as handle:
+            value = tomllib.load(handle).get(DEVELOPER_INSTRUCTIONS_KEY)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def find_rollout(chat_id: str) -> Path | None:
@@ -220,6 +253,8 @@ class CodexEngine(EngineAdapter):
         effort: int | None = None,
         initial_prompt: str | None = None,
         read_only: bool = False,
+        role_priming: str | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> list[str]:
         """Argv for a fresh session. A positional prompt auto-submits in the interactive TUI, so the
         seed needs no send-keys."""
@@ -229,14 +264,27 @@ class CodexEngine(EngineAdapter):
             "-m", model or CODEX_MODEL,
             "-c", f"{REASONING_EFFORT_KEY}={EFFORT_LEVELS[selected_effort]}",
         ]
+        if role_priming:
+            # A `-c KEY=VALUE` persona pair, so _strip_identity carries it across chat ops.
+            configured = configured_developer_instructions(env)
+            instructions = (
+                f"{configured}\n\n{role_priming}" if configured else role_priming
+            )
+            command += ["-c", f"{DEVELOPER_INSTRUCTIONS_KEY}={instructions}"]
         command = _apply_access(command, read_only)
         if initial_prompt:
             command.append(initial_prompt)
         return command
 
-    def resume_command(self, chat_id: str, *, read_only: bool = False) -> list[str]:
-        """Resume a chat in place via Codex's native `resume` subcommand (bypass flags ride along so hooks fire)."""
-        return _apply_access([CODEX_BIN, "resume", chat_id], read_only)
+    def resume_command(
+        self, chat_id: str, *, read_only: bool = False, source_cmd: str | None = None
+    ) -> list[str]:
+        """Resume via Codex's native `resume` subcommand, carrying the source persona when
+        `source_cmd` is given."""
+        binary, inherited = (
+            _strip_identity(source_cmd) if source_cmd is not None else (CODEX_BIN, [])
+        )
+        return _apply_access([binary, "resume", chat_id, *inherited], read_only)
 
     def fork_command(
         self, source_cmd: str, chat_id: str, *, read_only: bool = False

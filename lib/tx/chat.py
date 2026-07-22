@@ -513,6 +513,8 @@ class ChatOps:
         command = self.service.worker_launch_command(
             command, record.cwd, record.read_only
         )
+        # respawn-pane shares new-session's client-message limit, so the same transport applies.
+        command = self.service.transportable_command(spec.source_txid, command)
         self.service.tmux.respawn_pane(spec.pane, command)
         self._record_seeded_chat(
             spec.source_txid,

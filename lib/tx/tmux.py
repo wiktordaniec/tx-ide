@@ -25,6 +25,11 @@ from .session import Location
 TRUECOLOR_ENV = {"COLORTERM": "truecolor", "TERM": "xterm-256color"}
 
 
+# tmux rejects a client command past one imsg (16384 bytes on 3.6a, "command too long"); commands
+# over this conservative half-limit go through a launch script instead.
+MAX_COMMAND_BYTES = 8192
+
+
 class TmuxError(RuntimeError):
     """A tmux invocation we expected to succeed exited nonzero (e.g. a bad cwd on `new-session`).
 

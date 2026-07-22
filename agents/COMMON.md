@@ -33,7 +33,7 @@ Use `tx spawn` (bare) and `tx spawn-nvim` (nvim companion). Both require `--tag`
 
 ```bash
 tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
-tx spawn <name> --tag TAGS --cwd DIR --engine ENGINE [--model MODEL] [--effort {1,2,3,4,5}] [--read-only] [--prompt TEXT]
+tx spawn <name> --tag TAGS --cwd DIR --engine ENGINE [--model MODEL] [--effort {1,2,3,4,5}] [--role NAME[,NAME…]] [--read-only] [--prompt TEXT]
 tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--open FILE] [--env K=V ...]
 ```
 
@@ -55,9 +55,9 @@ tx spawn build-watch --tag wrangler-p1 --cmd 'npm run watch'   # an ad-hoc proce
 tx spawn-nvim wrangler-p1-diff --tag wrangler-p1 --diff main   # an nvim companion
 ```
 
-An agent **worker** is also a `tx spawn`, but it needs a priming prompt through `--prompt` (or
-through a fully hand-written `--cmd`) — see **§ Spawning workers** below. A bare agent CLI with no
-priming never reads these conventions.
+An agent **worker** is also a `tx spawn`, but it needs role priming through `--role` (or, for a
+fully hand-written `--cmd`, a read-instruction prompt) — see **§ Spawning workers** below. A bare
+agent CLI with no priming never reads these conventions.
 
 Both inject `COLORTERM=truecolor` and `TERM=xterm-256color`. `spawn-nvim` also forces `colorscheme tokyonight-moon` via `+CMD` because `tmux new-session -d` strips the OSC11 background hint and nvim's auto-mode would land on the light variant.
 
@@ -65,20 +65,26 @@ The plugins `spawn-nvim` relies on (tokyonight, diffview.nvim, gitsigns) ship in
 
 ## Spawning workers
 
-When you need to delegate work — coding, scoping, planning, or research/exploration — spawn an agent worker. The mechanics are `tx spawn` above; what turns a bare agent CLI into a *worker* is the **priming prompt** passed through `--cmd`. Spawn one with no priming and it never reads these conventions — it has no role, no standards, no worktree discipline.
+When you need to delegate work — coding, scoping, planning, or research/exploration — spawn an agent worker. The mechanics are `tx spawn` above; what turns a bare agent CLI into a *worker* is **role priming** — `--role` injects the role files' contents additively into the engine's system prompt at launch. Spawn one with no priming and it never reads these conventions — it has no role, no standards, no worktree discipline.
 
 ```bash
 tx spawn <name> --tag <scope> --cwd <cwd> \
-  --engine claude --model "opus[1m]" --effort 5 --prompt "<priming>"
+  --engine claude --model "opus[1m]" --effort 5 \
+  --role DEVELOPER,WORKFLOW-DEVELOPER --prompt "<task>"
 ```
 
 - `<name>` — short, descriptive (`orchestrator-cleanup`, `auth-review`).
 - `<scope>` — the single work-scope tag (`wrangler-p1`, `PR-1840`, `cleanup`); no role. An nvim companion takes the **same** scope.
 - `<cwd>` — the project root the worker operates in.
+- `--role NAME[,NAME…]` (repeatable) — the role file(s) this worker plays; `COMMON` is always
+  injected first automatically. Each `NAME` resolves to `user-agents/NAME.md` (replaces the
+  shipped file) or `agents/NAME.md`, plus `user-agents/NAME.local.md` (extends). An unknown
+  name fails the spawn — don't guess.
 - Recommended workers use `--model "opus[1m]"` and `--effort 5`; don't downgrade unless asked.
 - Effort is engine-neutral: `1=low`, `2=medium`, `3=high`, `4=xhigh`, `5=max`. An engine-built
   launch without `--effort` defaults to `3`.
-- Keep `<priming>` short and single-line — long, quoted, special-char-laden prompts crash tmux input.
+- Keep `<task>` short and single-line — long, quoted, special-char-laden prompts crash tmux input.
+  (Role contents are exempt: they ride inside the launch command's argv, never typed input.)
 
 Every agent worker—including read-only investigations, coding workers, forks, and handovers—gets a
 tx-owned worktree before the process starts, so every engine records the correct workspace from its
@@ -86,7 +92,7 @@ first frame:
 
 ```bash
 tx spawn <name> --tag <scope> --cwd <repository> \
-  --engine <engine> --prompt "<priming>"
+  --engine <engine> --role <roles> --prompt "<task>"
 ```
 
 tx creates a detached `$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<name>` checkout and
@@ -99,7 +105,7 @@ For an explicitly read-only worker:
 
 ```bash
 tx spawn <name> --tag <scope> --cwd <repository> \
-  --engine <engine> --read-only --prompt "<priming>"
+  --engine <engine> --read-only --role <roles> --prompt "<task>"
 ```
 
 `--read-only` creates a separate worktree, persists `TX_READ_ONLY=1`, and wraps the entire agent
@@ -114,15 +120,15 @@ rollover preserve the source session's access mode.
 
 ### Worker priming
 
-`<priming>` **opens with the role-file read instruction** so the worker self-loads these conventions, then a short imperative telling it what to do. For a coding worker:
+An engine-built spawn primes through **`--role`**: tx resolves the named files and injects their contents **additively** into the engine's system prompt (Claude `--append-system-prompt`, Codex `-c developer_instructions=`) — the base prompt is never replaced, and the worker is governed by the conventions from its first token, no self-load step to obey. The priming is baked into the session's recorded command, so forks, handovers, and rollovers inherit it automatically. `--prompt` then carries only the task imperative (e.g., `Implement the plan at ~/Code/foo/.claude/plans/auth-rewrite.md.`).
+
+tx-ide ships `DEVELOPER.md` (the coding foundation) and its build-fleet layer `WORKFLOW-DEVELOPER.md`, plus `ORCHESTRATOR.md` and `OVERSIGHT.md`, alongside `COMMON.md`, `HISTORIAN.md`, `TX-ASSISTANT.md`. Pass whichever role(s) this worker plays — a build worker layers `--role DEVELOPER,WORKFLOW-DEVELOPER`.
+
+Only a **hand-written `--cmd` launch** (which bypasses the engine adapter, and so `--role`) still needs the legacy read-instruction opening its prompt:
 
 ```
 Read ~/.tx-ide/agents/COMMON.md, ~/.tx-ide/agents/DEVELOPER.md, and ~/.tx-ide/agents/WORKFLOW-DEVELOPER.md as your first actions (a build worker layers all three — COMMON conventions, the DEVELOPER coding foundation, the WORKFLOW-DEVELOPER build-fleet additions). Then, for each of those, if it exists also read the matching ~/.tx-ide/user-agents/<NAME>.md (replaces the shipped file) and <NAME>.local.md (extends it). Follow all of these for the duration of this session.
 ```
-
-tx-ide ships `DEVELOPER.md` (the coding foundation) and its build-fleet layer `WORKFLOW-DEVELOPER.md`, plus `ORCHESTRATOR.md` and `OVERSIGHT.md`, alongside `COMMON.md`, `HISTORIAN.md`, `TX-ASSISTANT.md`. Swap in whichever role(s) this worker plays — a build worker layers `DEVELOPER` + `WORKFLOW-DEVELOPER`; a named role with no shipped or user-agent file is unknown — don't guess.
-
-Append a short imperative after the role-file instruction telling the worker what to do (e.g., `Then implement the plan at ~/Code/foo/.claude/plans/auth-rewrite.md.`).
 
 ## Session metadata
 
