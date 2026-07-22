@@ -271,8 +271,13 @@ class SessionService:
 
         # The work-ancestor edge: a chat-op (fork / resume / handover) passes its SOURCE session id
         # on the spec so lineage — and the grouping walk — climbs real work history; a plain spawn
-        # records the executor (grouping design, decision 2).
+        # records the executor (grouping design, decision 2). A VIEW executor records no parent at
+        # all: views are home bases, not lineage (every consumer already drops them), and a view
+        # NAME is reusable after the view dies — persisted, it could later resolve to an unrelated
+        # same-named process and silently capture this session's lineage and group.
         parent = spec.parent or self.tmux.current_session_name()
+        if spec.parent is None and parent is not None and self.tmux.is_view(parent):
+            parent = None
         pid = self.tmux.new_session(
             name=tmux_name,
             cwd=spec.cwd,

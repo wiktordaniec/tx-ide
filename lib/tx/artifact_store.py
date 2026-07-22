@@ -34,11 +34,14 @@ from .artifact import Artifact, UnsupportedArtifactError
 from .storage import artifacts_dir
 
 # Record-lock tuning (see `ArtifactStore.locked`). The critical sections are load→save windows a
-# few milliseconds long, so waiters spin briefly; a lock older than STALE_LOCK_SECONDS can only be
-# crash debris (no writer holds one across user-scale time) and is broken rather than honored.
+# few milliseconds long, so waiters spin briefly. Staleness is OWNERSHIP-based (the owner pid is
+# dead), never age-based for a live owner — an overlong content write keeps its lock; the age
+# fallback exists only for a lock with no readable owner (a crash inside the mkdir→write-owner
+# gap). The wait budget deliberately exceeds that fallback age, so a waiter always reaches
+# recovery instead of timing out first.
 _LOCK_RETRY_INTERVAL = 0.01
-_LOCK_RETRIES = 500
-_STALE_LOCK_SECONDS = 10.0
+_LOCK_RETRIES = 1500
+_OWNERLESS_LOCK_STALE_SECONDS = 10.0
 
 
 class ArtifactStore:
@@ -54,36 +57,70 @@ class ArtifactStore:
     @contextlib.contextmanager
     def locked(self, artifact_id: str) -> Iterator[None]:
         """Serialize one record's read-modify-write against every other lock-honoring writer — an
-        atomic-`mkdir` mutex held across a load→save window. The rev-slot claim (`claim_rev`) still
-        serializes modify-vs-modify content writes and stays the crash-safe backstop; this lock
-        exists because a record save is whole-file `os.replace` (last write wins), so an UNLOCKED
-        interleaving of two record writers — a `modify` appending a touch vs a `set_group` writing
-        the override — would let the stale one silently revert the other's committed history (the
-        lost-touch P0). A lock directory older than `_STALE_LOCK_SECONDS` is crash debris (the
-        window is milliseconds) and is broken, so an interrupted writer never wedges the store."""
+        atomic-`mkdir` mutex (an `owner` file inside carries the holder's pid) held across a
+        load→save window. The rev-slot claim (`claim_rev`) still serializes modify-vs-modify
+        content writes and stays the crash-safe backstop; this lock exists because a record save is
+        whole-file `os.replace` (last write wins), so an UNLOCKED interleaving of two record
+        writers — a `modify` appending a touch vs a `set_group` writing the override — would let
+        the stale one silently revert the other's committed history (the lost-touch P0).
+
+        Crash recovery is ownership-aware (`_lock_is_stale`): a dead owner is broken immediately,
+        a live owner is honored forever, and release deletes the lock only while it still holds our
+        own pid. The one residual TOCTOU — a breaker removing a lock re-acquired in the microsecond
+        after its staleness check — needs crash debris plus two concurrent waiters interleaving at
+        microsecond scale; `claim_rev` still hard-serializes the rev slots underneath it."""
         self.directory.mkdir(parents=True, exist_ok=True)
         lock = self._lock_path(artifact_id)
+        owner_file = lock / "owner"
         for _ in range(_LOCK_RETRIES):
             try:
                 lock.mkdir()
+                owner_file.write_text(str(os.getpid()))
                 break
             except FileExistsError:
-                try:
-                    held_for = time.time() - lock.stat().st_mtime
-                except OSError:
-                    continue  # holder released between our mkdir and stat — retry immediately
-                if held_for > _STALE_LOCK_SECONDS:
-                    with contextlib.suppress(OSError):
-                        lock.rmdir()
+                if self._lock_is_stale(lock):
+                    self._break_lock(lock)
                     continue
                 time.sleep(_LOCK_RETRY_INTERVAL)
         else:
-            raise TimeoutError(f"artifact {artifact_id}: record lock never freed ({lock})")
+            raise TimeoutError(
+                f"artifact {artifact_id}: record lock held by a live process for "
+                f"{_LOCK_RETRIES * _LOCK_RETRY_INTERVAL:.0f}s — giving up ({lock})"
+            )
         try:
             yield
         finally:
-            with contextlib.suppress(OSError):
-                lock.rmdir()
+            try:
+                if owner_file.read_text() == str(os.getpid()):
+                    owner_file.unlink()
+                    lock.rmdir()
+            except OSError:
+                pass  # broken while we (over)held, or already gone — nothing of ours to release
+
+    def _lock_is_stale(self, lock: Path) -> bool:
+        """Whether a held lock is crash debris. Owner pid readable: stale exactly when that process
+        is gone (a LIVE owner is never expired, however long it writes). Owner unreadable (the
+        mkdir→write-owner gap, or a breaker mid-teardown): fall back to age."""
+        try:
+            owner_pid = int((lock / "owner").read_text())
+        except (OSError, ValueError):
+            try:
+                return time.time() - lock.stat().st_mtime > _OWNERLESS_LOCK_STALE_SECONDS
+            except OSError:
+                return False  # vanished under us — the next mkdir attempt decides
+        try:
+            os.kill(owner_pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False  # alive, just not ours to signal
+        return False
+
+    def _break_lock(self, lock: Path) -> None:
+        with contextlib.suppress(OSError):
+            (lock / "owner").unlink()
+        with contextlib.suppress(OSError):
+            lock.rmdir()
 
     def save(self, artifact: Artifact) -> None:
         """Persist the record atomically (temp file + `os.replace`), like `SessionStore.save`. The
