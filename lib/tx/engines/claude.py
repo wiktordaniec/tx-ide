@@ -21,6 +21,7 @@ CLAUDE_BIN = "claude"
 TRANSCRIPT_SUFFIX = ".jsonl"
 BUNDLE_TRANSCRIPT_NAME = "transcript.jsonl"
 SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
+APPEND_SYSTEM_PROMPT_FLAG = "--append-system-prompt"
 READ_ONLY_TOOLS = ("Edit", "Write", "NotebookEdit")
 READ_ONLY_ALLOWED_TOOLS = ("Bash",)
 READ_ONLY_SETTING_SOURCES = "user"
@@ -348,6 +349,7 @@ class ClaudeEngine(EngineAdapter):
         effort: int | None = None,
         initial_prompt: str | None = None,
         read_only: bool = False,
+        role_priming: str | None = None,
     ) -> list[str]:
         # A positional prompt auto-submits in interactive mode (measured).
         command = [CLAUDE_BIN]
@@ -355,6 +357,10 @@ class ClaudeEngine(EngineAdapter):
             command += ["--model", model]
         selected_effort = effort if effort is not None else DEFAULT_EFFORT
         command += ["--effort", EFFORT_LEVELS[selected_effort]]
+        if role_priming:
+            # Additive by contract ("Append a system prompt to the default"); a persona
+            # value-flag, so _strip_identity carries it into forks/handovers/rollovers.
+            command += [APPEND_SYSTEM_PROMPT_FLAG, role_priming]
         command = _apply_access(command, read_only)
         if initial_prompt:
             command.append(initial_prompt)

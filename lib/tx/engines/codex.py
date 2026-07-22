@@ -20,6 +20,10 @@ CODEX_BIN = "codex"
 CODEX_MODEL = "gpt-5.6-sol"
 CODEX_EFFORT = DEFAULT_EFFORT
 REASONING_EFFORT_KEY = "model_reasoning_effort"
+# Additive instructions channel: appended to codex's base instructions, never replacing them
+# (contrast experimental_instructions_file, which replaces). The multi-line contents fail `-c`'s
+# TOML parse and fall back to the raw string literal, arriving intact as one argv token.
+DEVELOPER_INSTRUCTIONS_KEY = "developer_instructions"
 
 # Writable workers bypass approvals+sandbox AND hook trust. Read-only workers deliberately avoid a
 # nested native sandbox and run inside tx's outer process sandbox; hook trust remains headless so tx
@@ -220,6 +224,7 @@ class CodexEngine(EngineAdapter):
         effort: int | None = None,
         initial_prompt: str | None = None,
         read_only: bool = False,
+        role_priming: str | None = None,
     ) -> list[str]:
         """Argv for a fresh session. A positional prompt auto-submits in the interactive TUI, so the
         seed needs no send-keys."""
@@ -229,6 +234,9 @@ class CodexEngine(EngineAdapter):
             "-m", model or CODEX_MODEL,
             "-c", f"{REASONING_EFFORT_KEY}={EFFORT_LEVELS[selected_effort]}",
         ]
+        if role_priming:
+            # A `-c KEY=VALUE` persona pair, so _strip_identity inherits it across chat ops.
+            command += ["-c", f"{DEVELOPER_INSTRUCTIONS_KEY}={role_priming}"]
         command = _apply_access(command, read_only)
         if initial_prompt:
             command.append(initial_prompt)

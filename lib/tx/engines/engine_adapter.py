@@ -52,8 +52,11 @@ class EngineAdapter(Protocol):
         effort: int | None = None,
         initial_prompt: str | None = None,
         read_only: bool = False,
+        role_priming: str | None = None,
     ) -> list[str]:
-        """Argv for a fresh session, including the requested repository access mode."""
+        """Argv for a fresh session, including the requested repository access mode.
+        `role_priming` is injected ADDITIVELY into the engine's system prompt (the base prompt is
+        never replaced) as a persona value-flag, so chat-op identity stripping inherits it."""
         ...
 
     def resume_command(self, chat_id: str, *, read_only: bool = False) -> list[str]:
