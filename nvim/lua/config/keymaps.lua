@@ -116,5 +116,8 @@ vim.opt.diffopt:append("indent-heuristic")
 -- GitHub-style diff colors (shared by diff mode, diffview, gitsigns inline)
 require("config.diff-style")
 
+-- Seamless C-h/j/k/l across splits, tmux panes, and nested sessions (see lua/config/tmux-nav.lua)
+require("config.tmux-nav").setup()
+
 -- Keymap usage telemetry (see lua/config/keylog.lua)
 require("config.keylog").setup()

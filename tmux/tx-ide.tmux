@@ -6,6 +6,7 @@
 #   @tx-ide-popups          on|off   prefix+t (tx), prefix+/ (tx-assistant)
 #   @tx-ide-pane-borders    on|off   pane-border-format integration + colors
 #   @tx-ide-agent-scroll    on|off   C-u/C-d → PageUp/PageDown in agent panes
+#   @tx-ide-nav-keys        on|off   C-h/j/k/l seamless nav: nvim splits ↔ panes ↔ nested sessions
 #   @tx-ide-pane-keys       on|off   M-1..9 → select-pane
 #   @tx-ide-window-keys     on|off   User0..8 → select-window (terminal must send)
 #   @tx-ide-session-labels  on|off   prefix+s shows each session's name + tags (choose-tree)
@@ -22,6 +23,8 @@ set -u
 RELABEL="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tmux-session-relabel"
 # Repo-relative poke the focus hooks run (backgrounded) to nudge the session-graph dashboard's ring.
 FOCUS_POKE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tx-graph-focus-poke"
+# Repo-relative navigator the nav-keys binds call on a session-edge press (the bubble path).
+NAV="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tmux-nav"
 
 option() {
   tmux show-option -gv "$1" 2>/dev/null || printf '%s' "$2"
@@ -30,6 +33,7 @@ option() {
 popups=$(option @tx-ide-popups on)
 pane_borders=$(option @tx-ide-pane-borders on)
 agent_scroll=$(option @tx-ide-agent-scroll on)
+nav_keys=$(option @tx-ide-nav-keys on)
 pane_keys=$(option @tx-ide-pane-keys on)
 window_keys=$(option @tx-ide-window-keys on)
 session_labels=$(option @tx-ide-session-labels on)
@@ -129,6 +133,54 @@ if [ "$agent_scroll" = on ]; then
 bind -n C-u if -F '#{||:#{==:#{pane_current_command},claude},#{||:#{==:#{pane_current_command},codex},#{m:[0-9]*.[0-9]*.[0-9]*,#{pane_current_command}}}}' 'send-keys PageUp' 'send-keys C-u'
 bind -n C-d if -F '#{||:#{==:#{pane_current_command},claude},#{||:#{==:#{pane_current_command},codex},#{m:[0-9]*.[0-9]*.[0-9]*,#{pane_current_command}}}}' 'send-keys PageDown' 'send-keys C-d'
 EOF
+fi
+
+# --- Nav keys (C-h/j/k/l: nvim splits ↔ panes ↔ nested sessions) ---
+# One root-table bind per direction, evaluated PER CLIENT — and tx nests sessions as a
+# client-in-a-pane on the SAME server (`TMUX= tmux attach`), so the same bind re-fires one
+# nesting level down whenever the key is forwarded into a nested client. That collapses the
+# navigation to two cases and recurses to any depth for free:
+#   - pane runs nvim or a nested tmux client → send the key INTO the pane. nvim moves between
+#     its splits (lua/config/tmux-nav.lua) and calls bin/tmux-nav itself at the tabpage edge;
+#     a nested client re-evaluates this same bind against the inner session.
+#   - otherwise → select-pane, or — when already at the session's edge — bin/tmux-nav, which
+#     hops to the pane hosting this session's client and continues the walk in the outer
+#     session (`#{client_tty}` pins that first hop to the client that pressed the key).
+# `pane_current_command` is exact here precisely BECAUSE the nesting is a client-in-a-pane:
+# the pane's foreground process IS `tmux` (the nested client) or `nvim` — no ps hackery.
+# Root-table binds don't fire in copy-mode or popups, so those keep their keys.
+#
+# Cost: C-h/j/k/l no longer reach shells or agent TUIs (zsh C-l clear, claude C-j newline…).
+# prefix+C-h/j/k/l sends the literal key instead — re-wrapping the prefix per nesting level,
+# so each hop unwraps once and the innermost non-tmux pane receives the bare key. The prefix
+# is read at compose time (run-shell executes after the user's tmux.conf set it); a `none`
+# prefix skips the escape binds. M-1..9 direct pane jumps are unaffected.
+if [ "$nav_keys" = on ]; then
+  nav_pass='#{||:#{==:#{pane_current_command},nvim},#{==:#{pane_current_command},tmux}}'
+  nav_nested='#{==:#{pane_current_command},tmux}'
+  nav_prefix=$(tmux show-option -gv prefix 2>/dev/null || echo C-b)
+  while read -r key direction edge; do
+    cat >>"$CONF" <<EOF
+bind -n C-$key if -F '$nav_pass' {
+  send-keys C-$key
+} {
+  if -F '#{$edge}' {
+    run-shell -b "$NAV $direction #{pane_id} #{client_tty}"
+  } {
+    select-pane -$direction
+  }
+}
+EOF
+    if [ "$nav_prefix" != none ]; then
+      printf "bind C-%s if -F '%s' 'send-keys %s C-%s' 'send-keys C-%s'\n" \
+        "$key" "$nav_nested" "$nav_prefix" "$key" "$key" >>"$CONF"
+    fi
+  done <<'NAVSPEC'
+h L pane_at_left
+j D pane_at_bottom
+k U pane_at_top
+l R pane_at_right
+NAVSPEC
 fi
 
 # --- Pane keys (M-1..9 → select-pane) ---
