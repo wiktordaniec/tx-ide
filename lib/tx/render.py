@@ -294,24 +294,26 @@ def render_artifacts(
 
 def render_artifact_show(
     artifact: Artifact, dirty: bool, names: Mapping[str, str] | None = None,
-    now: float | None = None,
+    now: float | None = None, resolved_group: str | None = None,
 ) -> str:
     """`tx artifact show` — metadata + the full touch/version log (this absorbs the earlier separate
     `history` verb — one verb, not two). Each history entry is one revision: rev number, age, author
     (resolved session name via `names`), and its optional changes note. The working-copy line flags
     a dirty `current` (un-snapshotted edits — a visible state, not an error). Pure formatting; the
-    caller computes `dirty` and resolves `names`."""
+    caller computes `dirty`, resolves `names`, and (being a read-time derivation) `resolved_group`."""
     if now is None:
         now = time.time()
     names = names or {}
     working = (
         "dirty — un-snapshotted edits (close with `tx artifact modify`)" if dirty else "clean"
     )
+    group = artifact.group if artifact.group is not None else f"derived: {resolved_group}"
     lines = [
         f"{artifact.title or artifact.filename}  ({artifact.id})",
         f"  filename:   {artifact.filename}",
         f"  created:    {reltime(artifact.created_at, now)} ago",
         f"  updated:    {reltime(artifact.updated_at, now)} ago",
+        f"  group:      {group}",
         f"  revisions:  {len(artifact.history)}",
         f"  working:    {working}",
         "  history:",

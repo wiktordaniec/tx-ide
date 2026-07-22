@@ -7,7 +7,7 @@ generalizes the `ChatRef`/`Origin` provenance prior art (`session.py`) from immu
 transcripts to mutable, versioned files.
 
 Contracts honored here:
-  - `ARTIFACT_SCHEMA_VERSION = 1` with a strict `from_dict` boundary, INDEPENDENT of the session
+  - `ARTIFACT_SCHEMA_VERSION` with a strict `from_dict` boundary, INDEPENDENT of the session
     schema (mirrors `Session.from_dict`): a version mismatch raises `UnsupportedArtifactError`, and
     beyond the version it validates the structural invariants — non-empty history, entry 0 is the
     create (rev 0), rev numbers contiguous from 0 (F2).
@@ -27,8 +27,8 @@ from pathlib import Path
 # Bumped only when the on-disk artifact record shape changes. The strict boundary means ANY change —
 # a field added, removed, or re-meaned — bumps it; there are no tolerated unknown fields. Independent
 # of the session `SCHEMA_VERSION`: artifacts are a separate store with their own version line.
-# Planned bumps: none — the artifact schema stays 1 through all planned sequencing steps.
-ARTIFACT_SCHEMA_VERSION = 1
+# v2 adds the nullable `group` override; None = derived at read time (grouping.py).
+ARTIFACT_SCHEMA_VERSION = 2
 
 # Sentinel actor for a touch made outside any tx session — a manual edit by the human, or a
 # `tx artifact` call from a plain terminal (C1/C2). A first-class provenance value, not a gap.
@@ -39,13 +39,13 @@ USER_ACTOR = "user"
 # rejects a record whose keys are not exactly these — extras mean "not ours / a newer shape without a
 # version bump", missing keys mean "malformed".
 _ARTIFACT_KEYS = frozenset(
-    {"artifact_schema_version", "id", "title", "filename", "created_at", "history"}
+    {"artifact_schema_version", "id", "title", "filename", "created_at", "group", "history"}
 )
 _TOUCH_KEYS = frozenset({"session_id", "at", "rev", "changes"})
 
 
 class UnsupportedArtifactError(Exception):
-    """A persisted record is not a current (v1) artifact record — the `from_dict` boundary guard
+    """A persisted record is not a current-version artifact record — the `from_dict` boundary guard
     (mirrors `session.UnsupportedRecordError`). Raised on an `artifact_schema_version` mismatch or a
     violated structural invariant. `ArtifactStore.all()` skips such records (one bad file must not
     crash `ls`/`doctor`); `ArtifactStore.load()` lets it propagate (the caller named that record).
@@ -100,6 +100,8 @@ class Artifact:
     title: str | None
     filename: str
     created_at: float
+    # v2: explicit effort-group override; None = derived from the CREATOR at read time.
+    group: str | None = None
     history: list[Touch] = field(default_factory=list)
     artifact_schema_version: int = ARTIFACT_SCHEMA_VERSION
 
@@ -120,7 +122,7 @@ class Artifact:
         return self.history[-1].rev
 
     def to_dict(self) -> dict:
-        """The v1 on-disk shape. `updated_at` is intentionally ABSENT (derived, F3), so
+        """The current on-disk shape. `updated_at` is intentionally ABSENT (derived, F3), so
         `from_dict(to_dict())` round-trips exactly through the strict boundary."""
         return {
             "artifact_schema_version": self.artifact_schema_version,
@@ -128,15 +130,16 @@ class Artifact:
             "title": self.title,
             "filename": self.filename,
             "created_at": self.created_at,
+            "group": self.group,
             "history": [touch.to_dict() for touch in self.history],
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> Artifact:
         """Deserialize a persisted record at the strict boundary (mirrors `Session.from_dict`). A
-        non-v1 `artifact_schema_version` raises `UnsupportedArtifactError` — tx-ide does not
+        non-current `artifact_schema_version` raises `UnsupportedArtifactError` — tx-ide does not
         back-migrate older artifact records on load. Beyond the version it validates the F2
-        invariants (see `_validate_history`). Within a v1 record the shape is ours, so fields are
+        invariants (see `_validate_history`). Within a current record the shape is ours, so fields are
         read directly (no defensive defaults — DEVELOPER standard)."""
         version = data.get("artifact_schema_version")
         if version != ARTIFACT_SCHEMA_VERSION:
@@ -152,6 +155,7 @@ class Artifact:
             title=data["title"],
             filename=data["filename"],
             created_at=data["created_at"],
+            group=data["group"],
             history=history,
             artifact_schema_version=version,
         )
@@ -176,7 +180,7 @@ def _require_exact_keys(data: dict, expected: frozenset[str], what: str) -> None
 def _validate_history(history: list[Touch], artifact_id: str) -> None:
     """Enforce the F2 structural invariants on a loaded history — this is a persistence boundary, so
     it is real validation (not an internal defensive check). Two checks: the history must be
-    non-empty (entry 0 is the create), and — because a v1 artifact writes exactly one rev per touch —
+    non-empty (entry 0 is the create), and — because an artifact writes exactly one rev per touch —
     the rev sequence must equal `0..len-1` (entry 0 = rev 0, contiguous, no gaps). The empty case is
     called out explicitly because it would otherwise satisfy the sequence check vacuously. Raises
     `UnsupportedArtifactError` naming the artifact on any violation."""

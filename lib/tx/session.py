@@ -25,9 +25,10 @@ from enum import Enum
 # record. v4 split the one record shape into role-discriminated types and took views out of the
 # store: it drops the dead `kind` key, drops the non-llm `engine`/`chats`/`last_activity` keys, and
 # deletes view records. v5 adds a nullable `artifact_id` back-link to `OtherSession` ONLY — an nvim
-# view opened on an artifact (Plan 2, sequencing step 3); no other role gains a field. `tx migrate`
-# upgrades older records in place, chaining v3 -> v4 -> v5 in a single run.
-SCHEMA_VERSION = 5
+# view opened on an artifact (Plan 2, sequencing step 3); no other role gains a field. v6 adds the
+# nullable `group` override to the shared base — only overrides are stored; the effective group is
+# resolved at read time (grouping.py). `tx migrate` chains v3 -> v4 -> v5 -> v6 in one run.
+SCHEMA_VERSION = 6
 
 # Access-mode markers live in the already-persisted session environment, so v3 records remain
 # readable across this additive behavior change. An absent marker is the writable default.
@@ -246,9 +247,12 @@ class Session:
     cwd: str = ""
     initial_cmd: str = ""  # the resolved engine/launch command (JSON key stays "cmd")
     tags: list[str] = field(default_factory=list)  # free-form scope chips
+    # v6: explicit effort-group override; None = derived at read time (grouping.py).
+    group: str | None = None
     spawn_env: dict[str, str] = field(
         default_factory=dict
     )  # spawn-time environment (JSON key stays "env")
+    # Work ancestor: chat-ops record the SOURCE session id; a plain spawn its managed executor.
     parent: str | None = None
     pid: int | None = None  # provenance only (C1)
     attached_to: list[Location] = field(default_factory=list)
@@ -337,6 +341,7 @@ class Session:
             "cwd": self.cwd,
             "cmd": self.initial_cmd,
             "tags": list(self.tags),
+            "group": self.group,
             "env": dict(self.spawn_env),
             "parent": self.parent,
             "pid": self.pid,
@@ -371,6 +376,8 @@ class Session:
             cwd=data["cwd"],
             initial_cmd=data["cmd"],
             tags=list(data["tags"]),
+            # `.get()`: the v6 addition, absent mid-migration (same rationale as artifact_id).
+            group=data.get("group"),
             spawn_env=dict(data["env"]),
             parent=data["parent"],
             pid=data["pid"],

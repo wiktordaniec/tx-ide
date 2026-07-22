@@ -216,6 +216,8 @@ class SessionService:
         print; there is no `Session` object to return."""
         if self.tmux.has_session(spec.name):
             raise SessionExists(f"session '{spec.name}' already exists")
+        # Cross-type uniqueness, reverse direction: no view named like a live process.
+        self._require_name_free(spec.name)
         self.tmux.new_session(
             name=spec.name,
             cwd=spec.cwd,
@@ -265,7 +267,8 @@ class SessionService:
                 )
             )
 
-        parent = self.tmux.current_session_name()
+        # Work-ancestor edge: a chat-op passes its SOURCE id; else the managed executor.
+        parent = spec.parent if spec.parent is not None else self._executor_parent()
         pid = self.tmux.new_session(
             name=tmux_name,
             cwd=spec.cwd,
@@ -293,6 +296,7 @@ class SessionService:
                 initial_cmd=spec.cmd,
                 engine=engine or Engine.CLAUDE,
                 tags=list(spec.tags),
+                group=spec.group,
                 spawn_env=dict(spec.env),
                 parent=parent,
                 pid=pid,
@@ -311,6 +315,7 @@ class SessionService:
                 cwd=spec.cwd,
                 initial_cmd=spec.cmd,
                 tags=list(spec.tags),
+                group=spec.group,
                 spawn_env=dict(spec.env),
                 parent=parent,
                 pid=pid,
@@ -320,14 +325,27 @@ class SessionService:
         self.log.append("spawn", f"{spec.name} [{spec.role.value}] {spec.cwd}")
         return session
 
+    def _executor_parent(self) -> str | None:
+        """The executing MANAGED session's id, else None (view / unmanaged tmux / plain terminal):
+        only a stable `@tx_id` is lineage — a persisted reusable NAME could later be captured by a
+        same-named record and silently rewrite lineage and group."""
+        current = self.tmux.current_session_name()
+        if current is None:
+            return None
+        return self.tmux.get_tx_id(current)
+
     def _require_name_free(self, name: str) -> None:
         """Refuse a spawn/rename onto a display name a LIVE record already holds — the human-name
         uniqueness that used to fall out of tmux's unique-session-name rule (now that a process is
         tmux-named by its id, tmux no longer enforces it, so name resolution stays unambiguous).
-        Reconcile first so a vanished session's stale record does not block reuse (D7)."""
+        Reconcile first so a vanished session's stale record does not block reuse (D7). A live
+        VIEW's name is refused too — cross-type collisions ambiguate name resolution and legacy
+        name-parent references."""
         self.reconcile()
         if any(s.name == name and s.is_alive() for s in self.store.all()):
             raise SessionExists(f"session '{name}' already exists")
+        if self.tmux.has_session(name) and self.tmux.is_view(name):
+            raise SessionExists(f"'{name}' is a live view session — pick another name")
 
     # ----- lifecycle -----------------------------------------------------------------------
 
@@ -387,6 +405,17 @@ class SessionService:
         )  # ride-along snapshot (§4)
         self.store.save(session)
         self.log.append("tag", f"{session.name} {','.join(tags)}")
+        return session
+
+    def set_group(self, name_or_id: str, group: str | None) -> Session:
+        """Set (or with None clear) a session's explicit effort-group override. Mirrors `tag`."""
+        session = self._require(name_or_id)
+        session.group = group
+        session.attached_to = self.tmux.attached_to(
+            session.tmux_name
+        )  # ride-along snapshot (§4)
+        self.store.save(session)
+        self.log.append("group", f"{session.name} {group if group is not None else '(cleared)'}")
         return session
 
     def bind_artifact(self, session_id: str, artifact_id: str) -> Session:

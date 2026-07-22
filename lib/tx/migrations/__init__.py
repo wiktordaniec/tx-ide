@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ..artifact import ARTIFACT_SCHEMA_VERSION, Artifact, UnsupportedArtifactError
+from ..artifact_store import ArtifactStore
 from ..session import SCHEMA_VERSION, Session, UnsupportedRecordError
 from ..store import SessionStore
 from ..tmux import Tmux
@@ -14,22 +16,26 @@ from ..tmux import Tmux
 # older keys are dropped, genuinely-new fields default via `.get()`) and the current serializer
 # emits exactly the current shape. So one from_dict+to_dict does the whole chain — no per-version
 # intermediate pass.
-#   - v3 -> v5: a PROCESS record (v3 `kind` != "view") canonicalizes — the dead "kind" key drops, a
-#     non-llm record sheds the now-absent `engine`/`chats`/`last_activity` keys, an llm record gains
-#     `turn_started_at`, a non-llm record gains a null `artifact_id`, and `schema_version` becomes
-#     the current one. A VIEW record (v3 `kind` == "view") leaves the store entirely: its durable
+#   - v3 -> current: a PROCESS record (v3 `kind` != "view") canonicalizes — the dead "kind" key
+#     drops, a non-llm record sheds the now-absent `engine`/`chats`/`last_activity` keys, an llm
+#     record gains `turn_started_at`, a non-llm record gains a null `artifact_id`, every record gains
+#     a null `group`, and `schema_version` becomes the current one. A VIEW record (v3 `kind` ==
+#     "view") leaves the store entirely: its durable
 #     identity becomes the live `@tx_view` tmux marker, so migration stamps that marker on the
 #     matching live tmux session (record name <-> tmux name — views are human-named) and DELETES the
 #     record file. Deletion is mandatory and ordering-sensitive: left behind, the role-dispatching
 #     factory would load a view as a terminal OtherSession and pollute `tx history` with phantoms.
 #   - v4 -> v5: a v4 record (no `kind`, no view records) simply gains the nullable `artifact_id` on a
 #     non-llm record; everything else is already current.
+#   - v5 -> v6: every record gains the nullable `group` override (add-default step).
 # The loader refuses any non-current schema (no auto-upgrade-on-load), so pre-v3 records must be
-# upgraded out-of-band first. SAFETY: run ONCE at deploy against the real $TX_IDE_HOME; a newer
-# checkout must never migrate a live older home (it would brick the running crew). Sandbox run:
-# `TX_IDE_HOME=$(mktemp -d) tx migrate`.
+# upgraded out-of-band first. `tx migrate` also runs `migrate_artifacts` (below) — the artifact
+# store's own v1 -> v2 step rides the same deploy. SAFETY: run ONCE at deploy against the real
+# $TX_IDE_HOME; a newer checkout must never migrate a live older home (it would brick the running
+# crew). Sandbox run: `TX_IDE_HOME=$(mktemp -d) tx migrate`.
 
-_UPGRADABLE_FROM = frozenset({3, 4})  # source versions the migrator chains to the current schema
+_UPGRADABLE_FROM = frozenset({3, 4, 5})  # source versions the migrator chains to the current schema
+_ARTIFACT_UPGRADABLE_FROM = frozenset({1})
 _VIEW_KIND = "view"
 
 
@@ -74,8 +80,49 @@ def migrate_sessions(
             # dead older keys, defaults genuinely-new fields, and stamps the current schema_version
             # (see the module note) — a v3 or a v4 source lands on the current shape identically.
             store.save(Session.from_dict({**raw, "schema_version": SCHEMA_VERSION}))
-        except (OSError, json.JSONDecodeError, KeyError, ValueError, UnsupportedRecordError) as error:
+        # AttributeError / TypeError: structurally malformed JSON (non-object record, null list).
+        except (
+            OSError, json.JSONDecodeError, AttributeError, TypeError, KeyError, ValueError,
+            UnsupportedRecordError,
+        ) as error:
             skipped.append((path.name, f"{type(error).__name__}: {error}"))
             continue
         migrated.append(path.name)
     return migrated, views_removed, skipped
+
+
+def _artifact_skip_reason(raw: dict) -> str:
+    version = raw.get("artifact_schema_version")
+    if version == ARTIFACT_SCHEMA_VERSION:
+        return f"already v{ARTIFACT_SCHEMA_VERSION}"
+    return f"not an upgradable artifact record (artifact_schema_version={version!r})"
+
+
+def migrate_artifacts(directory: Path) -> tuple[list[str], list[tuple[str, str]]]:
+    """Upgrade artifact records in place (v1 -> v2 adds a null `group`); return (migrated,
+    skipped). The strict boundary tolerates no missing key, so the default is injected before
+    re-validation. Same discipline as `migrate_sessions`: idempotent, one bad file skips."""
+    store = ArtifactStore(directory=directory)
+    migrated: list[str] = []
+    skipped: list[tuple[str, str]] = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            with open(path) as handle:
+                raw = json.load(handle)
+            if raw.get("artifact_schema_version") not in _ARTIFACT_UPGRADABLE_FROM:
+                skipped.append((path.name, _artifact_skip_reason(raw)))
+                continue
+            store.save(Artifact.from_dict({
+                **raw,
+                "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
+                "group": raw.get("group"),
+            }))
+        # Same malformed-shape tolerance as migrate_sessions.
+        except (
+            OSError, json.JSONDecodeError, AttributeError, TypeError, KeyError, ValueError,
+            UnsupportedArtifactError,
+        ) as error:
+            skipped.append((path.name, f"{type(error).__name__}: {error}"))
+            continue
+        migrated.append(path.name)
+    return migrated, skipped

@@ -38,7 +38,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "lib"))
 
 from tx import history                   # noqa: E402
+from tx.artifact_store import ArtifactStore  # noqa: E402
 from tx.engines import claude as claude_engine  # noqa: E402
+from tx.grouping import GroupResolver    # noqa: E402
 from tx.messages import collect_messages, source_signature  # noqa: E402
 from tx.palette import tag_cube          # noqa: E402  — path is set on the line above
 from tx.render import reltime            # noqa: E402
@@ -86,11 +88,12 @@ def cube_to_hex(cube_index: int) -> str:
     return f"#{grey:02x}{grey:02x}{grey:02x}"
 
 
-def session_payload(session: Session, now: float) -> dict:
+def session_payload(session: Session, now: float, resolver: GroupResolver) -> dict:
     """The per-session bundle the page consumes: the on-disk record verbatim (the graph reads
-    `parent`/`name`/`state` from it), a few derived display fields, and the pretty-printed JSON
-    shown in the click-through preview."""
+    `parent`/`name`/`state` from it), a few derived display fields — `resolved_group` is what the
+    page clusters/badges/filters by — and the pretty-printed JSON for the click-through preview."""
     record = session.to_dict()
+    resolved_group = resolver.session_group(session)
     return {
         "record": record,
         "derived": {
@@ -100,6 +103,8 @@ def session_payload(session: Session, now: float) -> dict:
             "activity_at": session.activity_at,   # uniform recency epoch (llm → last_activity, else created_at); the page sorts/filters on this
             "idle_rel": reltime(session.activity_at, now),
             "tag_colors": {tag: cube_to_hex(tag_cube(tag)) for tag in session.tags},
+            "resolved_group": resolved_group,
+            "group_color": cube_to_hex(tag_cube(resolved_group)),
         },
         "json": json.dumps(record, indent=2),
     }
@@ -131,10 +136,12 @@ def build_feed() -> dict:
     attachment = Tmux().attachment_map()
     for session in sessions:
         session.attached_to = attachment.get(_tmux_name(session), [])
+    # One resolver per feed build; artifacts feed the artifact-view rung of the cascade.
+    resolver = GroupResolver(sessions, ArtifactStore().all())
     return {
         "generated_at": now,
         "home": str(sessions_dir()),
-        "sessions": [session_payload(session, now) for session in sessions],
+        "sessions": [session_payload(session, now, resolver) for session in sessions],
     }
 
 

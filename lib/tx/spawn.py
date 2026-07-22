@@ -53,6 +53,11 @@ class SpawnSpec:
     cwd: str
     cmd: str
     tags: list[str] = field(default_factory=list)
+    # Explicit effort-group override (`--group`); None = derived at read time.
+    group: str | None = None
+    # Work-ancestor override: chat-ops pass their SOURCE session id; None = plain spawn
+    # (`_spawn` records the managed executor).
+    parent: str | None = None
     env: dict[str, str] = field(default_factory=dict)
     # Every agent worker is placed in a linked tx-owned worktree by SessionService.spawn_worker.
     # Explicit read-only mode binds tx's whole-process filesystem sandbox to repository paths.
@@ -84,18 +89,23 @@ class SpawnSpec:
         read_only: bool = False,
         records_own_chat: bool = False,
         engine: Engine | None = None,
+        group: str | None = None,
+        parent: str | None = None,
     ) -> SpawnSpec:
         """A normal worker/agent/shell session (`tx spawn`). A plain llm spawn gets a pending
         `original` `ChatRef` from `SessionService._spawn`; its chat id is captured from the first hook
-        payload, not minted (T4). A chat-op that records its own ref passes `records_own_chat=True`.
-        `engine` carries the `--engine` choice (default Claude resolved in `_spawn`); leave it `None`
-        for a shell/nvim/other spawn or to take the engine default."""
+        payload, not minted (T4). A chat-op that records its own ref passes `records_own_chat=True`
+        (and its SOURCE session id as `parent`). `engine` carries the `--engine` choice (default
+        Claude resolved in `_spawn`); leave it `None` for a shell/nvim/other spawn or to take the
+        engine default."""
         return cls(
             name=name,
             role=infer_role(cmd),
             cwd=cwd,
             cmd=cmd,
             tags=list(tags),
+            group=group,
+            parent=parent,
             env=dict(env or {}),
             read_only=read_only,
             records_own_chat=records_own_chat,
@@ -112,6 +122,7 @@ class SpawnSpec:
         env: dict[str, str] | None = None,
         diff_base: str | None = None,
         open_file: str | None = None,
+        group: str | None = None,
     ) -> SpawnSpec:
         """An nvim companion (`tx spawn-nvim`). `diff_base` opens straight into a diffview against it
         (`--diff` defaults the base to `main` at the CLI boundary); `open_file` opens a file
@@ -127,6 +138,7 @@ class SpawnSpec:
             cwd=cwd,
             cmd=command,
             tags=list(tags),
+            group=group,
             env=dict(env or {}),
         )
 

@@ -48,6 +48,8 @@ get their worktree and require-worktree guard automatically; see **§ Spawning w
 
 **Naming:** human-readable, says what it's for (e.g. `wrangler-p1-diff`, `auth-review`). The tag does the filtering, not the name.
 
+**Group convention** — a session's effort **group** is *derived at read time* (own override → first override up the `parent` chain → `tags[0]` → name), so in the common case you set **nothing**: spawn with the right scope tag and lineage does the rest (fork/resume/handover parent their new session to the SOURCE). Reach for an explicit group in exactly two cases: sibling spawns that share no ancestor (claude/codex A/B twins — give both the same `--group`), and re-filing a whole effort (`tx group <root> <name>` on its root retroactively re-files every descendant and their artifacts; `--clear` returns to derived). **Hub sessions (tx-assistant, views) stay ungrouped by convention** — never set a group on them, so nothing inherits from them.
+
 ```bash
 tx spawn build-watch --tag wrangler-p1 --cmd 'npm run watch'   # an ad-hoc process
 tx spawn-nvim wrangler-p1-diff --tag wrangler-p1 --diff main   # an nvim companion
@@ -124,7 +126,7 @@ Append a short imperative after the role-file instruction telling the worker wha
 
 ## Session metadata
 
-Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` holding its `name`, `role`, `tags`, `cwd`, `cmd`, `env`, `parent`, `pid`, and (for an llm session) `chats`. One tmux pointer, `@tx_id` (set once at spawn), links the live session to its record, so the record survives a `kill-session` or a tmux restart. Spawning exports `TX_SESSION_ID` into the session; an llm spawn also records a chat id for the session, so every llm session's transcript is tracked and resumable (`tx resume`) with no extra ceremony — there is no `--chat` flag.
+Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` holding its `name`, `role`, `tags`, `group`, `cwd`, `cmd`, `env`, `parent`, `pid`, and (for an llm session) `chats`. One tmux pointer, `@tx_id` (set once at spawn), links the live session to its record, so the record survives a `kill-session` or a tmux restart. Spawning exports `TX_SESSION_ID` into the session; an llm spawn also records a chat id for the session, so every llm session's transcript is tracked and resumable (`tx resume`) with no extra ceremony — there is no `--chat` flag.
 
 Tags and role live in the record, not tmux options — read them by resolving `@tx_id`, and change tags through `tx tag <name> [tags]` (or the picker's Ctrl-T), never `tmux set @tag`. `role` (`llm` / `nvim` / `shell` / `other`) is derived from the launch command at spawn — there is no role tag and nothing to set by hand.
 
