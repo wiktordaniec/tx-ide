@@ -57,9 +57,14 @@ TRANSCRIPT_SUFFIX = ".jsonl"
 def codex_home(env: Mapping[str, str] | None = None) -> Path:
     """Codex's home as the SPAWNED process will resolve it: launch-env overrides (`--env
     CODEX_HOME=…`, and `--env HOME=…` for the `~/.codex` default) win over this parent
-    process's environment."""
+    process's environment. A PRESENT-but-empty launch override clears an inherited
+    CODEX_HOME rather than restoring the parent's (codex treats empty as unset — measured)."""
     launch = env or {}
-    explicit = launch.get(CODEX_HOME_ENV) or os.environ.get(CODEX_HOME_ENV)
+    explicit = (
+        launch[CODEX_HOME_ENV]
+        if CODEX_HOME_ENV in launch
+        else os.environ.get(CODEX_HOME_ENV)
+    )
     if explicit:
         return Path(explicit).expanduser()
     home = launch.get(HOME_ENV)
