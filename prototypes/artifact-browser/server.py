@@ -1,5 +1,5 @@
 #!/usr/bin/env python3.14
-"""A local, read-only browser for tx-ide chat history + durable artifacts.
+"""A local browser for tx-ide chat history, durable artifacts, and the session timeline.
 
 Two halves, one page (`index.html`), one server:
 
@@ -14,8 +14,9 @@ Two halves, one page (`index.html`), one server:
 
 Reads go through the real `SessionStore` / `ArtifactStore` / `ArtifactContent` primitives — the
 same ones `tx` uses, so there is no second source of truth to drift; the store is re-read on every
-request. Read-only in the STRICT sense: it never writes, and its reads do NOT go through
-`ArtifactService`, so they never append to the EventLog (a polling dashboard would be noise).
+request, and reads do NOT go through `ArtifactService`, so they never append to the EventLog (a
+polling dashboard would be noise). The stores are never written; the only writes are the timeline
+POSTs — the two pane sends (keystrokes into tmux) and the dragged group order.
 
 Run it from anywhere:
 
@@ -1240,7 +1241,7 @@ def main() -> None:
     print(f"reading sessions from   {sessions_dir()}")
     print(f"reading history from    {history_dir()}")
     print(f"reading artifacts from  {artifacts_dir()}")
-    print("read-only: never writes, never logs to the EventLog. Ctrl-C to stop.")
+    print("stores are read-only (no EventLog); writes = timeline pane sends + group order. Ctrl-C to stop.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
