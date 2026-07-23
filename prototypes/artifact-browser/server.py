@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import subprocess
 import re
 import sys
 import threading
@@ -53,7 +54,10 @@ from tx.palette import tag_cube  # noqa: E402
 from tx.render import actor_label, reltime  # noqa: E402
 from tx.session import ChatRef, Engine, LlmSession, Role, Session, UnsupportedRecordError  # noqa: E402
 from tx.storage import artifacts_dir, history_dir, sessions_dir  # noqa: E402
+from tx.tmux import Tmux  # noqa: E402
 from tx.store import SessionStore  # noqa: E402
+
+import timeline as timeline_view  # noqa: E402  (sibling module: timeline swimlane data)
 
 HERE = Path(__file__).resolve().parent
 PAGE = HERE / "index.html"
@@ -956,6 +960,67 @@ _MALFORMED_PARAM = object()
 # ----- HTTP — GET only; the browser never writes -------------------------------------------------
 
 
+# ----- timeline edit-mode messaging (mirrors sessions-graph's message_assistant) -----------------
+
+def _describe_target(target: Session) -> str:
+    """The unambiguous, id-led context fragment for one session — carried in the instruction so the
+    assistant's own `tx` calls target the right record despite the two-records-by-name collision."""
+    tags = ",".join(target.tags) or "-"
+    return (
+        f'id={target.id} name="{target.name}" '
+        f'role={target.role.value} state={target.state.value} tags={tags} '
+        f'cwd={target.cwd} parent={target.parent or "-"}'
+    )
+
+
+def _compose_message(targets: list[Session], request: str) -> str:
+    """One single-line user instruction for tx-assistant: the id-led context for every target, then
+    the user's free-text request applied to all of them."""
+    request = " ".join(request.split())
+    if len(targets) == 1:
+        return (
+            f'Act on tx session {_describe_target(targets[0])}. '
+            f'Use the id (not the name) as the tx target. User request: {request}'
+        )
+    described = "; ".join(f"[{_describe_target(target)}]" for target in targets)
+    return (
+        f'Act on these {len(targets)} tx sessions: {described}. '
+        f'Use each id (not the name) as the tx target. User request: {request}'
+    )
+
+
+def _live_tx_assistant() -> Session | None:
+    """The LIVE tx-assistant, resolved by liveness — NOT by a name lookup (two records share the
+    name; the id-sorted first is not reliably the live one)."""
+    tmux = Tmux()
+    for session in SessionStore().all():
+        if session.name == ASSISTANT_NAME and session.is_alive() and tmux.has_session(session.id):
+            return session
+    return None
+
+
+def message_assistant(target_ids: list[str], request: str) -> tuple[int, dict]:
+    """Compose a context+request line for the selected session(s) and type it into the LIVE
+    tx-assistant's pane (send-keys + the 0.3s Enter pause). Delivered as a plain user line — not a
+    <from-claude> peer message — so the assistant treats it as a command."""
+    if not (request or "").strip():
+        return 400, {"ok": False, "error": "empty request"}
+    if not target_ids:
+        return 400, {"ok": False, "error": "no sessions selected"}
+    by_id = {session.id: session for session in SessionStore().all()}
+    targets = [by_id[target_id] for target_id in target_ids if target_id in by_id]
+    if not targets:
+        return 404, {"ok": False, "error": "no such session"}
+    assistant = _live_tx_assistant()
+    if assistant is None:
+        return 200, {"ok": False, "error": "tx-assistant is not live"}
+    line = _compose_message(targets, request)
+    subprocess.run(["tmux", "send-keys", "-t", assistant.id, "-l", "--", line])
+    time.sleep(0.3)                               # the input box drops an Enter that arrives too fast
+    subprocess.run(["tmux", "send-keys", "-t", assistant.id, "Enter"])
+    return 200, {"ok": True, "count": len(targets), "assistant": assistant.id}
+
+
 class BrowserHandler(BaseHTTPRequestHandler):
     """Read-only routes — GET only, there is no write path; anything else 404s.
 
@@ -979,6 +1044,36 @@ class BrowserHandler(BaseHTTPRequestHandler):
     def _json(self, status: int, payload: dict) -> None:
         self._respond(status, json.dumps(payload).encode("utf-8"), "application/json; charset=utf-8")
 
+    def do_POST(self) -> None:
+        """`/api/timeline/message` — the edit-mode send. Body: `{ids: [uuid...], request: str}`.
+        Ids are boundary-validated to canonical uuids exactly like the GET routes."""
+        path = urllib.parse.urlparse(self.path).path
+        try:
+            length = min(int(self.headers.get("Content-Length") or 0), 65536)
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, TypeError):
+            self._json(400, {"ok": False, "error": "malformed JSON body"})
+            return
+        if path == "/api/timeline/message":
+            ids = payload.get("ids")
+            if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+                self._json(400, {"ok": False, "error": "ids must be a list of strings"})
+                return
+            safe_ids = [i for i in ids if _UUID_RE.fullmatch(i)]
+            status, body = message_assistant(safe_ids, str(payload.get("request") or ""))
+            self._json(status, body)
+        elif path == "/api/timeline/order":
+            order = payload.get("order")
+            ok = (isinstance(order, list) and len(order) <= 300
+                  and all(isinstance(k, str) and 0 < len(k) <= 200 for k in order))
+            if not ok:
+                self._json(400, {"ok": False, "error": "order must be a list of group names"})
+                return
+            timeline_view.save_group_order(order)
+            self._json(200, {"ok": True, "count": len(order)})
+        else:
+            self._respond(404, b"not found\n", "text/plain; charset=utf-8")
+
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         # keep_blank_values so `?rev=` counts as PRESENT-but-empty (a malformed value to reject),
@@ -995,8 +1090,38 @@ class BrowserHandler(BaseHTTPRequestHandler):
             self._json(200, list_payload())
         elif path.startswith("/api/artifacts/"):
             self._route_artifact(path[len("/api/artifacts/") :], query)
+        elif path == "/api/timeline":
+            days = self._timeline_days(query)
+            if days is not None:
+                self._json(200, timeline_view.timeline_payload(days))
+        elif path.startswith("/api/timeline/"):
+            self._route_timeline(path[len("/api/timeline/") :], query)
         else:
             self._respond(404, b"not found\n", "text/plain; charset=utf-8")
+
+    def _timeline_days(self, query: dict) -> float | None:
+        """The timeline window in days: absent -> 7, malformed -> 400 (returns None after
+        responding), silly values clamped to [0.25, 90]."""
+        if "days" not in query:
+            return 7.0
+        try:
+            return min(90.0, max(0.25, float(query["days"][0])))
+        except ValueError:
+            self._respond(400, b"days must be a number\n", "text/plain; charset=utf-8")
+            return None
+
+    def _route_timeline(self, rest: str, query: dict) -> None:
+        """`<txid>/dialogue` — the drawer feed for one lane. Same uuid boundary validation as the
+        chat/artifact routes: a non-uuid 404s before the store is touched."""
+        if not rest.endswith("/dialogue"):
+            self._respond(404, b"not found\n", "text/plain; charset=utf-8")
+            return
+        session_id = _safe_artifact_id(rest[: -len("/dialogue")])
+        days = self._timeline_days(query)
+        if days is None:
+            return
+        payload = timeline_view.lane_dialogue(session_id, days) if session_id is not None else None
+        self._json(200 if payload is not None else 404, payload or {"error": "no such lane"})
 
     def _route_chat(self, rest: str) -> None:
         """`<txid>` (detail) | `<txid>/dialogue` (full turns). The id is validated to a canonical
