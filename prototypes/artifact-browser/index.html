@@ -902,7 +902,7 @@ try { TL.showU = localStorage.getItem("txide-tl-show-u") !== "0"; TL.showM = loc
 const TL_PADL = 14, TL_PADR = 46, TL_AXH = 46, TL_LANE = 30, TL_GH = 22, TL_GGAP = 12, TL_PADB = 14;
 const TL_NOWPAD = 48;   // px of future visible right of the now line — the horizontal scroll clamp
 const TL_WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-let tlData = null, tlTips = [], tlVisKey = "", tlClockTimer = null, tlDayLabelEls = [], tlRowYs = {}, tlBands = [], tlDragGroup = null;
+let tlData = null, tlTips = [], tlVisKey = "", tlClockTimer = null, tlDayLabelEls = [], tlRowYs = {}, tlBands = [], tlDragGroup = null, tlSuppressClick = false;
 
 function tlActive() { const h = location.hash.replace(/^#/, ""); return h === "/timeline" || h.startsWith("/timeline/"); }
 function tlNow() { return (Date.now() - tlData.epoch_ms) / 60000; }
@@ -1422,7 +1422,7 @@ async function renderTimeline(drawerSid) {
       '<div class="lrow"><svg width="14" height="12"><path d="M7 .8 12.4 6 7 11.2 1.6 6Z" fill="currentColor"/></svg> diamond — PR merge/ready · artifact create/modify</div>' +
       '<div class="lrow"><svg width="12" height="12"><line x1="6" y1="1" x2="6" y2="8" stroke="currentColor" stroke-width="1.5"/><path d="M2.5 6 L6 10.5 L9.5 6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg> arrow — message / spawn, points at the receiver</div>' +
       '<div class="lrow">× killed &nbsp;·&nbsp; ▸ live &nbsp;·&nbsp; faded name = inactive in view</div>' +
-      '<div class="lrow">⌘-wheel zoom · drag to pan · ↑/↓ walk lanes while the drawer is open · right edge glues to now</div>' +
+      '<div class="lrow">⌘-wheel zoom · drag to pan · ↑/↓ walk lanes while the drawer is open · click empty canvas closes it · right edge glues to now</div>' +
     '</div></div>' +
     '<div class="tl-wrap">' +
       '<div class="tl-labels" id="tl-labelsbox"><div class="tl-labels-inner" id="tl-labels-inner"></div></div>' +
@@ -1528,7 +1528,16 @@ async function renderTimeline(drawerSid) {
   sc.addEventListener("pointermove", e => {
     if (drag) { sc.scrollLeft = drag.sl - (e.clientX - drag.x); sc.scrollTop = drag.st - (e.clientY - drag.y); }
   });
-  sc.addEventListener("pointerup", () => { drag = null; TL.dragging = false; sc.classList.remove("drag"); tlMaybeRelayout(); });
+  sc.addEventListener("pointerup", e => {
+    // a pan release fires a click — navigation must not read as a dismissal.  The flag lives
+    // only to the end of this turn (the click dispatches before timers), so it can never
+    // go stale and eat an unrelated later click.
+    if (drag && (Math.abs(e.clientX - drag.x) > 4 || Math.abs(e.clientY - drag.y) > 4)) {
+      tlSuppressClick = true;
+      setTimeout(() => { tlSuppressClick = false; }, 0);
+    }
+    drag = null; TL.dragging = false; sc.classList.remove("drag"); tlMaybeRelayout();
+  });
   const svg = tlEl("tl-svg");
   svg.addEventListener("pointermove", e => {
     if (TL.pinId) return;
@@ -1549,6 +1558,12 @@ async function renderTimeline(drawerSid) {
     }
     if (h && +h.dataset.i >= 0) { tlShowTip(+h.dataset.i, e.clientX, e.clientY, true); e.stopPropagation(); }
     else tlHideTip();
+  });
+  // click-away: a click that reaches the canvas (bars/dots/edges claim theirs via
+  // stopPropagation, and the labels column sits outside the scroller) closes the drawer
+  sc.addEventListener("click", () => {
+    if (tlSuppressClick || !TL.drawer.sid) return;
+    location.hash = "/timeline";
   });
   const labInner = tlEl("tl-labels-inner");
   labInner.addEventListener("dragstart", e => {
