@@ -63,10 +63,13 @@ BURST_PER_MIN = 4    # collapse >N user-events in one minute (fork replays)
 # edges and ×, and commit-level noise drowned the milestones that matter.
 M_PATTERNS = [
     (r"\bgh pr merge\b|\bgh pr ready\b", "PR merge/ready"),
-    (r"\btx artifact (create|modify)\b", "artifact"),
+    (r"\btx artifact (create|modify)\b(?!\s+--help)", "artifact"),   # help exploration ≠ an action
 ]
 M_RX = [(re.compile(p), lab) for p, lab in M_PATTERNS]
 _UUID_RX = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+# `tx artifact modify` accepts an id PREFIX (agents mostly pass 8 hex chars) — the diamond must
+# resolve those too, or its click-through to the artifact silently degrades to a bare tooltip.
+_SHORT_ID_RX = re.compile(r"\bartifact modify\s+([0-9a-fA-F]{4,31})\b")
 CREATE_MATCH_S = 180   # `tx artifact create` has no id in the command — match creator+time this close
 
 
@@ -486,6 +489,12 @@ def _build(days):
                     if lab == "artifact":
                         um = _UUID_RX.search(body)
                         aid = um.group(0).lower() if um else None
+                        if aid is None:
+                            pm = _SHORT_ID_RX.search(body)
+                            if pm:
+                                hits = [k for k in art_titles if k.startswith(pm.group(1).lower())]
+                                if len(hits) == 1:   # ambiguous prefixes stay unresolved
+                                    aid = hits[0]
                         if aid is None:   # a create: nearest same-lane creation touch in time
                             best = None
                             for rec in recs:
