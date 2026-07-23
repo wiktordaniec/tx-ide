@@ -189,6 +189,101 @@
   pre.diff .a { color: var(--green); } pre.diff .d { color: var(--red); }
   pre.diff .h { color: var(--blue); } pre.diff .c { color: var(--muted); }
   .dl { display: inline-block; margin-top: 6px; }
+
+  /* ---- timeline view ---- */
+  .tl-ctls { display: flex; gap: 16px; align-items: center; padding: 6px 2px 8px; color: var(--muted); font-size: 12.5px; position: relative; }
+  .tl-ctls label { display: flex; gap: 6px; align-items: center; cursor: pointer; user-select: none; }
+  .tl-ctls label:hover { color: var(--text); }
+  .tl-ctls input[type="checkbox"] { accent-color: var(--blue); margin: 0; }
+  .tl-ctls svg { vertical-align: -2px; }
+  .tl-wrap { display: flex; border: 1px solid var(--line); background: var(--panel); height: calc(100vh - 132px); min-height: 320px; }
+  .tl-labels { flex: 0 0 250px; position: relative; border-right: 1px solid var(--line); overflow: hidden; }
+  .tl-labels-inner { position: relative; width: 100%; }
+  .tl-lab { position: absolute; left: 0; width: 100%; padding: 0 10px; display: flex; flex-direction: column; justify-content: center; cursor: pointer; }
+  .tl-lab:hover { background: var(--panel-2); }
+  .tl-lab .nm { font: 11.5px var(--mono); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tl-lab .nm .dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; background: var(--c); }
+  .tl-lab .mt { font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tl-lab.dim-idle { opacity: .45; }
+  .tl-lab.sel { background: var(--panel-2); outline: 1px solid var(--blue); outline-offset: -1px; }
+  #tl-msgbar { display: none; gap: 10px; align-items: center; padding: 8px 2px 0; }
+  #tl-msgbar #tl-selcount { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  #tl-msgbar input { flex: 1; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); padding: 6px 10px; font-size: 12.5px; }
+  #tl-msgbar input:focus { outline: none; border-color: var(--blue); }
+  #tl-msgbar button { background: var(--panel); border: 1px solid var(--line); color: var(--text); padding: 6px 14px; font-size: 12.5px; cursor: pointer; }
+  #tl-msgbar button:hover { border-color: var(--blue); }
+  #tl-msgbar #tl-msgstatus { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .tl-wrap.editing { height: calc(100vh - 176px); }
+  .tl-glab { position: absolute; left: 0; width: 100%; padding: 0 10px; display: flex; align-items: flex-end; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--c); cursor: pointer; }
+  .tl-glab:hover { text-decoration: underline; }
+  .tl-glab.drag-src { opacity: .4; }
+  .tl-glab.drop-hint { border-top: 2px solid var(--blue); }
+  .tl-gband { fill: #10161f; }
+  .tl-lband { position: absolute; left: 0; width: 100%; background: #10161f; }
+  .tl-gstrip { position: absolute; left: 0; width: 3px; background: var(--c); }
+  .tl-scroller { overflow: auto; position: relative; flex: 1; cursor: grab; }
+  .tl-scroller.drag { cursor: grabbing; }
+  .tl-scroller svg { display: block; }
+  .tl-scroller svg text { font-family: var(--sans); }
+  #tl-legend-btn { margin-left: auto; color: var(--muted); font-size: 12px; cursor: pointer; user-select: none; }
+  #tl-legend-btn:hover { color: var(--text); text-decoration: underline; }
+  #tl-legend-pop { position: absolute; right: 0; top: calc(100% + 2px); z-index: 35; display: none; background: var(--panel); border: 1px solid var(--line); padding: 10px 14px; }
+  #tl-legend-pop .lrow { display: flex; gap: 9px; align-items: center; color: var(--muted); font-size: 12px; padding: 2.5px 0; white-space: nowrap; }
+  #tl-legend-pop .lrow svg { flex: none; }
+  .tl-grid { stroke: var(--line-soft); }
+  .tl-grid.major { stroke: var(--line); }
+  .tl-dayline { stroke: var(--line); stroke-width: 1.6; }
+  .tl-axbg { fill: var(--panel); }
+  .tl-axline { stroke: var(--line); }
+  .tl-tlab { fill: var(--muted); font-size: 11px; }
+  .tl-dlab { fill: var(--text); font-size: 11.5px; font-weight: 600; }
+  .tl-wkend { fill: var(--panel-2); }
+  .tl-rowhit { fill: transparent; }
+  .tl-bar { fill: var(--panel); stroke: var(--c); stroke-width: 1.2; cursor: pointer; }
+  .tl-bar:hover { stroke-width: 2; }
+  .tl-idle { stroke: var(--c); stroke-width: 1.1; stroke-dasharray: 2 4; opacity: .5; }
+  .tl-killx { fill: var(--c); font-size: 11px; font-weight: 700; }
+  .tl-live { fill: var(--c); }
+  .tl-ev-u { fill: var(--panel); stroke: var(--c); stroke-width: 2; }
+  .tl-ev-m { fill: var(--c); }
+  .tl-hit { fill: transparent; cursor: pointer; }
+  .tl-edge line { stroke: var(--green); stroke-width: 1.2; }
+  .tl-edge path { fill: var(--green); }
+  .tl-now { stroke: var(--red); stroke-width: 1.2; }
+  .tl-nowlab { fill: var(--red); font-size: 10.5px; }
+  .tl-dim { opacity: .13; }
+  #tl-tip { position: fixed; display: none; max-width: 400px; z-index: 30; background: var(--panel); border: 1px solid var(--line); padding: 9px 12px; pointer-events: none; }
+  #tl-tip.pinned { pointer-events: auto; border-color: var(--muted); }
+  #tl-tip .t1 { font: 11px var(--mono); color: var(--muted); margin-bottom: 3px; }
+  #tl-tip .t1 b { color: var(--text); font-weight: 600; }
+  #tl-tip .t2 { font-size: 12.5px; line-height: 1.45; }
+  #tl-tip a { display: inline-block; margin-top: 6px; font-size: 12px; }
+
+  /* ---- timeline drawer + context menu ---- */
+  #tl-drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(660px, 58vw); z-index: 25; background: var(--bg); border-left: 1px solid var(--line); display: none; flex-direction: column; }
+  #tl-drawer.open { display: flex; }
+  .tl-dhead { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .tl-dhead b { color: var(--text); font: 13px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tl-dhead .muted { font-size: 11px; white-space: nowrap; }
+  #tl-ddetail { font-size: 12px; white-space: nowrap; }
+  #tl-dfilter { margin-left: auto; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); padding: 4px 9px; font-size: 12px; width: 150px; }
+  #tl-dfilter:focus { outline: none; border-color: var(--blue); }
+  #tl-dclose { background: none; border: none; color: var(--muted); font-size: 20px; cursor: pointer; padding: 0 4px; }
+  #tl-dclose:hover { color: var(--text); }
+  #tl-dbody { overflow-y: auto; flex: 1; padding: 8px 0 30px; }
+  .tl-crow { display: grid; grid-template-columns: 84px 1fr; gap: 10px; padding: 5px 14px; border-left: 3px solid transparent; }
+  .tl-crow time { color: var(--dim); font: 10.5px var(--mono); padding-top: 2px; white-space: nowrap; }
+  .tl-crow .ct { font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
+  .tl-cr-u { border-left-color: var(--blue); background: var(--panel-2); }
+  .tl-cr-u .ct { color: var(--text); }
+  .tl-cr-p { border-left-color: var(--green); }
+  .tl-cr-s .ct { color: var(--dim); font-style: italic; font-size: 11.5px; }
+  .tl-cr-x .ct { color: var(--muted); font: 11px var(--mono); }
+  .tl-cr-hl { outline: 2px solid var(--amber); outline-offset: -2px; }
+  #tl-menu { position: fixed; z-index: 40; min-width: 210px; background: var(--panel); border: 1px solid var(--line); display: none; padding: 3px 0; }
+  #tl-menu .mi { padding: 7px 12px; font-size: 12.5px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #tl-menu .mi:hover { background: var(--panel-2); }
+  #tl-menu .sep { border-top: 1px solid var(--line-soft); margin: 3px 0; }
 </style>
 </head>
 <body>
@@ -197,6 +292,7 @@
   <nav class="tabs">
     <a id="tab-chats" href="#/">chats</a>
     <a id="tab-artifacts" href="#/artifacts">artifacts</a>
+    <a id="tab-timeline" href="#/timeline">timeline</a>
   </nav>
   <span class="spacer"></span>
   <input id="search" type="search" placeholder="filter…" autocomplete="off">
@@ -215,6 +311,7 @@ const app = document.getElementById("app");
 const searchBox = document.getElementById("search");
 const tabChats = document.getElementById("tab-chats");
 const tabArtifacts = document.getElementById("tab-artifacts");
+const tabTimeline = document.getElementById("tab-timeline");
 const hotWindowControl = document.getElementById("hot-window");
 const hotValueInput = document.getElementById("hot-value");
 const hotUnitSelect = document.getElementById("hot-unit");
@@ -784,10 +881,695 @@ async function runDiff(id) {
   }).join("\n");
 }
 
+
+// ---- timeline view ----
+// Swimlanes over /api/timeline. All wall-clock rendering is CLIENT-side and local-timezone: the
+// payload is clock-free (fingerprint-stable while the store is quiet), the now-line runs on a 1s
+// timer, and the refresh tick re-renders only when the data actually changed. View state (zoom,
+// scroll, pinned tip) lives in TL and survives those re-renders.
+const TL = { pph: null, sl: 0, st: 0, dragging: false, pinId: null, pinAt: null, fitted: false, follow: false, edit: false, sel: new Set(), drawer: { sid: null, t: null, filter: "", stick: true, top: 0 } };
+try { TL.activeOnly = localStorage.getItem("txide-tl-active-only") === "1"; } catch (e) { TL.activeOnly = false; }
+try { TL.showSys = localStorage.getItem("txide-tl-show-sys") === "1"; } catch (e) { TL.showSys = false; }
+try { TL.showU = localStorage.getItem("txide-tl-show-u") !== "0"; TL.showM = localStorage.getItem("txide-tl-show-m") !== "0"; TL.showE = localStorage.getItem("txide-tl-show-e") !== "0"; TL.showB = localStorage.getItem("txide-tl-show-b") !== "0"; } catch (e) { TL.showU = TL.showM = TL.showE = TL.showB = true; }
+const TL_PADL = 14, TL_PADR = 46, TL_AXH = 46, TL_LANE = 30, TL_GH = 22, TL_GGAP = 12, TL_PADB = 14;
+const TL_NOWPAD = 48;   // px of future visible right of the now line — the horizontal scroll clamp
+const TL_WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+let tlData = null, tlTips = [], tlVisKey = "", tlClockTimer = null, tlDayLabelEls = [], tlRowYs = {}, tlBands = [], tlDragGroup = null;
+
+function tlActive() { const h = location.hash.replace(/^#/, ""); return h === "/timeline" || h.startsWith("/timeline/"); }
+function tlNow() { return (Date.now() - tlData.epoch_ms) / 60000; }
+function tlEnd() { return Math.max(tlData.t1, tlNow()) + 10; }
+function tlMaxScroll(sc) { return Math.max(0, tlX(tlNow()) + TL_NOWPAD - sc.clientWidth); }
+function tlX(t) { return TL_PADL + t / 60 * TL.pph; }
+function tlTAt(px) { return (px - TL_PADL) * 60 / TL.pph; }
+function tlDate(t) { return new Date(tlData.epoch_ms + t * 60000); }
+function tlHM(t) { const d = tlDate(t); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); }
+function tlDayHM(t) { const d = tlDate(t); return TL_WD[d.getDay()] + " " + tlHM(t); }
+function tlEl(id) { return document.getElementById(id); }
+
+function tlVisible() {
+  const sc = tlEl("tl-scroller");
+  const tA = tlTAt(sc.scrollLeft), tB = tlTAt(sc.scrollLeft + sc.clientWidth);
+  const now = tlNow();
+  return tlData.sessions.map((s, i) => ({ s, si: i })).filter(o => {
+    if (!TL.showSys && o.s.sys) return false;
+    const end = o.s.kill != null ? o.s.kill : now;
+    return s0Start(o.s) <= tB && end >= tA;
+  }).map(o => {
+    // idle-in-view uses the same segment tier the bars render at this zoom
+    const segs = TL.pph >= 60 && o.s.fsegs ? o.s.fsegs : o.s.segs;
+    const activeIn = segs.some(g => g[0] <= tB && g[1] >= tA);
+    const evIn = o.s.ev.some(e => e[0] >= tA && e[0] <= tB);
+    return { s: o.s, si: o.si, dim: !activeIn && !evIn };
+  }).filter(o => !TL.activeOnly || !o.dim);
+}
+function s0Start(s) { return s.segs.length ? s.segs[0][0] : s.a; }
+
+// Lanes blocked by v6 resolved group, groups ordered by first activity. Every group gets its
+// header — even a single visible lane — so membership is always explicit.
+function tlLayoutRows(vis) {
+  const rows = [], bands = [];
+  let y = TL_AXH, gi = 0;
+  for (const g of tlData.groups) {
+    const members = vis.filter(v => v.s.g === g.k);
+    if (!members.length) continue;
+    const y0 = y;
+    rows.push({ type: "g", g: g.k, color: g.color, y });
+    y += TL_GH;
+    for (const v of members) { rows.push({ type: "s", v, g, y }); y += TL_LANE; }
+    bands.push({ k: g.k, y0, y1: y, color: g.color, zebra: gi % 2 === 1 });
+    y += TL_GGAP;
+    gi++;
+  }
+  return { rows, bands, H: y - TL_GGAP + TL_PADB };
+}
+function tlTickSteps() {
+  if (TL.pph >= 1200) return [5, 15];
+  if (TL.pph >= 400) return [10, 30];
+  if (TL.pph >= 150) return [30, 60];
+  if (TL.pph >= 60) return [60, 180];
+  if (TL.pph >= 20) return [180, 360];
+  return [360, 720];
+}
+
+function tlRender() {
+  const sc = tlEl("tl-scroller"), svg = tlEl("tl-svg"), labels = tlEl("tl-labels-inner");
+  if (!sc || !tlData) return;
+  const vis = tlVisible();
+  const { rows, bands, H } = tlLayoutRows(vis);
+  const now = tlNow(), W = Math.round(tlX(tlEnd()) + TL_PADR);
+  const [minor, major] = tlTickSteps();
+  tlTips = []; tlRowYs = {};
+  const idxCy = {};
+  let o = "";
+  for (const d of tlData.days) {
+    if (!d.wk) continue;
+    const x0 = tlX(Math.max(d.o, 0)), x1 = tlX(Math.min(d.o + 1440, tlEnd()));
+    if (x1 > x0) o += `<rect class="tl-wkend" x="${x0}" y="${TL_AXH - 14}" width="${x1 - x0}" height="${H - TL_AXH + 8}"/>`;
+  }
+  for (const b of bands)
+    if (b.zebra) o += `<rect class="tl-gband" x="0" y="${b.y0}" width="${W}" height="${b.y1 - b.y0}"/>`;
+  for (let m = 0; m <= tlEnd(); m += minor) {
+    if (((m % 1440) + 1440) % 1440 === 0) continue;
+    const X = tlX(m), isMaj = m % major === 0;
+    o += `<line class="tl-grid${isMaj ? " major" : ""}" x1="${X}" y1="${TL_AXH - 14}" x2="${X}" y2="${H - 4}"/>`;
+  }
+  for (const d of tlData.days)
+    if (d.o >= 0) o += `<line class="tl-dayline" x1="${tlX(d.o)}" y1="4" x2="${tlX(d.o)}" y2="${H - 4}"/>`;
+  // lanes
+  for (const row of rows) {
+    if (row.type !== "s") continue;
+    const { s, si, dim } = row.v, g = row.g, cy = row.y + TL_LANE / 2;
+    // zoomed in (>=60 px/h) the fine 10-min idle tier applies; the overview keeps the 3 h tier
+    const segsArr = TL.pph >= 60 && s.fsegs ? s.fsegs : s.segs;
+    tlRowYs[s.sid] = cy;
+    idxCy[si] = cy;
+    o += `<g style="--c:${g.color}"${dim ? ' opacity=".45"' : ""} data-lane="${si}" data-hay="${esc((s.id + " " + s.g + " " + s.meta + " " + s.blurb).toLowerCase())}">`;
+    o += `<rect class="tl-rowhit" x="0" y="${row.y}" width="${W}" height="${TL_LANE}"/>`;
+    if (TL.showB) {   // the lane body: bars, idle dots, × — off = dots-only view
+      const lastEnd = segsArr.length ? segsArr[segsArr.length - 1][1] : s.a;
+      const xe = tlX(s.kill != null ? s.kill : now);
+      const idles = [];   // every silent stretch: between activity runs, then the tail to ×/now
+      for (let gi = 0; gi + 1 < segsArr.length; gi++)
+        idles.push([tlX(segsArr[gi][1]) + 4, tlX(segsArr[gi + 1][0]) - 4]);
+      idles.push([tlX(lastEnd) + 4, xe - 7]);
+      for (const [ix1, ix2] of idles)
+        if (ix2 > ix1 + 3) o += `<line class="tl-idle" x1="${ix1}" y1="${cy}" x2="${ix2}" y2="${cy}"/>`;
+      if (s.kill != null) o += `<text class="tl-killx" x="${Math.max(xe - 4, tlX(lastEnd) + 2)}" y="${cy + 4}">×</text>`;
+      for (const seg of segsArr) {
+        let x1 = tlX(seg[0]), x2 = tlX(seg[1]);
+        if (x2 - x1 < 6) x2 = x1 + 6;
+        o += `<rect class="tl-bar" data-open="${s.sid}" x="${x1}" y="${cy - 7}" width="${x2 - x1}" height="14"/>`;
+      }
+    }
+    let px = -99, flip = 1;
+    for (const e of s.ev) {
+      if (e[1] === "u" ? !TL.showU : !TL.showM) continue;
+      const X = tlX(e[0]);
+      let dy = 0;
+      if (X - px < 9) { dy = 6 * flip; flip = -flip; } else flip = 1;
+      px = X;
+      const i = tlTips.length;
+      tlTips.push({ title: `${tlDayHM(e[0])} — ${s.id}`, body: e[2], sid: s.sid, t: e[0], k: e[1] });
+      if (e[1] === "u") o += `<circle class="tl-ev-u" cx="${X}" cy="${cy + dy}" r="4.6"/>`;
+      else o += `<path class="tl-ev-m" d="M ${X} ${cy + dy - 5.2} L ${X + 5.2} ${cy + dy} L ${X} ${cy + dy + 5.2} L ${X - 5.2} ${cy + dy} Z"/>`;
+      o += `<circle class="tl-hit" data-i="${i}"${e[3] ? ` data-aid="${e[3]}"` : ""} cx="${X}" cy="${cy + dy}" r="9"/>`;
+    }
+    o += "</g>";
+  }
+  // peer-message edges: vertical arrow at send time, sender lane -> receiver lane.  A sender
+  // with no lane (tx-assistant, out of window) or one culled from the current layout degrades
+  // to a short stub dropping into the receiver.
+  if (TL.showE) {
+    for (const [m, f, tIdx, token, snip, kind] of tlData.edges || []) {
+      const toCy = idxCy[tIdx];
+      if (toCy == null || f === tIdx) continue;
+      const X = tlX(m);
+      const fromCy = f >= 0 ? idxCy[f] : null;
+      const fromName = f >= 0 ? tlData.sessions[f].id : token;
+      const toS = tlData.sessions[tIdx];
+      const verb = kind === "spawn" ? " · spawned" : kind === "resume" ? " · resumed" : "";
+      const i = tlTips.length;
+      tlTips.push({ title: `${fromName} → ${toS.id}${verb} · ${tlDayHM(m)}`, body: snip || (kind !== "msg" ? toS.blurb : ""), sid: toS.sid, t: m, k: "p" });
+      let y1, dir;
+      if (fromCy != null) { dir = fromCy < toCy ? 1 : -1; y1 = fromCy + dir * 9; }
+      else { dir = 1; y1 = toCy - 20; }
+      const y2 = toCy - dir * 10;
+      o += `<g class="tl-edge"><line x1="${X}" y1="${y1}" x2="${X}" y2="${y2}"/>` +
+           `<path d="M ${X} ${toCy - dir * 4} L ${X - 3.5} ${y2} L ${X + 3.5} ${y2} Z"/>` +
+           `<circle class="tl-hit" data-i="${i}" cx="${X}" cy="${y2}" r="8"/></g>`;
+    }
+  }
+  // sticky axis strip: an opaque band that tracks scrollTop (translated in the scroll handler)
+  o += `<g id="tl-axis"><rect class="tl-axbg" x="0" y="0" width="${W}" height="${TL_AXH - 14}"/>`;
+  o += `<line class="tl-axline" x1="0" y1="${TL_AXH - 14}" x2="${W}" y2="${TL_AXH - 14}"/>`;
+  for (let m = 0; m <= tlEnd(); m += major)
+    if (((m % 1440) + 1440) % 1440 !== 0) o += `<text class="tl-tlab" x="${tlX(m) + 3}" y="${TL_AXH - 20}">${tlHM(m)}</text>`;
+  for (const d of tlData.days)
+    o += `<text class="tl-dlab" data-o="${d.o}" x="${tlX(Math.max(d.o, 0)) + 6}" y="16">${esc(d.label)}</text>`;
+  o += "</g>";
+  // now marker: repositioned by the 1s clock without a re-render
+  o += `<g id="tl-nowg"><line class="tl-now" x1="${tlX(now)}" y1="18" x2="${tlX(now)}" y2="${H - 4}"/>`;
+  o += `<text class="tl-nowlab" x="${tlX(now) + 5}" y="${TL_AXH - 2}">now</text>`;
+  for (const row of rows) {
+    if (row.type !== "s" || !row.v.s.live || !TL.showB) continue;
+    const cy = row.y + TL_LANE / 2;
+    o += `<path class="tl-live" style="--c:${row.g.color}" data-cy="${cy}" d="M ${tlX(now) + 4} ${cy - 4.5} L ${tlX(now) + 10.5} ${cy} L ${tlX(now) + 4} ${cy + 4.5} Z"/>`;
+  }
+  o += "</g>";
+  svg.setAttribute("width", W); svg.setAttribute("height", H);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML = o;
+  labels.style.height = H + "px";
+  let lo = "";
+  for (const b of bands) {
+    if (b.zebra) lo += `<div class="tl-lband" style="top:${b.y0}px;height:${b.y1 - b.y0}px"></div>`;
+    lo += `<div class="tl-gstrip" style="--c:${b.color};top:${b.y0}px;height:${b.y1 - b.y0}px;background:var(--c)"></div>`;
+  }
+  for (const row of rows) {
+    if (row.type === "g") {
+      lo += `<div class="tl-glab" draggable="true" style="--c:${row.color};top:${row.y}px;height:${TL_GH - 3}px;color:var(--c)" data-g="${esc(row.g)}">${esc(row.g)}</div>`;
+      continue;
+    }
+    const { s, si, dim } = row.v;
+    const meta = s.meta;
+    lo += `<div class="tl-lab${dim ? " dim-idle" : ""}${TL.sel.has(s.sid) ? " sel" : ""}" data-si="${si}" data-sid="${s.sid}" data-hay="${esc((s.id + " " + s.g + " " + s.meta + " " + s.blurb).toLowerCase())}" style="--c:${row.g.color};top:${row.y}px;height:${TL_LANE}px">` +
+          `<span class="nm"><span class="dot"></span>${esc(s.id)}</span><span class="mt">${esc(meta)}</span></div>`;
+  }
+  labels.innerHTML = lo;
+  tlBands = bands;
+  tlDayLabelEls = Array.from(svg.querySelectorAll(".tl-dlab"));
+  tlEl("tl-labelsbox").scrollTop = sc.scrollTop;
+  tlSyncScroll();
+  tlApplySearch();
+  tlReanchorPin();
+}
+
+// day labels clamp to the viewport's left edge (calendar-style), axis band follows scrollTop
+function tlSyncScroll() {
+  const sc = tlEl("tl-scroller");
+  if (!sc) return;
+  const axis = tlEl("tl-axis");
+  if (axis) axis.setAttribute("transform", `translate(0 ${sc.scrollTop})`);
+  const nowg = tlEl("tl-nowg");
+  for (const el of tlDayLabelEls) {
+    const dayO = +el.dataset.o;
+    const dayEndX = tlX(Math.min(dayO + 1440, tlEnd()));
+    el.setAttribute("x", Math.min(Math.max(tlX(Math.max(dayO, 0)), sc.scrollLeft) + 6, dayEndX - 70));
+  }
+}
+
+function tlMaybeRelayout() {
+  if (TL.dragging) return;   // lanes popping in/out mid-drag is disorienting — settle on release
+  const vis = tlVisible();
+  const key = vis.map(v => v.si + (v.dim ? "~" : "")).join("|");
+  if (key !== tlVisKey) { tlVisKey = key; tlRender(); }
+}
+
+function tlTipShow(html, cx, cy, pin) {
+  const tip = tlEl("tl-tip");
+  if (!tip) return;
+  tip.innerHTML = html;
+  tip.style.display = "block";
+  tip.classList.toggle("pinned", !!pin);
+  const r = tip.getBoundingClientRect();
+  let L = cx + 14, T = cy + 14;
+  if (L + r.width > innerWidth - 8) L = cx - r.width - 12;
+  if (T + r.height > innerHeight - 8) T = cy - r.height - 12;
+  tip.style.left = Math.max(4, L) + "px";
+  tip.style.top = Math.max(4, T) + "px";
+}
+function tlShowTip(i, cx, cy, pin) {
+  const d = tlTips[i];
+  if (!d) return;
+  const link = pin ? `<a href="#" data-quick="1">quick view ›</a> &nbsp;·&nbsp; <a href="#/chats/${d.sid}">detail →</a>` : "";
+  tlTipShow(`<div class="t1"><b>${esc(d.title)}</b>${d.k === "u" ? " · you" : ""}</div><div class="t2">${esc(d.body)}</div>${link}`, cx, cy, pin);
+  if (pin) { TL.pinId = { sid: d.sid, t: d.t, k: d.k }; TL.pinAt = { x: cx, y: cy }; }
+}
+function tlHideTip() {
+  const tip = tlEl("tl-tip");
+  if (tip) { tip.style.display = "none"; tip.classList.remove("pinned"); }
+  TL.pinId = null;
+}
+// A pinned tip survives data-driven re-renders by identity, not index.
+function tlReanchorPin() {
+  if (!TL.pinId) return;
+  const i = tlTips.findIndex(d => d.sid === TL.pinId.sid && d.t === TL.pinId.t && d.k === TL.pinId.k);
+  if (i < 0) tlHideTip();
+  else tlShowTip(i, TL.pinAt.x, TL.pinAt.y, true);
+}
+
+// ---- group drag&drop reordering ----
+function tlHoveredBlock(e) {
+  const inner = tlEl("tl-labels-inner");
+  const y = e.clientY - inner.getBoundingClientRect().top;
+  for (const b of tlBands) if (y < b.y1) return b.k;
+  return null;   // below every block
+}
+// Coarse-block insertion: hovering a block below the dragged group means AFTER it, above means
+// BEFORE it — direction decides, so a one-slot move works wherever inside the block you drop.
+// Returns the group to insert before, null for "move to end", undefined for a no-op.
+function tlInsertBefore(src, hovered) {
+  if (!hovered) return null;
+  const keys = tlData.groups.map(g => g.k);
+  const s = keys.indexOf(src), t = keys.indexOf(hovered);
+  if (s < 0 || t < 0 || s === t) return undefined;
+  return t > s ? (keys[t + 1] !== undefined ? keys[t + 1] : null) : hovered;
+}
+async function tlReorderGroup(src, before) {
+  if (!src || src === before) return;
+  const order = tlData.groups.map(g => g.k).filter(k => k !== src);
+  const at = before ? order.indexOf(before) : order.length;
+  order.splice(at < 0 ? order.length : at, 0, src);
+  const byK = {};
+  for (const g of tlData.groups) byK[g.k] = g;
+  tlData.groups = order.map(k => byK[k]);
+  tlVisKey = "";
+  tlRender();                                   // optimistic — the saved order returns on the next tick
+  try {
+    await fetch("/api/timeline/order", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ order }),
+    });
+  } catch (e) { /* server truth self-heals via the refresh tick */ }
+}
+function tlSyncEdit() {
+  const cb = tlEl("tl-edit"), bar = tlEl("tl-msgbar"), wrap = document.querySelector(".tl-wrap");
+  if (!cb || !bar) return;
+  cb.checked = TL.edit;
+  bar.style.display = TL.edit ? "flex" : "none";
+  if (wrap) wrap.classList.toggle("editing", TL.edit);
+  tlEl("tl-selcount").textContent = TL.sel.size + " selected";
+}
+async function tlSendMsg() {
+  const input = tlEl("tl-msginput"), status = tlEl("tl-msgstatus");
+  const request = input.value.trim();
+  if (!TL.sel.size) { status.textContent = "select at least one session"; return; }
+  if (!request) { status.textContent = "type a message"; return; }
+  status.textContent = "sending…";
+  try {
+    const r = await fetch("/api/timeline/message", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: [...TL.sel], request }),
+    });
+    const j = await r.json();
+    if (j.ok) {
+      status.textContent = "sent to tx-assistant ✓";
+      input.value = "";
+      TL.sel.clear();
+      tlRender();
+      tlSyncEdit();
+      setTimeout(() => { const s2 = tlEl("tl-msgstatus"); if (s2 && s2.textContent.startsWith("sent")) s2.textContent = ""; }, 4000);
+    } else {
+      status.textContent = j.error || "failed";
+    }
+  } catch (e) { status.textContent = "failed: " + e.message; }
+}
+function tlApplySearch() {
+  if (!tlActive()) return;
+  const needle = searchBox.value.trim().toLowerCase();
+  const svg = tlEl("tl-svg"), labels = tlEl("tl-labels-inner");
+  if (!svg) return;
+  for (const el of [...svg.querySelectorAll("[data-hay]"), ...labels.querySelectorAll("[data-hay]")])
+    el.classList.toggle("tl-dim", needle !== "" && !el.dataset.hay.includes(needle));
+}
+
+function tlClockTick() {
+  if (!tlActive() || !tlData || !tlEl("tl-svg")) return;
+  const now = tlNow();
+  if (tlX(now) > +tlEl("tl-svg").getAttribute("width") - TL_PADR + 30) { tlRender(); return; }
+  const nowg = tlEl("tl-nowg");
+  if (!nowg) return;
+  const line = nowg.querySelector(".tl-now"), lab = nowg.querySelector(".tl-nowlab");
+  line.setAttribute("x1", tlX(now)); line.setAttribute("x2", tlX(now));
+  lab.setAttribute("x", tlX(now) + 5);
+  for (const ch of nowg.querySelectorAll(".tl-live")) {
+    const cy = +ch.dataset.cy, X = tlX(now);
+    ch.setAttribute("d", `M ${X + 4} ${cy - 4.5} L ${X + 10.5} ${cy} L ${X + 4} ${cy + 4.5} Z`);
+  }
+  if (TL.follow) {
+    const sc = tlEl("tl-scroller");
+    if (sc) { sc.scrollLeft = tlMaxScroll(sc); TL.sl = sc.scrollLeft; }
+  }
+}
+
+function tlSetZoom(np, anchor) {
+  const sc = tlEl("tl-scroller");
+  np = Math.max(4, Math.min(6000, np));   // 6000 px/h ≈ a 15-minute span across the viewport
+  if (anchor == null) anchor = sc.clientWidth / 2;
+  const t = tlTAt(sc.scrollLeft + anchor);
+  TL.pph = np; tlVisKey = "";
+  tlRender();
+  sc.scrollLeft = TL.follow ? tlMaxScroll(sc) : Math.min(tlX(t) - anchor, tlMaxScroll(sc));
+  TL.sl = sc.scrollLeft;
+  tlMaybeRelayout();
+}
+
+
+// ---- drawer (quick view) ----
+// The prototype's right-hand conversation panel, fed lazily by /api/timeline/<sid>/dialogue.
+// Open state rides in the hash (#/timeline/<sid>) so it deep-links, survives refresh-tick
+// re-renders, and closes with back/Esc. While the viewer sits at the bottom, live appends
+// keep it pinned there (chat-app tailing); scrolled up, position is preserved.
+async function tlRenderDrawer() {
+  const dw = tlEl("tl-drawer");
+  if (!dw) return;
+  const sid = TL.drawer.sid;
+  if (!sid) { dw.classList.remove("open"); return; }
+  let d;
+  try { d = await getJSON("/api/timeline/" + encodeURIComponent(sid) + "/dialogue"); }
+  catch (e) {
+    dw.classList.add("open");
+    const body = tlEl("tl-dbody");
+    if (body) body.innerHTML = '<div class="empty">' + esc(e.message) + "</div>";
+    return;
+  }
+  if (TL.drawer.sid !== sid || !tlEl("tl-drawer")) return;   // closed or navigated mid-fetch
+  dw.classList.add("open");
+  tlEl("tl-dtitle").textContent = d.name;
+  tlEl("tl-dmeta").textContent = d.meta + " · " + d.rows.length + " entries";
+  tlEl("tl-ddetail").href = "#/chats/" + d.sid;
+  tlEl("tl-dfilter").value = TL.drawer.filter;
+  const body = tlEl("tl-dbody"), em = tlData.epoch_ms;
+  body.innerHTML = d.rows.map((r, i) => {
+    const m = (r[0] * 1000 - em) / 60000;
+    return '<div class="tl-crow tl-cr-' + r[1] + '" data-m="' + m.toFixed(2) + '"><time>' + tlDayHM(m) + "</time><div class=\"ct\">" + esc(r[2]) + "</div></div>";
+  }).join("") || '<div class="tl-crow"><time></time><div class="ct muted">no transcript recorded</div></div>';
+  tlApplyDrawerFilter();
+  if (TL.drawer.t != null) {
+    const rows = body.querySelectorAll(".tl-crow");
+    let target = rows[rows.length - 1];
+    for (const el of rows) if (+el.dataset.m >= TL.drawer.t - 0.6) { target = el; break; }
+    if (target) {
+      target.scrollIntoView({ block: "center" });
+      target.classList.add("tl-cr-hl");
+      setTimeout(() => target.classList.remove("tl-cr-hl"), 2500);
+    }
+    TL.drawer.t = null; TL.drawer.stick = false; TL.drawer.top = body.scrollTop;
+  } else if (TL.drawer.stick) {
+    body.scrollTop = body.scrollHeight;
+  } else {
+    body.scrollTop = TL.drawer.top;
+  }
+  body.onscroll = () => {
+    TL.drawer.top = body.scrollTop;
+    TL.drawer.stick = body.scrollTop + body.clientHeight >= body.scrollHeight - 40;
+  };
+  tlEl("tl-dfilter").oninput = () => { TL.drawer.filter = tlEl("tl-dfilter").value; tlApplyDrawerFilter(); };
+  tlEl("tl-dclose").onclick = () => { location.hash = "/timeline"; };
+}
+function tlApplyDrawerFilter() {
+  const q = TL.drawer.filter.trim().toLowerCase();
+  const body = tlEl("tl-dbody");
+  if (!body) return;
+  for (const el of body.children) el.style.display = !q || el.textContent.toLowerCase().includes(q) ? "" : "none";
+}
+function tlOpenDrawer(sid, t) {
+  TL.drawer = { sid, t: t == null ? null : t, filter: "", stick: t == null, top: 0 };
+  const target = "/timeline/" + sid;
+  if (location.hash.replace(/^#/, "") === target) tlRenderDrawer();
+  else location.hash = target;
+}
+
+// ---- context menu ----
+function tlShowMenu(x, y, items) {
+  const menu = tlEl("tl-menu");
+  if (!menu) return;
+  menu.innerHTML = items.map((it, i) =>
+    it.sep ? '<div class="sep"></div>' : '<div class="mi" data-mi="' + i + '">' + it.label + "</div>").join("");
+  menu.style.display = "block";
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.min(x, innerWidth - r.width - 6) + "px";
+  menu.style.top = Math.min(y, innerHeight - r.height - 6) + "px";
+  menu.onclick = e => {
+    const el = e.target.closest(".mi");
+    if (!el) return;
+    const it = items[+el.dataset.mi];
+    tlHideMenu();
+    it.act();
+  };
+}
+function tlHideMenu() {
+  const m = tlEl("tl-menu");
+  if (m && m.style.display === "block") { m.style.display = "none"; m.innerHTML = ""; }
+}
+function tlMenuFor(si) {
+  const s = tlData.sessions[si];
+  return [
+    { label: "detailed view", act: () => { location.hash = "/chats/" + s.sid; } },
+  ];
+}
+
+async function renderTimeline(drawerSid) {
+  setNav("timeline", true);
+  document.title = "tx-ide — timeline";
+  let data;
+  try { data = await getJSON("/api/timeline"); }
+  catch (e) { app.innerHTML = '<div class="empty">' + esc(e.message) + "</div>"; return; }
+  tlData = data;
+  const wantSid = drawerSid || null;
+  if (wantSid !== TL.drawer.sid) TL.drawer = { sid: wantSid, t: null, filter: "", stick: true, top: 0 };
+  if (TL.dragging) return;   // mid-drag refresh: keep the DOM, the next tick re-renders
+  filterables = [];
+  app.innerHTML =
+    '<div class="tl-ctls"><label><input type="checkbox" id="tl-active-only"> hide idle lanes</label>' +
+    '<label><input type="checkbox" id="tl-show-sys"> tx system</label>' +
+    '<label><input type="checkbox" id="tl-show-b"> <svg width="16" height="12"><rect x="1" y="3" width="9" height="6" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="11.5" y1="6" x2="15" y2="6" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2"/></svg> bars</label>' +
+    '<label><input type="checkbox" id="tl-show-u"> <svg width="12" height="12"><circle cx="6" cy="6" r="4" fill="none" stroke="currentColor" stroke-width="2"/></svg> my messages</label>' +
+    '<label><input type="checkbox" id="tl-show-m"> <svg width="12" height="12"><path d="M6 1 11 6 6 11 1 6Z" fill="currentColor"/></svg> actions</label>' +
+    '<label><input type="checkbox" id="tl-show-e"> <svg width="12" height="12"><line x1="6" y1="1" x2="6" y2="8" stroke="currentColor" stroke-width="1.5"/><path d="M2.5 6 L6 10.5 L9.5 6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg> messages &amp; spawns</label>' +
+    '<label><input type="checkbox" id="tl-edit"> edit</label>' +
+    '<span id="tl-legend-btn">legend</span>' +
+    '<div id="tl-legend-pop">' +
+      '<div class="lrow"><svg width="20" height="12"><rect x="1" y="2.5" width="18" height="7" fill="none" stroke="currentColor" stroke-width="1.5"/></svg> solid bar — active: transcript entries flowing</div>' +
+      '<div class="lrow"><svg width="20" height="12"><line x1="1" y1="6" x2="19" y2="6" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 3"/></svg> dotted — idle: silent &gt;10 min zoomed in / &gt;3 h at overview</div>' +
+      '<div class="lrow"><svg width="14" height="12"><circle cx="7" cy="6" r="4.6" fill="none" stroke="currentColor" stroke-width="2"/></svg> ring — you spoke</div>' +
+      '<div class="lrow"><svg width="14" height="12"><path d="M7 .8 12.4 6 7 11.2 1.6 6Z" fill="currentColor"/></svg> diamond — PR merge/ready · artifact create/modify</div>' +
+      '<div class="lrow"><svg width="12" height="12"><line x1="6" y1="1" x2="6" y2="8" stroke="currentColor" stroke-width="1.5"/><path d="M2.5 6 L6 10.5 L9.5 6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg> arrow — message / spawn, points at the receiver</div>' +
+      '<div class="lrow">× killed &nbsp;·&nbsp; ▸ live &nbsp;·&nbsp; faded name = inactive in view</div>' +
+      '<div class="lrow">⌘-wheel zoom · drag to pan · right edge glues to now</div>' +
+    '</div></div>' +
+    '<div class="tl-wrap">' +
+      '<div class="tl-labels" id="tl-labelsbox"><div class="tl-labels-inner" id="tl-labels-inner"></div></div>' +
+      '<div class="tl-scroller" id="tl-scroller"><svg id="tl-svg"></svg></div>' +
+    '</div>' +
+    '<div id="tl-msgbar"><span id="tl-selcount">0 selected</span>' +
+    '<input id="tl-msginput" placeholder="message for tx-assistant about the selected sessions…">' +
+    '<button id="tl-msgsend">send</button><span id="tl-msgstatus"></span></div>' +
+    '<div id="tl-tip"></div>' +
+    '<div id="tl-drawer"><div class="tl-dhead"><b id="tl-dtitle"></b><span class="muted" id="tl-dmeta"></span>' +
+    '<a id="tl-ddetail">detail →</a><input id="tl-dfilter" placeholder="filter…"><button id="tl-dclose">×</button></div>' +
+    '<div id="tl-dbody"></div></div>' +
+    '<div id="tl-menu"></div>';
+  const activeCb = tlEl("tl-active-only");
+  activeCb.checked = !!TL.activeOnly;
+  activeCb.onchange = () => {
+    TL.activeOnly = activeCb.checked;
+    try { localStorage.setItem("txide-tl-active-only", TL.activeOnly ? "1" : "0"); } catch (e) {}
+    tlVisKey = "";
+    tlRender();
+  };
+  for (const [id, key, flag] of [["tl-show-b", "txide-tl-show-b", "showB"], ["tl-show-u", "txide-tl-show-u", "showU"], ["tl-show-m", "txide-tl-show-m", "showM"], ["tl-show-e", "txide-tl-show-e", "showE"], ["tl-show-sys", "txide-tl-show-sys", "showSys"]]) {
+    const cb = tlEl(id);
+    cb.checked = !!TL[flag];
+    cb.onchange = () => {
+      TL[flag] = cb.checked;
+      try { localStorage.setItem(key, TL[flag] ? "1" : "0"); } catch (e) {}
+      tlRender();
+    };
+  }
+  const editCb = tlEl("tl-edit");
+  editCb.onchange = () => {
+    TL.edit = editCb.checked;
+    if (!TL.edit) { TL.sel.clear(); tlRender(); }
+    tlSyncEdit();
+  };
+  tlEl("tl-msgsend").onclick = tlSendMsg;
+  tlEl("tl-msginput").addEventListener("keydown", e => { if (e.key === "Enter") tlSendMsg(); });
+  tlSyncEdit();
+  const lbtn = tlEl("tl-legend-btn"), lpop = tlEl("tl-legend-pop");
+  lbtn.addEventListener("mouseenter", () => { if (!lpop.classList.contains("pin")) lpop.style.display = "block"; });
+  lbtn.addEventListener("mouseleave", () => { if (!lpop.classList.contains("pin")) lpop.style.display = "none"; });
+  lbtn.addEventListener("click", e => {
+    e.stopPropagation();
+    lpop.style.display = lpop.classList.toggle("pin") ? "block" : "none";
+  });
+  lpop.addEventListener("click", e => e.stopPropagation());
+  const sc = tlEl("tl-scroller");
+  if (TL.pph == null || !TL.fitted) {
+    // fresh load opens on the recent past — the last 4 h ending just right of "now";
+    // zoom out (⌘-wheel) for the full window
+    const spanMin = 4 * 60 + 30;
+    TL.pph = Math.max(4, Math.min(6000, (sc.clientWidth - 20) * 60 / spanMin));
+    TL.fitted = true;
+    TL.follow = true;                    // fresh load opens glued to now
+    TL.sl = tlMaxScroll(sc);
+    TL.st = 0;
+  }
+  tlVisKey = "";
+  tlRender();
+  sc.scrollLeft = TL.sl; sc.scrollTop = TL.st;
+  if (TL.follow) { sc.scrollLeft = tlMaxScroll(sc); TL.sl = sc.scrollLeft; }
+  tlEl("tl-labelsbox").scrollTop = TL.st;
+  tlSyncScroll();
+
+  let rafPend = false;
+  sc.addEventListener("scroll", () => {
+    tlHideMenu();
+    const maxSl = tlMaxScroll(sc);
+    if (sc.scrollLeft > maxSl) sc.scrollLeft = maxSl;         // the future is out of bounds
+    TL.follow = sc.scrollLeft >= maxSl - 2;                   // touching the boundary engages follow
+    TL.sl = sc.scrollLeft; TL.st = sc.scrollTop;
+    tlEl("tl-labelsbox").scrollTop = sc.scrollTop;
+    tlSyncScroll();
+    if (rafPend) return;
+    rafPend = true;
+    requestAnimationFrame(() => { rafPend = false; tlMaybeRelayout(); });
+  });
+  sc.addEventListener("wheel", e => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    tlSetZoom(TL.pph * Math.exp(-e.deltaY * 0.0022), e.clientX - sc.getBoundingClientRect().left);
+  }, { passive: false });
+  let drag = null;
+  sc.addEventListener("pointerdown", e => {
+    if (e.target.closest(".tl-hit") || e.target.closest("[data-open]")) return;
+    drag = { x: e.clientX, y: e.clientY, sl: sc.scrollLeft, st: sc.scrollTop };
+    TL.dragging = true; sc.classList.add("drag"); sc.setPointerCapture(e.pointerId);
+  });
+  sc.addEventListener("pointermove", e => {
+    if (drag) { sc.scrollLeft = drag.sl - (e.clientX - drag.x); sc.scrollTop = drag.st - (e.clientY - drag.y); }
+  });
+  sc.addEventListener("pointerup", () => { drag = null; TL.dragging = false; sc.classList.remove("drag"); tlMaybeRelayout(); });
+  const svg = tlEl("tl-svg");
+  svg.addEventListener("pointermove", e => {
+    if (TL.pinId) return;
+    const h = e.target.closest(".tl-hit");
+    if (h && +h.dataset.i >= 0) tlShowTip(+h.dataset.i, e.clientX, e.clientY);
+    else { const tip = tlEl("tl-tip"); if (tip) tip.style.display = "none"; }
+  });
+  svg.addEventListener("pointerleave", () => { if (!TL.pinId) { const tip = tlEl("tl-tip"); if (tip) tip.style.display = "none"; } });
+  svg.addEventListener("click", e => {
+    const b = e.target.closest("[data-open]");
+    if (b) { tlOpenDrawer(b.dataset.open, null); e.stopPropagation(); return; }
+    const h = e.target.closest(".tl-hit");
+    if (h && h.dataset.aid) {   // artifact diamond: straight to the artifact view (⌘ = new tab)
+      if (e.metaKey || e.ctrlKey) window.open("#/artifacts/" + h.dataset.aid, "_blank");
+      else location.hash = "/artifacts/" + h.dataset.aid;
+      e.stopPropagation();
+      return;
+    }
+    if (h && +h.dataset.i >= 0) { tlShowTip(+h.dataset.i, e.clientX, e.clientY, true); e.stopPropagation(); }
+    else tlHideTip();
+  });
+  const labInner = tlEl("tl-labels-inner");
+  labInner.addEventListener("dragstart", e => {
+    const g = e.target.closest(".tl-glab");
+    if (!g) { e.preventDefault(); return; }
+    tlDragGroup = g.dataset.g;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", tlDragGroup);
+    g.classList.add("drag-src");
+  });
+  labInner.addEventListener("dragover", e => {
+    if (!tlDragGroup) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const before = tlInsertBefore(tlDragGroup, tlHoveredBlock(e));
+    for (const el of labInner.querySelectorAll(".drop-hint")) el.classList.remove("drop-hint");
+    if (typeof before === "string") {
+      const el = labInner.querySelector(`.tl-glab[data-g="${CSS.escape(before)}"]`);
+      if (el) el.classList.add("drop-hint");
+    }
+  });
+  labInner.addEventListener("drop", e => {
+    if (!tlDragGroup) return;
+    e.preventDefault();
+    const before = tlInsertBefore(tlDragGroup, tlHoveredBlock(e));
+    if (before !== undefined) tlReorderGroup(tlDragGroup, before);
+    tlDragGroup = null;
+  });
+  labInner.addEventListener("dragend", () => {
+    tlDragGroup = null;
+    for (const el of labInner.querySelectorAll(".drag-src,.drop-hint")) el.classList.remove("drag-src", "drop-hint");
+  });
+  tlEl("tl-labels-inner").addEventListener("click", e => {
+    const g = e.target.closest(".tl-glab");
+    if (g) { searchBox.value = g.dataset.g; tlApplySearch(); return; }
+    const l = e.target.closest(".tl-lab");
+    if (!l) return;
+    if (TL.edit) {
+      const sid = l.dataset.sid;
+      if (TL.sel.has(sid)) TL.sel.delete(sid); else TL.sel.add(sid);
+      l.classList.toggle("sel", TL.sel.has(sid));
+      tlEl("tl-selcount").textContent = TL.sel.size + " selected";
+      return;
+    }
+    tlOpenDrawer(l.dataset.sid, null);
+  });
+  tlEl("tl-labelsbox").addEventListener("wheel", e => { sc.scrollTop += e.deltaY; e.preventDefault(); }, { passive: false });
+  svg.addEventListener("contextmenu", e => {
+    const lane = e.target.closest("[data-lane]");
+    if (!lane) return;
+    e.preventDefault();
+    tlShowMenu(e.clientX, e.clientY, tlMenuFor(+lane.dataset.lane));
+  });
+  tlEl("tl-labels-inner").addEventListener("contextmenu", e => {
+    const l = e.target.closest(".tl-lab");
+    if (!l) return;
+    e.preventDefault();
+    tlShowMenu(e.clientX, e.clientY, tlMenuFor(+l.dataset.si));
+  });
+  tlEl("tl-tip").addEventListener("click", e => {
+    const q = e.target.closest("[data-quick]");
+    if (!q || !TL.pinId) return;
+    e.preventDefault();
+    const pin = TL.pinId;
+    tlHideTip();
+    tlOpenDrawer(pin.sid, pin.k === "lane" ? null : pin.t);
+  });
+  if (!tlClockTimer) tlClockTimer = setInterval(tlClockTick, 1000);
+  tlRenderDrawer();
+}
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape" || !tlActive()) return;
+  const menu = tlEl("tl-menu");
+  if (menu && menu.style.display === "block") return tlHideMenu();
+  if (TL.pinId) return tlHideTip();
+  if (TL.edit) { TL.edit = false; TL.sel.clear(); tlRender(); tlSyncEdit(); return; }
+  if (TL.drawer.sid) location.hash = "/timeline";
+});
+document.addEventListener("click", () => {
+  tlHideMenu();
+  const lpop = tlEl("tl-legend-pop");
+  if (lpop && lpop.classList.contains("pin")) { lpop.classList.remove("pin"); lpop.style.display = "none"; }
+});
+
 // ---- routing ----
 function setNav(tab, isList) {
   tabChats.classList.toggle("active", tab === "chats");
   tabArtifacts.classList.toggle("active", tab === "artifacts");
+  tabTimeline.classList.toggle("active", tab === "timeline");
   searchBox.classList.toggle("hidden", !isList);
   hotWindowControl.classList.toggle("hidden", !(tab === "chats" && isList));
   if (!isList) filterables = [];
@@ -796,6 +1578,7 @@ const UUID_RE = /^[0-9a-fA-F-]{36}$/;
 function route() {
   const hash = location.hash.replace(/^#/, "");
   if (hash.startsWith("/chats/")) return renderChatDetail(hash.slice("/chats/".length));
+  if (hash === "/timeline" || hash.startsWith("/timeline/")) return renderTimeline(hash.startsWith("/timeline/") ? decodeURIComponent(hash.slice("/timeline/".length)) : null);
   if (hash === "/artifacts") return renderArtifacts();
   if (hash.startsWith("/artifacts/")) return renderArtifactDetail(hash.slice("/artifacts/".length));
   if (hash.startsWith("/") && UUID_RE.test(hash.slice(1))) return renderArtifactDetail(hash.slice(1)); // legacy links
@@ -816,6 +1599,11 @@ function viewUrls() {
   if (hash.startsWith("/chats/")) {
     const id = encodeURIComponent(hash.slice("/chats/".length));
     return ["/api/chats/" + id, "/api/chats/" + id + "/dialogue"];
+  }
+  if (hash === "/timeline" || hash.startsWith("/timeline/")) {
+    const urls = ["/api/timeline"];
+    if (hash.startsWith("/timeline/")) urls.push("/api/timeline/" + encodeURIComponent(hash.slice("/timeline/".length)) + "/dialogue");
+    return urls;
   }
   if (hash === "/artifacts") return ["/api/artifacts"];
   if (hash.startsWith("/artifacts/")) return ["/api/artifacts/" + encodeURIComponent(hash.slice("/artifacts/".length))];
