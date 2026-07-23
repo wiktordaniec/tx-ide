@@ -1314,6 +1314,12 @@ async function tlRenderDrawer() {
   const dinp = tlEl("tl-dinput");
   dinp.placeholder = "reply to " + d.name + "…";
   if (document.activeElement !== dinp && dinp.value !== TL.drawer.draft) dinp.value = TL.drawer.draft;
+  // click a lane → just type: opening focuses the reply box ONCE (a consumed flag — later ticks
+  // must not re-steal focus after a deliberate blur)
+  if (TL.drawer.focusOnOpen) {
+    TL.drawer.focusOnOpen = false;
+    if (lane && lane.live) dinp.focus({ preventScroll: true });
+  }
   const body = tlEl("tl-dbody"), em = tlData.epoch_ms;
   body.innerHTML = d.rows.map((r, i) => {
     const m = (r[0] * 1000 - em) / 60000;
@@ -1349,7 +1355,7 @@ function tlApplyDrawerFilter() {
   for (const el of body.children) el.style.display = !q || el.textContent.toLowerCase().includes(q) ? "" : "none";
 }
 function tlOpenDrawer(sid, t) {
-  TL.drawer = { sid, t: t == null ? null : t, filter: "", draft: "", stick: t == null, top: 0 };
+  TL.drawer = { sid, t: t == null ? null : t, filter: "", draft: "", stick: t == null, top: 0, focusOnOpen: true };
   const target = "/timeline/" + sid;
   if (location.hash.replace(/^#/, "") === target) tlRenderDrawer();
   else location.hash = target;
@@ -1392,7 +1398,7 @@ async function renderTimeline(drawerSid) {
   catch (e) { app.innerHTML = '<div class="empty">' + esc(e.message) + "</div>"; return; }
   tlData = data;
   const wantSid = drawerSid || null;
-  if (wantSid !== TL.drawer.sid) TL.drawer = { sid: wantSid, t: null, filter: "", draft: "", stick: true, top: 0 };
+  if (wantSid !== TL.drawer.sid) TL.drawer = { sid: wantSid, t: null, filter: "", draft: "", stick: true, top: 0, focusOnOpen: true };
   if (TL.dragging) return;   // mid-drag refresh: keep the DOM, the next tick re-renders
   // the refresh tick rebuilds this whole subtree — carry the focused text input's value + caret
   // across the swap (restored synchronously below, so no keystroke can fall in the gap)
@@ -1416,7 +1422,7 @@ async function renderTimeline(drawerSid) {
       '<div class="lrow"><svg width="14" height="12"><path d="M7 .8 12.4 6 7 11.2 1.6 6Z" fill="currentColor"/></svg> diamond — PR merge/ready · artifact create/modify</div>' +
       '<div class="lrow"><svg width="12" height="12"><line x1="6" y1="1" x2="6" y2="8" stroke="currentColor" stroke-width="1.5"/><path d="M2.5 6 L6 10.5 L9.5 6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg> arrow — message / spawn, points at the receiver</div>' +
       '<div class="lrow">× killed &nbsp;·&nbsp; ▸ live &nbsp;·&nbsp; faded name = inactive in view</div>' +
-      '<div class="lrow">⌘-wheel zoom · drag to pan · right edge glues to now</div>' +
+      '<div class="lrow">⌘-wheel zoom · drag to pan · ↑/↓ walk lanes while the drawer is open · right edge glues to now</div>' +
     '</div></div>' +
     '<div class="tl-wrap">' +
       '<div class="tl-labels" id="tl-labelsbox"><div class="tl-labels-inner" id="tl-labels-inner"></div></div>' +
@@ -1620,7 +1626,24 @@ async function renderTimeline(drawerSid) {
   tlRenderDrawer();
 }
 document.addEventListener("keydown", e => {
-  if (e.key !== "Escape" || !tlActive()) return;
+  if (!tlActive()) return;
+  // ↑/↓ walk the drawer through the lanes in their on-screen order — but never while a draft is
+  // being composed (a switch resets the drawer state) or while another input holds the caret
+  if ((e.key === "ArrowUp" || e.key === "ArrowDown") && TL.drawer.sid && tlData) {
+    const ae = document.activeElement;
+    if (ae && ae.tagName === "INPUT" && (ae.id !== "tl-dinput" || ae.value)) return;
+    const sids = tlLayoutRows(tlVisible()).rows.filter(r => r.type === "s").map(r => r.v.s.sid);
+    if (!sids.length) return;
+    const here = TL.drawer.target || TL.drawer.sid;
+    const cur = sids.indexOf(here);
+    const next = cur < 0
+      ? (e.key === "ArrowDown" ? 0 : sids.length - 1)
+      : (cur + (e.key === "ArrowDown" ? 1 : -1) + sids.length) % sids.length;
+    e.preventDefault();
+    if (sids[next] !== here) tlOpenDrawer(sids[next], null);
+    return;
+  }
+  if (e.key !== "Escape") return;
   const menu = tlEl("tl-menu");
   if (menu && menu.style.display === "block") return tlHideMenu();
   if (TL.pinId) return tlHideTip();
