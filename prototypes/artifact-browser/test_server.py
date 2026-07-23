@@ -30,7 +30,9 @@ sys.path.insert(0, str(HERE.parents[1] / "lib"))  # the bundled tx package
 
 import server  # noqa: E402  — the prototype under test
 from tx.artifact_service import ArtifactService  # noqa: E402
+from tx.session import LlmSession, State  # noqa: E402
 from tx.storage import ensure_home, tx_ide_home  # noqa: E402
+from tx.store import SessionStore  # noqa: E402
 
 ensure_home()
 PASSED = 0
@@ -95,6 +97,26 @@ def raw_get(path):
     """(status, body) — the common case."""
     status, _head, body = raw_request(path)
     return status, body
+
+
+def raw_post(path, body):
+    """RAW HTTP/1.0 POST; `body` is JSON-encoded unless it is already bytes (to send malformed
+    payloads verbatim). Returns (status, body_bytes)."""
+    payload = body if isinstance(body, bytes) else json.dumps(body).encode()
+    connection = socket.create_connection(("127.0.0.1", port), timeout=5)
+    connection.sendall(
+        f"POST {path} HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\n"
+        f"Content-Length: {len(payload)}\r\n\r\n".encode() + payload
+    )
+    raw = b""
+    while True:
+        chunk = connection.recv(4096)
+        if not chunk:
+            break
+        raw += chunk
+    connection.close()
+    head, _, resp = raw.partition(b"\r\n\r\n")
+    return int(head.split(b" ", 2)[1]), resp
 
 
 try:
@@ -177,6 +199,40 @@ try:
         status, body = raw_get(path)
         leaked = b"SECRET" in body or b"outside" in body.lower()
         check(f"chat-route traversal 404 + no leak: {path}", status == 404 and not leaked)
+
+    # ----- POST: the drawer reply shares the same uuid boundary ------------------------------
+    # Planted records prove the refusal ladder short of a real send: a terminal state refuses,
+    # and an alive record whose tmux session does not exist refuses the same way.
+    dead = LlmSession(id="dddddddd-dddd-4ddd-8ddd-dddddddddddd", name="dead-lane",
+                      state=State.EXITED, created_at=1.0, ended_at=2.0)
+    ghost = LlmSession(id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name="ghost-lane",
+                       state=State.IDLE, created_at=1.0)
+    SessionStore().save(dead)
+    SessionStore().save(ghost)
+    status, _body = raw_post("/api/timeline/message", {"ids": [], "request": "x"})
+    check("the assistant send keeps exact-path precedence (400, not a uuid 404)", status == 400)
+    for path in (
+        "/api/timeline/../message",
+        "/api/timeline/%2e%2e/message",
+        "/api/timeline//message",
+        "/api/timeline/not-a-uuid/message",
+        f"/api/timeline/{dead.id}%0A/message",
+    ):
+        status, body = raw_post(path, {"request": "hello"})
+        leaked = b"SECRET" in body or b"outside" in body.lower()
+        check(f"reply-route bad id 404s + no leak: {path}", status == 404 and not leaked)
+    status, _body = raw_post("/api/timeline/00000000-0000-0000-0000-000000000000/message",
+                             {"request": "hello"})
+    check("a reply to an unknown session 404s cleanly", status == 404)
+    status, _body = raw_post(f"/api/timeline/{dead.id}/message", {"request": "   "})
+    check("a blank reply is rejected (400)", status == 400)
+    status, _body = raw_post(f"/api/timeline/{dead.id}/message", b"{not json")
+    check("a malformed reply body is rejected (400)", status == 400)
+    status, body = raw_post(f"/api/timeline/{dead.id}/message", {"request": "hello"})
+    check("a dead session refuses the reply", status == 200 and b"not live" in body)
+    status, body = raw_post(f"/api/timeline/{ghost.id}/message", {"request": "hello"})
+    check("an alive record without a tmux session refuses the reply",
+          status == 200 and b"not live" in body)
 finally:
     httpd.shutdown()
 

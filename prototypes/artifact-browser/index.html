@@ -280,6 +280,14 @@
   .tl-cr-s .ct { color: var(--dim); font-style: italic; font-size: 11.5px; }
   .tl-cr-x .ct { color: var(--muted); font: 11px var(--mono); }
   .tl-cr-hl { outline: 2px solid var(--amber); outline-offset: -2px; }
+  .tl-dreply { display: none; gap: 8px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--line); background: var(--panel); }
+  #tl-drawer.can-reply .tl-dreply { display: flex; }
+  #tl-dinput { flex: 1; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); padding: 6px 10px; font-size: 12.5px; }
+  #tl-dinput:focus { outline: none; border-color: var(--blue); }
+  #tl-dsend { background: var(--panel); border: 1px solid var(--line); color: var(--text); padding: 6px 14px; font-size: 12.5px; cursor: pointer; }
+  #tl-dsend:hover { border-color: var(--blue); }
+  #tl-dstatus { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  #tl-dstatus:empty { display: none; }
   #tl-menu { position: fixed; z-index: 40; min-width: 210px; background: var(--panel); border: 1px solid var(--line); display: none; padding: 3px 0; }
   #tl-menu .mi { padding: 7px 12px; font-size: 12.5px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #tl-menu .mi:hover { background: var(--panel-2); }
@@ -887,7 +895,7 @@ async function runDiff(id) {
 // payload is clock-free (fingerprint-stable while the store is quiet), the now-line runs on a 1s
 // timer, and the refresh tick re-renders only when the data actually changed. View state (zoom,
 // scroll, pinned tip) lives in TL and survives those re-renders.
-const TL = { pph: null, sl: 0, st: 0, dragging: false, pinId: null, pinAt: null, fitted: false, follow: false, edit: false, sel: new Set(), drawer: { sid: null, t: null, filter: "", stick: true, top: 0 } };
+const TL = { pph: null, sl: 0, st: 0, dragging: false, pinId: null, pinAt: null, fitted: false, follow: false, edit: false, sel: new Set(), drawer: { sid: null, t: null, filter: "", draft: "", stick: true, top: 0 } };
 try { TL.activeOnly = localStorage.getItem("txide-tl-active-only") === "1"; } catch (e) { TL.activeOnly = false; }
 try { TL.showSys = localStorage.getItem("txide-tl-show-sys") === "1"; } catch (e) { TL.showSys = false; }
 try { TL.showU = localStorage.getItem("txide-tl-show-u") !== "0"; TL.showM = localStorage.getItem("txide-tl-show-m") !== "0"; TL.showE = localStorage.getItem("txide-tl-show-e") !== "0"; TL.showB = localStorage.getItem("txide-tl-show-b") !== "0"; } catch (e) { TL.showU = TL.showM = TL.showE = TL.showB = true; }
@@ -1205,6 +1213,33 @@ async function tlSendMsg() {
     }
   } catch (e) { status.textContent = "failed: " + e.message; }
 }
+// The drawer's direct reply: plain user text typed into the lane's own pane — the transcript
+// records a `u` row, so the sent line appears in the tail (and as a ring) on the next poll.
+async function tlDrawerSend() {
+  const input = tlEl("tl-dinput"), status = tlEl("tl-dstatus");
+  const key = TL.drawer.sid, target = TL.drawer.target || key;
+  const request = input.value.trim();
+  if (!target || !request) return;
+  status.textContent = "sending…";
+  try {
+    const r = await fetch("/api/timeline/" + encodeURIComponent(target) + "/message", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request }),
+    });
+    const j = await r.json();
+    const s2 = tlEl("tl-dstatus");
+    if (!j.ok) { if (s2) s2.textContent = j.error || "failed"; return; }
+    if (s2) s2.textContent = "sent ✓";
+    if (TL.drawer.sid === key) {   // still the same lane (not navigated away mid-send)
+      TL.drawer.draft = "";
+      TL.drawer.stick = true;      // tail, so the reply is visible when the transcript row lands
+      const cur = tlEl("tl-dinput"), body = tlEl("tl-dbody");
+      if (cur) { cur.value = ""; cur.focus(); }
+      if (body) body.scrollTop = body.scrollHeight;
+    }
+    setTimeout(() => { const s3 = tlEl("tl-dstatus"); if (s3 && s3.textContent === "sent ✓") s3.textContent = ""; }, 4000);
+  } catch (e) { const s2 = tlEl("tl-dstatus"); if (s2) s2.textContent = "failed: " + e.message; }
+}
 function tlApplySearch() {
   if (!tlActive()) return;
   const needle = searchBox.value.trim().toLowerCase();
@@ -1270,6 +1305,21 @@ async function tlRenderDrawer() {
   tlEl("tl-dmeta").textContent = d.meta + " · " + d.rows.length + " entries";
   tlEl("tl-ddetail").href = "#/chats/" + d.sid;
   tlEl("tl-dfilter").value = TL.drawer.filter;
+  // reply only reaches a live pane — a dead lane keeps the read-only drawer. `d.sid` is the
+  // lane's PRIMARY record (a deep-linked hash may carry an older id of the merged chain), so it
+  // is both the liveness lookup and the send target.
+  TL.drawer.target = d.sid;
+  const lane = tlData.sessions.find(s => s.sid === d.sid);
+  dw.classList.toggle("can-reply", !!(lane && lane.live));
+  const dinp = tlEl("tl-dinput");
+  dinp.placeholder = "reply to " + d.name + "…";
+  if (document.activeElement !== dinp && dinp.value !== TL.drawer.draft) dinp.value = TL.drawer.draft;
+  // click a lane → just type: opening focuses the reply box ONCE (a consumed flag — later ticks
+  // must not re-steal focus after a deliberate blur)
+  if (TL.drawer.focusOnOpen) {
+    TL.drawer.focusOnOpen = false;
+    if (lane && lane.live) dinp.focus({ preventScroll: true });
+  }
   const body = tlEl("tl-dbody"), em = tlData.epoch_ms;
   body.innerHTML = d.rows.map((r, i) => {
     const m = (r[0] * 1000 - em) / 60000;
@@ -1305,7 +1355,7 @@ function tlApplyDrawerFilter() {
   for (const el of body.children) el.style.display = !q || el.textContent.toLowerCase().includes(q) ? "" : "none";
 }
 function tlOpenDrawer(sid, t) {
-  TL.drawer = { sid, t: t == null ? null : t, filter: "", stick: t == null, top: 0 };
+  TL.drawer = { sid, t: t == null ? null : t, filter: "", draft: "", stick: t == null, top: 0, focusOnOpen: true };
   const target = "/timeline/" + sid;
   if (location.hash.replace(/^#/, "") === target) tlRenderDrawer();
   else location.hash = target;
@@ -1348,8 +1398,13 @@ async function renderTimeline(drawerSid) {
   catch (e) { app.innerHTML = '<div class="empty">' + esc(e.message) + "</div>"; return; }
   tlData = data;
   const wantSid = drawerSid || null;
-  if (wantSid !== TL.drawer.sid) TL.drawer = { sid: wantSid, t: null, filter: "", stick: true, top: 0 };
+  if (wantSid !== TL.drawer.sid) TL.drawer = { sid: wantSid, t: null, filter: "", draft: "", stick: true, top: 0, focusOnOpen: true };
   if (TL.dragging) return;   // mid-drag refresh: keep the DOM, the next tick re-renders
+  // the refresh tick rebuilds this whole subtree — carry the focused text input's value + caret
+  // across the swap (restored synchronously below, so no keystroke can fall in the gap)
+  const af = document.activeElement;
+  const keep = af && af.tagName === "INPUT" && af.type === "text" && af.id && app.contains(af)
+    ? { id: af.id, v: af.value, s: af.selectionStart, e: af.selectionEnd } : null;
   filterables = [];
   app.innerHTML =
     '<div class="tl-ctls"><label><input type="checkbox" id="tl-active-only"> hide idle lanes</label>' +
@@ -1367,7 +1422,7 @@ async function renderTimeline(drawerSid) {
       '<div class="lrow"><svg width="14" height="12"><path d="M7 .8 12.4 6 7 11.2 1.6 6Z" fill="currentColor"/></svg> diamond — PR merge/ready · artifact create/modify</div>' +
       '<div class="lrow"><svg width="12" height="12"><line x1="6" y1="1" x2="6" y2="8" stroke="currentColor" stroke-width="1.5"/><path d="M2.5 6 L6 10.5 L9.5 6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg> arrow — message / spawn, points at the receiver</div>' +
       '<div class="lrow">× killed &nbsp;·&nbsp; ▸ live &nbsp;·&nbsp; faded name = inactive in view</div>' +
-      '<div class="lrow">⌘-wheel zoom · drag to pan · right edge glues to now</div>' +
+      '<div class="lrow">⌘-wheel zoom · drag to pan · ↑/↓ walk lanes while the drawer is open · right edge glues to now</div>' +
     '</div></div>' +
     '<div class="tl-wrap">' +
       '<div class="tl-labels" id="tl-labelsbox"><div class="tl-labels-inner" id="tl-labels-inner"></div></div>' +
@@ -1379,8 +1434,17 @@ async function renderTimeline(drawerSid) {
     '<div id="tl-tip"></div>' +
     '<div id="tl-drawer"><div class="tl-dhead"><b id="tl-dtitle"></b><span class="muted" id="tl-dmeta"></span>' +
     '<a id="tl-ddetail">detail →</a><input id="tl-dfilter" placeholder="filter…"><button id="tl-dclose">×</button></div>' +
-    '<div id="tl-dbody"></div></div>' +
+    '<div id="tl-dbody"></div>' +
+    '<div class="tl-dreply"><input id="tl-dinput" autocomplete="off"><button id="tl-dsend">send</button><span id="tl-dstatus"></span></div></div>' +
     '<div id="tl-menu"></div>';
+  // an open drawer re-opens EAGERLY (tlRenderDrawer only re-fills it after its fetch): the swap
+  // must not blank it out, and the focus restore below needs its inputs displayed to work
+  if (TL.drawer.sid) {
+    const dw = tlEl("tl-drawer");
+    dw.classList.add("open");
+    const lane = tlData.sessions.find(s => s.sid === (TL.drawer.target || TL.drawer.sid));
+    dw.classList.toggle("can-reply", !!(lane && lane.live));
+  }
   const activeCb = tlEl("tl-active-only");
   activeCb.checked = !!TL.activeOnly;
   activeCb.onchange = () => {
@@ -1406,6 +1470,10 @@ async function renderTimeline(drawerSid) {
   };
   tlEl("tl-msgsend").onclick = tlSendMsg;
   tlEl("tl-msginput").addEventListener("keydown", e => { if (e.key === "Enter") tlSendMsg(); });
+  tlEl("tl-dsend").onclick = tlDrawerSend;
+  const dInput = tlEl("tl-dinput");
+  dInput.addEventListener("input", () => { TL.drawer.draft = dInput.value; });
+  dInput.addEventListener("keydown", e => { if (e.key === "Enter") tlDrawerSend(); });
   tlSyncEdit();
   const lbtn = tlEl("tl-legend-btn"), lpop = tlEl("tl-legend-pop");
   lbtn.addEventListener("mouseenter", () => { if (!lpop.classList.contains("pin")) lpop.style.display = "block"; });
@@ -1548,16 +1616,44 @@ async function renderTimeline(drawerSid) {
     tlHideTip();
     tlOpenDrawer(pin.sid, pin.k === "lane" ? null : pin.t);
   });
+  // the focus restore must come LAST: the input's container (drawer / edit bar) is only
+  // displayed again by the wiring above, and focus() on a display:none element is a no-op
+  if (keep) {
+    const el = tlEl(keep.id);
+    if (el) { el.value = keep.v; el.focus({ preventScroll: true }); el.setSelectionRange(keep.s, keep.e); }
+  }
   if (!tlClockTimer) tlClockTimer = setInterval(tlClockTick, 1000);
   tlRenderDrawer();
 }
 document.addEventListener("keydown", e => {
-  if (e.key !== "Escape" || !tlActive()) return;
+  if (!tlActive()) return;
+  // ↑/↓ walk the drawer through the lanes in their on-screen order — but never while a draft is
+  // being composed (a switch resets the drawer state) or while another input holds the caret
+  if ((e.key === "ArrowUp" || e.key === "ArrowDown") && TL.drawer.sid && tlData) {
+    const ae = document.activeElement;
+    if (ae && ae.tagName === "INPUT" && (ae.id !== "tl-dinput" || ae.value)) return;
+    const sids = tlLayoutRows(tlVisible()).rows.filter(r => r.type === "s").map(r => r.v.s.sid);
+    if (!sids.length) return;
+    const here = TL.drawer.target || TL.drawer.sid;
+    const cur = sids.indexOf(here);
+    const next = cur < 0
+      ? (e.key === "ArrowDown" ? 0 : sids.length - 1)
+      : (cur + (e.key === "ArrowDown" ? 1 : -1) + sids.length) % sids.length;
+    e.preventDefault();
+    if (sids[next] !== here) tlOpenDrawer(sids[next], null);
+    return;
+  }
+  if (e.key !== "Escape") return;
   const menu = tlEl("tl-menu");
   if (menu && menu.style.display === "block") return tlHideMenu();
   if (TL.pinId) return tlHideTip();
   if (TL.edit) { TL.edit = false; TL.sel.clear(); tlRender(); tlSyncEdit(); return; }
-  if (TL.drawer.sid) location.hash = "/timeline";
+  if (TL.drawer.sid) {
+    const inp = tlEl("tl-dinput");
+    // a half-typed reply: the first Escape only leaves the box (draft kept), the next closes
+    if (inp && document.activeElement === inp && inp.value) return inp.blur();
+    location.hash = "/timeline";
+  }
 });
 document.addEventListener("click", () => {
   tlHideMenu();

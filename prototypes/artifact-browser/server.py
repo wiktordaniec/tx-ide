@@ -957,7 +957,7 @@ def diff_payload(artifact_id: str, rev_a: int, rev_b: int) -> dict | None:
 _MALFORMED_PARAM = object()
 
 
-# ----- HTTP — GET only; the browser never writes -------------------------------------------------
+# ----- HTTP — reads are GET; the only writes are the timeline sends + the group order ------------
 
 
 # ----- timeline edit-mode messaging (mirrors sessions-graph's message_assistant) -----------------
@@ -1021,13 +1021,34 @@ def message_assistant(target_ids: list[str], request: str) -> tuple[int, dict]:
     return 200, {"ok": True, "count": len(targets), "assistant": assistant.id}
 
 
+def message_session(session_id: str, request: str) -> tuple[int, dict]:
+    """The drawer's direct reply: type the line into the TARGET session's own pane. Plain text,
+    no peer envelope — it is the user speaking, so the target's transcript records a `u` row and
+    the lane grows a "you spoke" dot on the next poll."""
+    request = " ".join((request or "").split())
+    if not request:
+        return 400, {"ok": False, "error": "empty request"}
+    target = next((s for s in SessionStore().all() if s.id == session_id), None)
+    if target is None:
+        return 404, {"ok": False, "error": "no such session"}
+    if not (target.is_alive() and Tmux().has_session(target.id)):
+        return 200, {"ok": False, "error": "session is not live"}
+    subprocess.run(["tmux", "send-keys", "-t", target.id, "-l", "--", request])
+    time.sleep(0.3)                               # the input box drops an Enter that arrives too fast
+    subprocess.run(["tmux", "send-keys", "-t", target.id, "Enter"])
+    return 200, {"ok": True, "target": target.id}
+
+
 class BrowserHandler(BaseHTTPRequestHandler):
-    """Read-only routes — GET only, there is no write path; anything else 404s.
+    """The HTTP surface — reads are GET; the only writes are the timeline POSTs (`do_POST`).
 
       chats:      `/api/chats` (list) · `/api/chats/<txid>` (detail) ·
                   `/api/chats/<txid>/dialogue` (full conversation turns)
       artifacts:  `/api/artifacts` (list) · `/api/artifacts/<id>` (detail) ·
                   `/api/artifacts/<id>/raw?rev=N` (bytes) · `/api/artifacts/<id>/diff?a=X&b=Y`
+      timeline:   `/api/timeline?days=N` (swimlanes) · `/api/timeline/<txid>/dialogue` (drawer
+                  feed) · POST `/api/timeline/message` (edit-mode send to tx-assistant) ·
+                  POST `/api/timeline/<txid>/message` (drawer reply) · POST `/api/timeline/order`
       page:       `/`
     """
 
@@ -1045,8 +1066,11 @@ class BrowserHandler(BaseHTTPRequestHandler):
         self._respond(status, json.dumps(payload).encode("utf-8"), "application/json; charset=utf-8")
 
     def do_POST(self) -> None:
-        """`/api/timeline/message` — the edit-mode send. Body: `{ids: [uuid...], request: str}`.
-        Ids are boundary-validated to canonical uuids exactly like the GET routes."""
+        """The timeline writes. `/api/timeline/message` — the edit-mode send to tx-assistant,
+        body `{ids: [uuid...], request: str}` (the exact path wins over the per-session pattern).
+        `/api/timeline/<txid>/message` — the drawer's direct reply, body `{request: str}`.
+        `/api/timeline/order` — the dragged group sequence. Ids are boundary-validated to
+        canonical uuids exactly like the GET routes."""
         path = urllib.parse.urlparse(self.path).path
         try:
             length = min(int(self.headers.get("Content-Length") or 0), 65536)
@@ -1061,6 +1085,13 @@ class BrowserHandler(BaseHTTPRequestHandler):
                 return
             safe_ids = [i for i in ids if _UUID_RE.fullmatch(i)]
             status, body = message_assistant(safe_ids, str(payload.get("request") or ""))
+            self._json(status, body)
+        elif path.startswith("/api/timeline/") and path.endswith("/message"):
+            session_id = _safe_artifact_id(path[len("/api/timeline/") : -len("/message")])
+            if session_id is None:
+                self._respond(404, b"not found\n", "text/plain; charset=utf-8")
+                return
+            status, body = message_session(session_id, str(payload.get("request") or ""))
             self._json(status, body)
         elif path == "/api/timeline/order":
             order = payload.get("order")
