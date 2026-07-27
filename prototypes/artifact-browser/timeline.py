@@ -3,14 +3,17 @@
 
 Extraction rules ported from the tx-timeline prototype:
 
-- one row per transcript entry: ``[t_epoch_seconds, kind, short text]`` with kinds
+- one row per transcript entry: ``[t_epoch_seconds, kind, short text, probe]`` with kinds
   ``u`` = the human typed; ``p`` = peer-agent mail; ``s`` = harness/system injection;
   ``a`` = agent prose; ``x`` = tool call.  Only ``u`` rows become "you spoke" dots; the
-  rest exist so segments/counts see all activity.
+  rest exist so segments/counts see all activity.  ``probe`` is the milestone slice of a
+  tool call's RAW command (``milestone_probe``), ``None`` on every other row.
 - lanes: session records are MERGED when they share a transcript path (resume chains
   re-record the same conversation under a new record id).
 - segments: activity runs split on > ``SEG_GAP_MIN`` minutes of silence.
-- events: ``u`` rows (burst-capped per minute) + milestone tool calls (``M_PATTERNS``).
+- events: ``u`` rows (burst-capped per minute) + milestone tool calls (``M_PATTERNS``,
+  matched against the raw command — the displayed tool line is capped and routinely cuts
+  the milestone off).
 
 Liveness contract: an in-process cache keyed by ``(size, mtime)`` per transcript;
 appended JSONL bytes are tail-parsed from the last consumed newline, so a poll costs
@@ -71,6 +74,30 @@ _UUID_RX = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 # resolve those too, or its click-through to the artifact silently degrades to a bare tooltip.
 _SHORT_ID_RX = re.compile(r"\bartifact modify\s+([0-9a-fA-F]{4,31})\b")
 CREATE_MATCH_S = 180   # `tx artifact create` has no id in the command — match creator+time this close
+
+
+def milestone_probe(detail):
+    """The milestone slice of a tool call's RAW command — from the match onward, `TOOL_DETAIL`
+    long — or None when the command is not a milestone.
+
+    Milestones are detected HERE, on the full command, not on the row's display text: `tool_line`
+    caps the display at `TOOL_DETAIL`, while agents routinely open a command with a long path
+    assignment or bury `tx artifact modify …` at the end of a multi-KB heredoc, so the verb sits
+    thousands of characters in and matching the capped line silently lost the action (and, with it,
+    the id the diamond clicks through to).  Only the short slice is kept per row, so detecting on
+    the full command costs the cache nothing.
+
+    A command that MENTIONS a milestone inside a `tx send-message` is quoting it, not doing it — no
+    probe (the guard runs on the whole command, so a quote further in than the display cap is caught
+    too)."""
+    flat = re.sub(r"\s+", " ", detail or "").strip()
+    if "send-message" in flat:
+        return None
+    for rx, _lab in M_RX:
+        m = rx.search(flat)
+        if m:
+            return flat[m.start(): m.start() + TOOL_DETAIL]
+    return None
 
 
 # ----- row taxonomy (ported verbatim from the prototype) -----------------------------------------
@@ -166,7 +193,7 @@ def _rows_from_claude(o, out):
                 if out and k == "u" and out[-1][1] == "u" and out[-1][0] == t:
                     out[-1][2] = cap(out[-1][2] + "\n" + txt, ROW_TEXT_CAP)
                 else:
-                    out.append([t, k, cap(txt, ROW_TEXT_CAP)])
+                    out.append([t, k, cap(txt, ROW_TEXT_CAP), None])
     elif isinstance(c, list):
         for b in c:
             if not isinstance(b, dict):
@@ -174,12 +201,13 @@ def _rows_from_claude(o, out):
             if b.get("type") == "text":
                 txt = (b.get("text") or "").strip()
                 if txt:
-                    out.append([t, "a", cap(txt, ROW_TEXT_CAP)])
+                    out.append([t, "a", cap(txt, ROW_TEXT_CAP), None])
             elif b.get("type") == "tool_use":
                 inp = b.get("input") or {}
                 det = inp.get("command") or inp.get("file_path") or inp.get("prompt") \
                     or inp.get("description") or ""
-                out.append([t, "x", tool_line(b.get("name", "?"), str(det))])
+                out.append([t, "x", tool_line(b.get("name", "?"), str(det)),
+                            milestone_probe(str(det))])
 
 
 def _rows_from_codex(o, out):
@@ -198,9 +226,9 @@ def _rows_from_codex(o, out):
             k = ukind(txt)
             txt = clean_user(txt)
             if txt:
-                out.append([t, k, cap(txt, ROW_TEXT_CAP)])
+                out.append([t, k, cap(txt, ROW_TEXT_CAP), None])
         elif p.get("role") == "assistant":
-            out.append([t, "a", cap(txt, ROW_TEXT_CAP)])
+            out.append([t, "a", cap(txt, ROW_TEXT_CAP), None])
     elif pt in ("function_call", "local_shell_call"):
         name, det = p.get("name") or "shell", ""
         args = p.get("arguments")
@@ -215,7 +243,7 @@ def _rows_from_codex(o, out):
         if not det and isinstance(act, dict):
             cmd = act.get("command")
             det = " ".join(cmd) if isinstance(cmd, list) else str(cmd or "")
-        out.append([t, "x", tool_line(name, det)])
+        out.append([t, "x", tool_line(name, det), milestone_probe(det)])
 
 
 def _parse_line(line, out):
@@ -408,7 +436,7 @@ def lane_dialogue(session_id, days=7.0):
                 "sid": primary.id,
                 "name": lane["name"],
                 "meta": f"{state} · {nmsg} msgs",
-                "rows": [[round(t, 2), k, txt] for t, k, txt in rows],
+                "rows": [[round(t, 2), k, txt] for t, k, txt, _probe in rows],
             }
         return None
 
@@ -466,7 +494,7 @@ def _build(days):
         vis_fsegs = _segments(FSEG_GAP_MIN * 60)
 
         ev, permin = [], {}
-        for t, k, txt in rows:
+        for t, k, txt, probe in rows:
             m = mins(t)
             if m < 0:
                 continue
@@ -478,19 +506,20 @@ def _build(days):
                         ev.append([round(m, 2), "u", "(burst: more messages this minute — open chat)"])
                     continue
                 ev.append([round(m, 2), "u", cap(txt, EV_TEXT)])
-            elif k == "x" and txt.startswith("⚙ "):
-                body = txt[2:]
-                if "send-message" in body:
-                    continue   # a message QUOTING a command is not the command happening
+            elif k == "x" and probe:
+                # the probe is the RAW command from the milestone verb onward (`milestone_probe`),
+                # never the capped display line — that is what makes a buried action visible
                 for rx, lab in M_RX:
-                    if not rx.search(body):
+                    if not rx.search(probe):
                         continue
-                    entry = [round(m, 2), "m", cap(f"{lab}: {body.split('·', 1)[-1].strip()}", EV_TEXT)]
+                    entry = [round(m, 2), "m", cap(f"{lab}: {probe}", EV_TEXT)]
                     if lab == "artifact":
-                        um = _UUID_RX.search(body)
-                        aid = um.group(0).lower() if um else None
+                        um = _UUID_RX.search(probe)
+                        # a uuid in the command that is not an artifact id is a path (the scratchpad
+                        # carries the CHAT uuid) — linking the diamond to it would 404
+                        aid = um.group(0).lower() if um and um.group(0).lower() in art_titles else None
                         if aid is None:
-                            pm = _SHORT_ID_RX.search(body)
+                            pm = _SHORT_ID_RX.search(probe)
                             if pm:
                                 hits = [k for k in art_titles if k.startswith(pm.group(1).lower())]
                                 if len(hits) == 1:   # ambiguous prefixes stay unresolved
@@ -503,14 +532,14 @@ def _build(days):
                                     if d <= CREATE_MATCH_S and (best is None or d < best[0]):
                                         best = (d, art_id)
                             aid = best[1] if best else None
-                        verb = "modified" if "artifact modify" in body else "created"
+                        verb = "modified" if "artifact modify" in probe else "created"
                         if aid:
                             # preview reads as what happened to WHICH artifact, not the raw command
                             title = art_titles.get(aid, aid[:8])
                             entry[2] = cap(f"artifact {verb}: {title}", EV_TEXT)
                             entry.append(aid)
                         else:
-                            entry[2] = cap(f"artifact {verb}: {body.split('·', 1)[-1].strip()}", EV_TEXT)
+                            entry[2] = cap(f"artifact {verb}: {probe}", EV_TEXT)
                     ev.append(entry)
                     break
 
@@ -521,7 +550,7 @@ def _build(days):
             spawns.append([round(sm, 2), rec.parent, len(sessions), "spawn" if ri == 0 else "resume"])
 
         peers = []
-        for t, k, txt in rows:
+        for t, k, txt, _probe in rows:
             m = mins(t)
             if m < 0 or k != "p":
                 continue
