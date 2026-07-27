@@ -321,6 +321,29 @@
                 display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .av-rhint { padding: 9px 12px; font-size: 11px; line-height: 1.5; color: var(--dim);
               border-bottom: 1px solid var(--line-soft); }
+  .av-rhint b { color: var(--muted); font-weight: 600; }
+  /* the contributor roll — every session that wrote the document, each opening its transcript */
+  .av-who { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+  .av-who a, .av-who span.mono { font-size: 11.5px; }
+  .av-who .n { color: var(--dim); font: 10px var(--mono); margin-left: 6px; }
+  /* A / B endpoint pickers, quiet until the row is hovered or the endpoint is live */
+  .av-pick { float: right; display: flex; gap: 3px; margin-left: 6px; }
+  .av-pick b { font: 9.5px var(--mono); font-weight: 600; color: var(--dim); cursor: pointer;
+               border: 1px solid var(--line-soft); padding: 0 3px; opacity: 0; }
+  .av-rev:hover .av-pick b, .av-pick b.on { opacity: 1; }
+  .av-pick b:hover { color: var(--text); border-color: var(--blue); }
+  .av-pick b[data-pick="a"].on { color: var(--amber); border-color: var(--amber); }
+  .av-pick b[data-pick="b"].on { color: var(--blue); border-color: var(--blue); }
+  /* the diff's own header — what changed, and whose conversations produced it */
+  .av-diffhead { margin: 0 0 18px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+  .av-diffhead .ln1 { font: 12px var(--mono); color: var(--muted); }
+  .av-src { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+  .av-src .k { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--dim); }
+  .av-src .n { color: var(--dim); font: 10.5px var(--mono); margin-left: 5px; }
+  .av-note { margin-top: 7px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+  .av-note .r { font: 10.5px var(--mono); color: var(--dim); margin-right: 7px; }
+  /* the turn an artifact revision links to, flashed on arrival */
+  .turn.turn-hl { outline: 2px solid var(--amber); outline-offset: 3px; }
 
   /* side-by-side diff */
   table.av-sbs { width: 100%; border-collapse: collapse; table-layout: fixed; font: 12px/1.5 var(--mono); }
@@ -936,7 +959,7 @@ async function renderChats() {
 }
 
 // ---- chat (session) detail ----
-async function renderChatDetail(id) {
+async function renderChatDetail(id, anchor) {
   setNav("chats", false);
   app.innerHTML = '<div class="empty">loading…</div>';
   let d;
@@ -1027,15 +1050,15 @@ async function renderChatDetail(id) {
 
     '<section><h2>Conversation</h2><div id="conv"><div id="convLoad">loading full history…</div></div></section>';
 
-  return loadConversation(id, d);
+  return loadConversation(id, d, anchor);
 }
 
-async function loadConversation(id, detail) {
+async function loadConversation(id, detail, anchor) {
   const conv = document.getElementById("conv");
   let data;
   try { data = await getJSON("/api/chats/" + encodeURIComponent(id) + "/dialogue"); }
   catch (e) { conv.innerHTML = '<div class="err">' + esc(e.message) + "</div>"; return; }
-  if (location.hash !== "#/chats/" + id) return;   // user navigated away meanwhile
+  if (!location.hash.startsWith("#/chats/" + id)) return;   // user navigated away meanwhile
   const parts = [];
   data.chats.forEach((chat, index) => {
     const label = detail.chats[index] || {};
@@ -1055,15 +1078,33 @@ async function loadConversation(id, detail) {
         parts.push('<div class="turn tools">· ' + turn.count + " tool call" + (turn.count === 1 ? "" : "s") +
                    (names ? " — " + esc(names) : "") + " ·</div>");
       } else if (turn.who === "you") {
-        parts.push('<div class="turn you"><span class="who">you</span><span class="ts">' + fmtTs(turn.ts) +
+        parts.push('<div class="turn you" data-ts="' + (turn.ts || 0) + '"><span class="who">you</span><span class="ts">' + fmtTs(turn.ts) +
                    '</span><div class="body">' + esc(turn.text) + "</div></div>");
       } else {
-        parts.push('<div class="turn agent"><span class="who">agent</span><span class="ts">' + fmtTs(turn.ts) +
+        parts.push('<div class="turn agent" data-ts="' + (turn.ts || 0) + '"><span class="who">agent</span><span class="ts">' + fmtTs(turn.ts) +
                    '</span><div class="body md">' + renderMarkdown(turn.text) + "</div></div>");
       }
     }
   });
   conv.innerHTML = parts.join("") || '<div class="muted">no conversation recorded.</div>';
+  if (anchor) avAnchorTurn(conv, anchor);
+}
+
+// Land on the turn that was live when an artifact revision was taken: the LAST turn at or before
+// that moment, because the conversation that produced an edit precedes it. Highlighted briefly so
+// the arrival point is obvious after the jump.
+function avAnchorTurn(conv, at) {
+  const turns = Array.from(conv.querySelectorAll(".turn[data-ts]"));
+  if (!turns.length) return;
+  let target = null;
+  for (const turn of turns) {
+    const ts = Number(turn.dataset.ts);
+    if (ts && ts <= at) target = turn;
+  }
+  target = target || turns[0];
+  target.scrollIntoView({ block: "center" });
+  target.classList.add("turn-hl");
+  setTimeout(() => target.classList.remove("turn-hl"), 2600);
 }
 
 // ---- artifact reader ----
@@ -1362,10 +1403,28 @@ async function avRenderDiff() {
   const rows = avPairRows(avLineDiff(left, right));
   const changed = rows.filter(row => row.kind !== "eq").length;
   const shown = AV.fullDiff ? rows : avCollapse(rows);
-  const head = '<p class="muted" style="margin:0 0 14px;font:12px var(--mono)">rev ' + AV.cmp.a +
-    " → rev " + AV.cmp.b + " · " + (changed ? changed + " changed line" + (changed === 1 ? "" : "s") : "identical") + "</p>";
-  body.innerHTML = '<div class="av-page' + (AV.sbs ? " wide-page" : "") + '">' + head +
+  body.innerHTML = '<div class="av-page' + (AV.sbs ? " wide-page" : "") + '">' + avDiffHead(changed) +
     (AV.sbs ? avSbsHtml(shown) : avUnifiedHtml(shown)) + "</div>";
+}
+
+// The provenance of the change on screen: the revisions inside the span, and — the point of it —
+// the conversations that wrote them, linked. This is the "what influenced this edit" answer.
+function avDiffHead(changed) {
+  const span = avRevSpan(AV.cmp.a, AV.cmp.b);
+  const sessions = avContributors(span);
+  const sources = sessions.length
+    ? '<div class="av-src"><span class="k">written by</span>' +
+      sessions.map(person =>
+        avChatLink(person.id, person.actor, person.exists, person.touches[person.touches.length - 1].at) +
+        '<span class="n">' + person.touches.map(touch => "r" + touch.rev).join(" ") + "</span>").join("") +
+      "</div>"
+    : "";
+  const notes = span.filter(touch => touch.changes).map(touch =>
+    '<div class="av-note"><span class="r">r' + touch.rev + "</span>" + esc(touch.changes) + "</div>").join("");
+  return '<div class="av-diffhead"><div class="ln1">rev ' + AV.cmp.a + " → rev " + AV.cmp.b +
+    " · " + (changed ? changed + " changed line" + (changed === 1 ? "" : "s") : "identical") +
+    " · " + span.length + " revision" + (span.length === 1 ? "" : "s") + " in between</div>" +
+    sources + notes + "</div>";
 }
 
 // A line diff by LCS. We store whole versions, not deltas, so the comparison is computed here — one
@@ -1507,9 +1566,44 @@ function avSpy() {
   links.forEach((link, k) => link.classList.toggle("on", k === active));
 }
 
+// Every session that ever touched the artifact, creator first, with the revisions it produced —
+// the "whose conversations do I read to understand this document" question, answered off `history`.
+function avContributors(history) {
+  const order = [], bySession = new Map();
+  for (const touch of history) {
+    if (!bySession.has(touch.session_id)) { bySession.set(touch.session_id, []); order.push(touch.session_id); }
+    bySession.get(touch.session_id).push(touch);
+  }
+  return order.map(sessionId => {
+    const touches = bySession.get(sessionId);
+    return { id: sessionId, touches, actor: touches[0].actor, exists: touches[0].session_exists };
+  });
+}
+
+// A link into the writing session's transcript, anchored at the moment of the touch — `at` puts the
+// chat view on the turn that was live when the revision was taken. The `user` sentinel and vanished
+// records have no transcript to open, so they stay plain text.
+function avChatLink(sessionId, label, exists, at) {
+  if (!exists) return '<span class="mono" title="' + esc(sessionId) + ' — no session record">' + esc(label) + "</span>";
+  return '<a class="mono" href="#/chats/' + esc(sessionId) + (at ? "@" + Math.round(at) : "") +
+    '" title="open this conversation at the moment of the touch">' + esc(label) + "</a>";
+}
+
+function avRevSpan(a, b) {
+  // The revisions that actually produced a diff A→B are the touches AFTER a, up to and including b.
+  const [low, high] = a <= b ? [a, b] : [b, a];
+  return AV.detail.history.filter(touch => touch.rev > low && touch.rev <= high);
+}
+
 function avRenderRevs() {
   const detail = AV.detail;
-  const hint = '<div class="av-rhint">Click a revision to read it · <b>shift-click</b> a second to diff the two</div>';
+  const contributors = avContributors(detail.history);
+  const who = '<div class="av-rhint"><b>' + contributors.length + " session" +
+    (contributors.length === 1 ? "" : "s") + "</b> wrote this document<div class=\"av-who\">" +
+    contributors.map(person =>
+      avChatLink(person.id, person.actor, person.exists, person.touches[person.touches.length - 1].at) +
+      '<span class="n">' + person.touches.length + "r</span>").join("") + "</div></div>";
+  const hint = '<div class="av-rhint">Click a revision to read it · <b>A</b>/<b>B</b> (or shift-click) to diff any two</div>';
   // The working copy is its own row above the history, because it is its own thing: normally equal
   // to the last rev, but when dirty it is content no revision holds. Reading "current" selects it.
   const working = '<div class="av-rev' + (AV.rev == null && !AV.cmp ? " on" : "") + '" data-rev="current">' +
@@ -1525,20 +1619,37 @@ function avRenderRevs() {
     const compared = AV.cmp && AV.cmp.a === touch.rev;
     const previous = newestFirst[k - 1];
     const handover = !previous || previous.session_id !== touch.session_id;
+    // A and B are the two diff endpoints, settable independently — the pair is arbitrary, and
+    // moving one end is one click rather than re-picking both.
+    const pick = '<span class="av-pick">' +
+      '<b data-pick="a"' + (compared ? ' class="on"' : "") + ' title="use as the LEFT side">A</b>' +
+      '<b data-pick="b"' + (AV.cmp && AV.cmp.b === touch.rev ? ' class="on"' : "") +
+      ' title="use as the RIGHT side">B</b></span>';
     return '<div class="av-rev' + (selected ? " on" : compared ? " cmp" : "") + '" data-rev="' + touch.rev + '">' +
       '<div><div class="r">r' + touch.rev + '</div><div class="ago">' + esc(touch.ago) + "</div></div>" +
-      "<div>" +
-      (handover ? '<div class="who" title="' + esc(touch.session_id) + '">' + esc(touch.actor) + "</div>" : "") +
+      "<div>" + pick +
+      (handover ? '<div class="who">' + avChatLink(touch.session_id, touch.actor, touch.session_exists, touch.at) + "</div>" : "") +
       (touch.changes ? '<div class="ch">' + esc(touch.changes) + "</div>" : "") + "</div></div>";
   }).join("");
-  avEl("av-rbody").innerHTML = hint + working + rows;
+  avEl("av-rbody").innerHTML = who + hint + working + rows;
   avEl("av-rbody").onclick = event => {
+    if (event.target.closest("a")) return;    // a contributor link navigates to its chat
     const row = event.target.closest(".av-rev");
     if (!row) return;
     const last = AV.detail.revs - 1;
     // The working-copy row has no rev of its own; for a comparison it stands in as the last one.
     const rev = row.dataset.rev === "current" ? last : +row.dataset.rev;
-    // shift-click anchors the OTHER end of a comparison against whatever is currently open.
+    // A / B set one endpoint each, leaving the other where it was — so any pair is reachable, and
+    // walking one side through the history is a single click per step.
+    const pick = event.target.closest("[data-pick]");
+    if (pick) {
+      const current = AV.cmp || { a: Math.max(0, last - 1), b: last };
+      const pair = pick.dataset.pick === "a" ? { a: rev, b: current.b } : { a: current.a, b: rev };
+      if (pair.a === pair.b) return;          // a revision against itself is not a comparison
+      avGo(AV.id, null, pair);
+      return;
+    }
+    // shift-click is the shortcut for the same thing: the other end is whatever is already open.
     if (event.shiftKey) {
       const anchor = AV.cmp ? AV.cmp.b : AV.rev != null ? AV.rev : last;
       if (anchor === rev) return;
@@ -2435,7 +2546,11 @@ function setNav(tab, isList) {
 const UUID_RE = /^[0-9a-fA-F-]{36}$/;
 function route() {
   const hash = location.hash.replace(/^#/, "");
-  if (hash.startsWith("/chats/")) return renderChatDetail(hash.slice("/chats/".length));
+  if (hash.startsWith("/chats/")) {
+    // `<id>@<epoch>` — an artifact revision links here to say "the conversation at THIS moment".
+    const [chatId, anchor] = hash.slice("/chats/".length).split("@");
+    return renderChatDetail(chatId, anchor ? Number(anchor) : null);
+  }
   if (hash === "/timeline" || hash.startsWith("/timeline/")) return renderTimeline(hash.startsWith("/timeline/") ? decodeURIComponent(hash.slice("/timeline/".length)) : null);
   if (hash === "/artifacts") return renderArtifactReader(null);
   if (hash.startsWith("/artifacts/")) return renderArtifactReader(hash.slice("/artifacts/".length));
@@ -2455,7 +2570,7 @@ const REFRESH_MS = 5000, FORCE_AGE_REFRESH_EVERY = 12;
 function viewUrls() {
   const hash = location.hash.replace(/^#/, "");
   if (hash.startsWith("/chats/")) {
-    const id = encodeURIComponent(hash.slice("/chats/".length));
+    const id = encodeURIComponent(hash.slice("/chats/".length).split("@")[0]);   // drop a time anchor
     return ["/api/chats/" + id, "/api/chats/" + id + "/dialogue"];
   }
   if (hash === "/timeline" || hash.startsWith("/timeline/")) {

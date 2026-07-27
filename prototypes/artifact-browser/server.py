@@ -885,6 +885,10 @@ def detail_payload(artifact_id: str) -> dict | None:
             {
                 "rev": touch.rev,
                 "ago": reltime(touch.at),
+                # The raw stamp too, not just the relative one: the reader anchors a link into the
+                # writing session's transcript at the moment the revision was taken, so a reader can
+                # go from "this changed" to the conversation that changed it.
+                "at": touch.at,
                 "session_id": touch.session_id,
                 "actor": actor_label(touch.session_id, names),
                 "session_exists": touch.session_id in names,
