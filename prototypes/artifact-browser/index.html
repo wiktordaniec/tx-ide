@@ -159,22 +159,51 @@
   #convLoad { color: var(--muted); font: 12px var(--mono); padding: 14px 0; }
 
   /* ---- rendered markdown ---- */
-  .md { overflow-wrap: anywhere; }
-  .md h1,.md h2,.md h3,.md h4 { line-height: 1.3; margin: 1.1em 0 .45em; font-weight: 650; }
-  .md h1 { font-size: 1.3em; } .md h2 { font-size: 1.18em; } .md h3 { font-size: 1.06em; }
-  .md h4 { font-size: 1em; }
-  .md p { margin: .55em 0; } .md ul,.md ol { margin: .45em 0; padding-left: 1.5em; }
-  .md li { margin: .18em 0; }
-  .md code { font-family: var(--mono); font-size: .87em; background: var(--panel-2);
-             padding: .1em .35em; }
-  .md pre { background: var(--panel); padding: 12px; overflow-x: auto; }
-  .md pre code { background: none; padding: 0; }
-  .md blockquote { margin: .55em 0; padding: .1em 1em; border-left: 3px solid var(--line);
+  /* A document scale, not a UI scale: space ABOVE a heading is what makes a section read as one, so
+     the headings carry generous leading margins and tight trailing ones. Artifacts are dense with
+     bold lead-ins and inline code, so `strong` brightens and `code` stays quiet — a loud code chip
+     on every third word turns a plan into confetti. */
+  /* `break-word`, NOT `anywhere`: `anywhere` also shrinks min-content to a single character, which
+     lets table auto-layout squeeze a column until `CANCELLED_PLANNING` wraps as `CANCELL/ED_PL/ANNING`.
+     `break-word` still rescues a token too long for its own line without licensing that. */
+  .md { overflow-wrap: break-word; font-size: 14.5px; line-height: 1.68; }
+  .md > :first-child { margin-top: 0; }
+  .md h1,.md h2,.md h3,.md h4,.md h5,.md h6 { line-height: 1.25; font-weight: 650; color: var(--text); }
+  .md h1 { font-size: 1.55em; margin: 1.4em 0 .5em; letter-spacing: -.012em; }
+  .md h2 { font-size: 1.28em; margin: 2.1em 0 .55em; padding-bottom: .28em;
+           border-bottom: 1px solid var(--line); }
+  .md h3 { font-size: 1.08em; margin: 1.9em 0 .4em; }
+  .md h4 { font-size: .84em; margin: 2em 0 .4em; color: var(--muted);
+           text-transform: uppercase; letter-spacing: .09em; }
+  .md h5,.md h6 { font-size: .9em; margin: 1.5em 0 .35em; color: var(--muted); }
+  .md p { margin: .9em 0; }
+  .md strong { color: #ffffff; font-weight: 650; }
+  .md em { color: var(--text); }
+  .md del { color: var(--dim); }
+  .md a { text-decoration: underline; text-underline-offset: 2px; }
+  .md ul,.md ol { margin: .9em 0; padding-left: 1.6em; }
+  .md li { margin: .34em 0; }
+  .md li::marker { color: var(--dim); }
+  .md li > ul,.md li > ol { margin: .34em 0; }
+  .md li > p { margin: .5em 0; }
+  .md code { font-family: var(--mono); font-size: .855em; color: #a9c6e8;
+             background: var(--panel-2); padding: .08em .3em; }
+  .md pre { background: var(--panel); border-left: 2px solid var(--line); margin: 1.1em 0;
+            padding: 12px 15px; overflow-x: auto; font-size: 12.5px; line-height: 1.55; }
+  .md pre code { background: none; padding: 0; color: var(--text); font-size: inherit; }
+  .md blockquote { margin: 1.1em 0; padding: .15em 0 .15em 1.1em; border-left: 2px solid var(--dim);
                    color: var(--muted); }
-  .md hr { border: none; border-top: 1px solid var(--line); margin: 1.1em 0; }
-  .md table { border-collapse: collapse; margin: .7em 0; display: block; overflow-x: auto; }
-  .md table th, .md table td { border: 1px solid var(--line); padding: 5px 10px; }
-  .md table th { background: var(--panel-2); }
+  .md blockquote > :first-child { margin-top: 0; }
+  .md blockquote > :last-child { margin-bottom: 0; }
+  .md hr { border: none; border-top: 1px solid var(--line); margin: 2.2em 0; }
+  .md img { max-width: 100%; }
+  /* The SCROLLER is the wrapper, not the table: a `display: block` table shrink-wraps to the
+     container and squeezes its columns, where a wrapper lets the table take the width it needs. */
+  .md .tablewrap { overflow-x: auto; margin: 1.2em 0; }
+  .md table { border-collapse: collapse; width: max-content; min-width: 100%; font-size: .93em; }
+  .md table th, .md table td { border: 1px solid var(--line); padding: 6px 11px;
+                               text-align: left; vertical-align: top; }
+  .md table th { background: var(--panel-2); font-weight: 600; white-space: nowrap; }
 
   pre.raw { font: 13px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
 
@@ -495,80 +524,214 @@ function sessionLink(id, name, exists) {
   return '<a class="mono" href="#/chats/' + esc(id) + '" title="' + esc(id) + '">' + esc(name) + "</a>";
 }
 
-// ---- a compact, self-contained markdown renderer (no external libs) ----
-function inline(s) {
-  s = esc(s);
-  s = s.replace(/`([^`]+)`/g, (_, c) => "<code>" + c + "</code>");
-  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) =>
-    '<a href="' + u + '" target="_blank" rel="noopener">' + t + "</a>");
-  return s;
-}
+// ---- a self-contained markdown renderer (no external libs) ----
+// Sized for what artifacts actually are: hard-wrapped prose plans, heavy on nested lists, inline
+// code and tables. The parser is line-based and block-structured — every construct collects its own
+// lines and recurses, which is what makes continuation and nesting work at all. Not CommonMark, but
+// it covers headings, fences, lists (nested, wrapped, loose/tight), tables, quotes and paragraphs.
+const MD_BULLET = /^(\s*)([-*+])(\s+)(.*)$/;
+const MD_ORDERED = /^(\s*)(\d{1,9})[.)](\s+)(.*)$/;
+const MD_FENCE = /^\s{0,3}(```+|~~~+)\s*([^\s`]*)/;
+const MD_HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
+const MD_RULE = /^\s{0,3}(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/;
+const MD_QUOTE = /^\s{0,3}>\s?(.*)$/;
+
 function renderMarkdown(text) {
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  return mdBlocks(text.replace(/\r\n?/g, "\n").split("\n")).join("\n");
+}
+
+// The head of a list item — where its marker sits and, crucially, the column its CONTENT starts at.
+// That column is what later lines are measured against to decide "still this item" vs "next block".
+function mdItemHead(line) {
+  const bullet = line.match(MD_BULLET);
+  if (bullet) {
+    return { indent: bullet[1].length, ordered: false, text: bullet[4],
+             content: bullet[1].length + 1 + bullet[3].length };
+  }
+  const ordered = line.match(MD_ORDERED);
+  if (!ordered) return null;
+  return { indent: ordered[1].length, ordered: true, text: ordered[4],
+           content: ordered[1].length + ordered[2].length + 1 + ordered[3].length,
+           start: Number(ordered[2]) };
+}
+
+function mdBlocks(lines) {
   const out = [];
   let i = 0;
-  const listOpen = []; // stack of "ul"/"ol"
-  function closeLists() { while (listOpen.length) out.push("</" + listOpen.pop() + ">"); }
   while (i < lines.length) {
-    let line = lines[i];
-    // fenced code block
-    const fence = line.match(/^```(.*)$/);
-    if (fence) {
-      closeLists(); i++;
-      const buf = [];
-      while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; }
-      i++; // closing fence
-      out.push("<pre><code>" + esc(buf.join("\n")) + "</code></pre>");
+    const line = lines[i];
+    if (line.trim() === "") { i++; continue; }
+    if (MD_RULE.test(line)) { out.push("<hr>"); i++; continue; }
+    const fence = line.match(MD_FENCE);
+    if (fence) { i = mdFence(lines, i, fence, out); continue; }
+    const heading = line.match(MD_HEADING);
+    if (heading) {
+      const level = heading[1].length;
+      out.push("<h" + level + ">" + mdInline(heading[2]) + "</h" + level + ">");
+      i++;
       continue;
     }
-    // horizontal rule
-    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { closeLists(); out.push("<hr>"); i++; continue; }
-    // heading
-    const h = line.match(/^(#{1,6})\s+(.*)$/);
-    if (h) { closeLists(); const n = h[1].length; out.push("<h" + n + ">" + inline(h[2]) + "</h" + n + ">"); i++; continue; }
-    // pipe table: header row followed by a |---|--- separator
-    if (/\|/.test(line) && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|[\s:|-]+$/.test(lines[i + 1])) {
-      closeLists();
-      const cells = r => r.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map(c => c.trim());
-      const head = cells(line);
-      i += 2;
-      let t = "<table><thead><tr>" + head.map(c => "<th>" + inline(c) + "</th>").join("") + "</tr></thead><tbody>";
-      while (i < lines.length && /\|/.test(lines[i]) && lines[i].trim() !== "") {
-        t += "<tr>" + cells(lines[i]).map(c => "<td>" + inline(c) + "</td>").join("") + "</tr>"; i++;
-      }
-      out.push(t + "</tbody></table>");
-      continue;
-    }
-    // blockquote (consume consecutive)
-    if (/^\s*>\s?/.test(line)) {
-      closeLists(); const buf = [];
-      while (i < lines.length && /^\s*>\s?/.test(lines[i])) { buf.push(lines[i].replace(/^\s*>\s?/, "")); i++; }
-      out.push("<blockquote>" + renderMarkdown(buf.join("\n")) + "</blockquote>");
-      continue;
-    }
-    // list items
-    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
-    const ol = line.match(/^\s*\d+\.\s+(.*)$/);
-    if (ul || ol) {
-      const kind = ul ? "ul" : "ol";
-      if (listOpen[listOpen.length - 1] !== kind) { closeLists(); out.push("<" + kind + ">"); listOpen.push(kind); }
-      out.push("<li>" + inline((ul || ol)[1]) + "</li>"); i++; continue;
-    }
-    // blank line
-    if (line.trim() === "") { closeLists(); i++; continue; }
-    // paragraph (gather until a blank / block boundary)
-    closeLists();
-    const para = [line]; i++;
-    while (i < lines.length && lines[i].trim() !== "" &&
-           !/^(#{1,6}\s|```|\s*>|\s*[-*+]\s|\s*\d+\.\s|\s*(-{3,}|\*{3,})\s*$)/.test(lines[i])) {
-      para.push(lines[i]); i++;
-    }
-    out.push("<p>" + inline(para.join(" ")) + "</p>");
+    if (MD_QUOTE.test(line)) { i = mdQuote(lines, i, out); continue; }
+    const table = mdTable(lines, i);
+    if (table) { out.push(table.html); i = table.next; continue; }
+    if (mdItemHead(line)) { i = mdList(lines, i, out); continue; }
+    i = mdParagraph(lines, i, out);
   }
-  closeLists();
-  return out.join("\n");
+  return out;
+}
+
+function mdFence(lines, i, fence, out) {
+  const marker = fence[1], language = fence[2];
+  const body = [];
+  i++;
+  while (i < lines.length && !new RegExp("^\\s{0,3}" + marker[0] + "{" + marker.length + ",}\\s*$").test(lines[i])) {
+    body.push(lines[i]);
+    i++;
+  }
+  out.push('<pre><code' + (language ? ' class="lang-' + esc(language) + '"' : "") + ">" +
+    esc(body.join("\n")) + "</code></pre>");
+  return i + 1;   // past the closing fence (or past the end, for an unterminated one)
+}
+
+function mdQuote(lines, i, out) {
+  const body = [];
+  // A quote absorbs lazy continuations too: a wrapped quote paragraph drops the '>' on later lines.
+  while (i < lines.length && lines[i].trim() !== "") {
+    const quoted = lines[i].match(MD_QUOTE);
+    if (!quoted && !body.length) break;
+    if (!quoted && mdStartsBlock(lines[i])) break;
+    body.push(quoted ? quoted[1] : lines[i].trim());
+    i++;
+  }
+  out.push("<blockquote>" + mdBlocks(body).join("\n") + "</blockquote>");
+  return i;
+}
+
+function mdStartsBlock(line) {
+  return MD_RULE.test(line) || MD_FENCE.test(line) || MD_HEADING.test(line) ||
+    MD_QUOTE.test(line) || !!mdItemHead(line);
+}
+
+// Lists: the construct the old renderer got wrong, and the one these documents lean on hardest.
+// An item keeps collecting lines while they are indented to its content column (nested blocks) OR
+// are a plain wrapped continuation of its paragraph. Each item's collected lines are de-indented and
+// run back through mdBlocks, so nesting, code and sub-lists inside an item all just work.
+function mdList(lines, i, out) {
+  const first = mdItemHead(lines[i]);
+  const items = [];
+  let loose = false, blank = false;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.trim() === "") { blank = true; i++; continue; }
+    const indent = line.length - line.trimStart().length;
+    const head = mdItemHead(line);
+    if (head && indent <= first.indent + 1) {
+      if (head.ordered !== first.ordered) break;      // a different list kind starts a new list
+      if (blank && items.length) loose = true;
+      blank = false;
+      items.push({ content: head.content, lines: [head.text] });
+      i++;
+      continue;
+    }
+    if (!items.length) break;
+    const item = items[items.length - 1];
+    const indented = indent >= item.content;
+    // A blank line only continues the item if what follows is indented into it; otherwise the list
+    // has ended. Un-indented text with no blank before it is a wrapped line of the same paragraph.
+    if (!indented && (blank || mdStartsBlock(line))) break;
+    if (blank) { item.lines.push(""); loose = true; blank = false; }
+    item.lines.push(indented ? line.slice(item.content) : line.trim());
+    i++;
+  }
+  const html = items.map(item => {
+    const blocks = mdBlocks(item.lines);
+    // A tight list drops the wrapper around its item's FIRST paragraph — only the first, so an item
+    // that also carries a nested list keeps that list as a proper block.
+    if (!loose && blocks.length && blocks[0].startsWith("<p>")) {
+      blocks[0] = blocks[0].slice(3, -4);
+    }
+    return "<li>" + blocks.join("\n") + "</li>";
+  }).join("");
+  const tag = first.ordered ? "ol" : "ul";
+  const start = first.ordered && first.start !== 1 ? ' start="' + first.start + '"' : "";
+  out.push("<" + tag + start + ">" + html + "</" + tag + ">");
+  return i;
+}
+
+function mdTable(lines, i) {
+  if (!lines[i].includes("|")) return null;
+  const divider = lines[i + 1];
+  if (!divider || !/^\s{0,3}\|?[\s:|-]+\|[\s:|-]+$/.test(divider) || !divider.includes("-")) return null;
+  const cells = row => row.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map(cell => cell.trim());
+  const align = cells(divider).map(spec => {
+    const left = spec.startsWith(":"), right = spec.endsWith(":");
+    return left && right ? "center" : right ? "right" : "";
+  });
+  const cell = (tag, text, column) =>
+    "<" + tag + (align[column] ? ' style="text-align:' + align[column] + '"' : "") + ">" +
+    mdInline(text) + "</" + tag + ">";
+  let html = '<div class="tablewrap"><table><thead><tr>' +
+    cells(lines[i]).map((text, column) => cell("th", text, column)).join("") + "</tr></thead><tbody>";
+  let next = i + 2;
+  while (next < lines.length && lines[next].includes("|") && lines[next].trim() !== "") {
+    html += "<tr>" + cells(lines[next]).map((text, column) => cell("td", text, column)).join("") + "</tr>";
+    next++;
+  }
+  return { html: html + "</tbody></table></div>", next };
+}
+
+function mdParagraph(lines, i, out) {
+  const body = [lines[i]];
+  i++;
+  while (i < lines.length && lines[i].trim() !== "" && !mdStartsBlock(lines[i]) && !mdTable(lines, i)) {
+    body.push(lines[i]);
+    i++;
+  }
+  // Hard-wrapped source: the newlines are the author's line width, not their intent.
+  out.push("<p>" + mdInline(body.join("\n").replace(/\n/g, " ")) + "</p>");
+  return i;
+}
+
+// ---- inline ----
+// Code spans come out FIRST, behind placeholders, so no later rule can reach inside them (a `**`
+// or an underscore in a code span is code, not emphasis) and their contents are escaped once at the
+// end. Everything after that operates on already-escaped text.
+function mdInline(text) {
+  // The sentinel is a private-use code point: a printable delimiter would collide with the
+  // document's own words, and restoring " 3 " in prose as a code span is exactly that bug.
+  const codes = [];
+  let out = text.replace(/(`+)([^`]|[^`][\s\S]*?)\1(?!`)/g, (whole, ticks, code) =>
+    "\uE000" + (codes.push(code.replace(/^ (.*) $/, "$1")) - 1) + "\uE000");
+  out = esc(out);
+  out = out.replace(/!\[([^\]]*)\]\(((?:[^()\s]|\([^()\s]*\))+)(?:\s+&quot;[^)]*&quot;)?\)/g, (whole, alt, url) => {
+    const safe = mdUrl(url);
+    return safe ? '<img src="' + safe + '" alt="' + alt + '">' : alt;
+  });
+  out = out.replace(/\[([^\]]+)\]\(((?:[^()\s]|\([^()\s]*\))+)(?:\s+&quot;[^)]*&quot;)?\)/g, (whole, label, url) => mdLink(label, url));
+  out = out.replace(/&lt;((?:https?|mailto):[^\s&]+)&gt;/g, (whole, url) => mdLink(url, url));
+  out = out.replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/(^|[\s(])__(?=\S)([\s\S]*?\S)__(?![\w])/g, "$1<strong>$2</strong>");
+  out = out.replace(/(^|[^*\w])\*(?=\S)([^*\n]*?\S)\*(?!\*)/g, "$1<em>$2</em>");
+  out = out.replace(/(^|[^_\w])_(?=\S)([^_\n]*?\S)_(?![\w])/g, "$1<em>$2</em>");
+  out = out.replace(/~~(?=\S)([\s\S]*?\S)~~/g, "<del>$1</del>");
+  return out.replace(/\uE000(\d+)\uE000/g, (whole, index) => "<code>" + esc(codes[Number(index)]) + "</code>");
+}
+
+// Artifact text is written by whoever wrote the artifact, so a link target is untrusted input: only
+// schemes that cannot execute are emitted, and the value is quoted safely into the attribute. The
+// old renderer interpolated the raw URL straight into href — `javascript:` ran, and a quote in the
+// URL escaped the attribute.
+function mdUrl(url) {
+  // The caller hands this ALREADY-escaped text, so a raw quote can no longer reach the attribute
+  // and re-escaping here would double every entity (`&` -> `&amp;amp;`).
+  const target = url.trim();
+  if (!/^(?:https?:\/\/|mailto:|#|\/|\.{1,2}\/)/i.test(target)) return null;
+  return target.replace(/"/g, "%22");
+}
+function mdLink(label, url) {
+  const safe = mdUrl(url);
+  if (!safe) return label;   // an unsupported scheme degrades to its plain label, never a live link
+  return '<a href="' + safe + '" target="_blank" rel="noopener noreferrer">' + label + "</a>";
 }
 
 // ---- search (client-side filter over the current list) + subtree collapse ----
