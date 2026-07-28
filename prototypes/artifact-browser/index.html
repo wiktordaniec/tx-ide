@@ -1175,7 +1175,7 @@ function avRawUrl(id, rev) {
   return BASE + "/api/artifacts/" + encodeURIComponent(id) + "/raw" + (rev == null ? "" : "?rev=" + rev);
 }
 function avRenderUrl(id, rev) {
-  return "/api/artifacts/" + encodeURIComponent(id) + "/render" + (rev == null ? "" : "?rev=" + rev);
+  return BASE + "/api/artifacts/" + encodeURIComponent(id) + "/render" + (rev == null ? "" : "?rev=" + rev);
 }
 function avKind(filename) {
   const ext = filename.includes(".") ? filename.split(".").pop().toLowerCase() : "";
