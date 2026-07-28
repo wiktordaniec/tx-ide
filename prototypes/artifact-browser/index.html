@@ -300,6 +300,11 @@
   .av-body { flex: 1; overflow-y: auto; padding: 24px 0 120px; }
   .av-page { max-width: 90ch; margin: 0 auto; padding: 0 30px; }
   .av-page.wide-page { max-width: none; }
+  /* The rendered-HTML frame. Sized to its own document (`avSizeFrame`) so the reader keeps a single
+     scrollbar, and painted white underneath: an artifact that styles no background of its own would
+     otherwise be black text over the reader's dark panel. */
+  .av-html { display: block; width: 100%; min-height: 240px; border: 0; border-radius: 3px;
+             background: #fff; color-scheme: light; }
   /* Artifacts are prose, not code: a unified diff wraps rather than scrolling sideways, and the
      hanging indent keeps every continuation clear of the +/- marker column. */
   .av-page pre.diff { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -1147,22 +1152,30 @@ const AV = {
   cmp: null,             // {a, b} = diffing two snapshots
   text: new Map(),       // "<id>@<rev>" -> text; a rev is immutable, so this never goes stale
   filter: "", find: "", findAt: 0, finding: false, fullDiff: false,
+  headings: [],          // the outline's targets — elements, since half of them live in the frame
+  frameKey: null,        // what the rendered-HTML frame on screen is showing (`avFrameKey`)
+  pendingTop: null,      // a scroll restore waiting for the frame to report its real height
 };
 try { AV.rail = localStorage.getItem("txide-av-rail") || "outline"; } catch (e) { AV.rail = "outline"; }
 try { AV.norail = localStorage.getItem("txide-av-norail") === "1"; } catch (e) { AV.norail = false; }
 try { AV.noindex = localStorage.getItem("txide-av-noindex") === "1"; } catch (e) { AV.noindex = false; }
 try { AV.sbs = localStorage.getItem("txide-av-sbs") === "1"; } catch (e) { AV.sbs = false; }
+try { AV.source = localStorage.getItem("txide-av-source") === "1"; } catch (e) { AV.source = false; }
 function avSave() {
   try {
     localStorage.setItem("txide-av-rail", AV.rail);
     localStorage.setItem("txide-av-norail", AV.norail ? "1" : "0");
     localStorage.setItem("txide-av-noindex", AV.noindex ? "1" : "0");
     localStorage.setItem("txide-av-sbs", AV.sbs ? "1" : "0");
+    localStorage.setItem("txide-av-source", AV.source ? "1" : "0");
   } catch (e) {}
 }
 function avEl(id) { return document.getElementById(id); }
 function avRawUrl(id, rev) {
   return BASE + "/api/artifacts/" + encodeURIComponent(id) + "/raw" + (rev == null ? "" : "?rev=" + rev);
+}
+function avRenderUrl(id, rev) {
+  return "/api/artifacts/" + encodeURIComponent(id) + "/render" + (rev == null ? "" : "?rev=" + rev);
 }
 function avKind(filename) {
   const ext = filename.includes(".") ? filename.split(".").pop().toLowerCase() : "";
@@ -1188,11 +1201,142 @@ function avGo(id, rev, cmp) {
 // from the server's classifier plus a renderer here; nothing else in the reader moves.
 const AV_VIEWERS = {
   markdown: v => '<div class="md">' + renderMarkdown(v.text) + "</div>",
+  // The one kind the reader does NOT render itself. The markup is agent-authored, and this origin
+  // can type into live agent panes (`/api/timeline/message`), so it goes into a frame that withholds
+  // `allow-scripts` and loads a `default-src 'none'` response — inert twice over. `source` reads the
+  // markup instead: the same escaped view every other text artifact gets.
+  html: v => AV.source
+    ? '<pre class="raw">' + esc(v.text) + "</pre>"
+    : '<iframe class="av-html" id="av-frame" sandbox="allow-same-origin" ' +
+      'src="' + esc(avRenderUrl(v.id, v.rev)) + '"></iframe>',
   text: v => '<pre class="raw">' + esc(v.text) + "</pre>",
   binary: v => '<p class="muted">Binary content · ' + fmtBytes(v.size) + "</p>" +
     '<a class="dl" href="' + avRawUrl(v.id, v.rev) + '">↓ download ' + esc(v.filename) + "</a>",
 };
 function avViewerHtml(view) { return (AV_VIEWERS[view.encoding] || AV_VIEWERS.binary)(view); }
+// Viewers that fetch their own bytes: the frame loads `/render` itself, and binary is never fetched
+// at all. Everything else is handed `text`, so only those cost the reader a round-trip per rev.
+function avSelfSourced(encoding) {
+  return encoding === "binary" || (encoding === "html" && !AV.source);
+}
+// A rendered page gets the pane's full width — an HTML artifact brings its own layout, and often its
+// own measure; the 90ch column is for the viewers whose typography the reader owns.
+function avPageClass(encoding) {
+  return "av-page" + (encoding === "html" && !AV.source ? " wide-page" : "");
+}
+
+// ---- the rendered-HTML frame ----
+// A separate document, so everything the reader does to a document — size it, outline it, find in
+// it, scroll it — has to reach across the boundary. `allow-same-origin` is what buys that reach, and
+// it is safe only because `allow-scripts` is withheld: nothing in there can run to abuse it.
+
+// The find styles are painted INTO the frame, so a match looks the same in either document.
+const AV_FRAME_CSS =
+  "mark.av-hit{background:rgba(224,164,66,.42);color:inherit}" +
+  "mark.av-hit.cur{background:#e0a442;color:#10161f}";
+
+// What the frame on screen is showing. A frozen rev is immutable, so its URL alone names it; the
+// working copy can change under an unchanged URL, so its text is part of the key.
+function avFrameKey(detail, rev) {
+  return avRenderUrl(detail.id, rev) + (rev == null ? "\n" + detail.working.text : "");
+}
+
+// The 5s tick re-renders the document even when nothing about it changed. Rebuilding the frame would
+// RELOAD it — a white flash and a lost reading position — so an unchanged frame is left standing.
+// "Unchanged" has to mean the frame is what this render WOULD build, mode included: source and diff
+// build no frame at all, so a frame on screen in either mode is stale, not reusable.
+function avKeepFrame() {
+  return avEl("av-frame") != null && !AV.cmp && !AV.source &&
+    AV.detail != null && AV.detail.id === AV.id &&
+    AV.frameKey === avFrameKey(AV.detail, AV.rev);
+}
+
+function avBindFrame() {
+  const frame = avEl("av-frame");
+  AV.frameKey = frame ? avFrameKey(AV.detail, AV.rev) : null;
+  if (!frame) { AV.pendingTop = null; return; }
+  frame.onload = () => {
+    const doc = frame.contentDocument;
+    if (!doc || !doc.body) return;            // a frame the browser refused to hand us — leave it be
+    doc.head.appendChild(Object.assign(doc.createElement("style"), { textContent: AV_FRAME_CSS }));
+    doc.addEventListener("keydown", avKeydown);   // keys typed over the frame land in ITS document
+    doc.addEventListener("click", avFrameClick);
+    // A late reflow (a data: image decoding, a font swapping in) changes the height the frame needs;
+    // measuring only at load would clip the tail of the document.
+    new ResizeObserver(() => avSizeFrame(frame)).observe(doc.documentElement);
+    frame.dataset.ready = "1";
+    avSizeFrame(frame);
+    avRenderRail();                           // the headings exist only now
+    avApplyFind(false);
+    // The reader restored its scroll while the frame was still 240px tall, which clamped it to the
+    // top; now that the document has its real height, the restore can actually land.
+    if (AV.pendingTop != null) { avEl("av-dbody").scrollTop = AV.pendingTop; AV.pendingTop = null; }
+  };
+}
+
+// The frame never scrolls itself — it is sized to its whole document, so the reader keeps ONE
+// scrollbar and the outline, find and scroll-spy can treat the frame as ordinary content.
+//
+// One kind of page cannot be measured that way: a layout written against the viewport
+// (`height: 100%`, `100vh`) reports exactly the height it was GIVEN and never overflows, so
+// shrink-wrapping it would pin a full-screen dashboard at the placeholder forever. Such a page is
+// recognised by filling its frame exactly, and gets the reader's height — the viewport it was
+// designed against. The verdict is taken on the FIRST measurement and then kept, because after the
+// frame has been shrink-wrapped once, every page fills it exactly and the test stops meaning
+// anything.
+const AV_FRAME_CHROME = 32;   // px of reader left visible around a viewport-sized page
+function avSizeFrame(frame) {
+  const doc = frame.contentDocument;
+  if (!doc || !doc.body) return;
+  const natural = Math.max(doc.documentElement.scrollHeight, doc.body.scrollHeight);
+  if (frame.dataset.fills === undefined) {
+    frame.dataset.fills = natural === frame.clientHeight ? "1" : "0";
+  }
+  frame.style.height = (frame.dataset.fills === "1"
+    ? avEl("av-dbody").clientHeight - AV_FRAME_CHROME
+    : natural) + "px";
+}
+
+// Without `allow-popups` / `allow-top-navigation` every link in the frame is a dead click, so the
+// reader follows them itself: a fragment scrolls within the document, an external page opens in a
+// new tab — from the PARENT, so no sandbox permission has to be handed back to reach it. Only
+// http(s) is followed: `javascript:` must never be opened on an artifact's say-so, and a relative
+// href resolves against the store path it was served from, where there is nothing to open.
+function avFrameClick(event) {
+  const link = event.target.closest("a[href]");
+  if (!link) return;
+  event.preventDefault();
+  const href = link.getAttribute("href");
+  if (href.startsWith("#")) {
+    const target = link.ownerDocument.getElementById(href.slice(1));
+    if (target) avScrollTo(target, "heading");
+    return;
+  }
+  const url = new URL(href, link.baseURI);
+  if (url.origin !== location.origin && /^https?:$/.test(url.protocol)) {
+    window.open(url.href, "_blank", "noopener");
+  }
+}
+
+// The element's top in THIS document's viewport coordinates. A rect measured inside the frame is
+// relative to the FRAME's viewport, so the frame's own position is what makes the two comparable.
+function avDocTop(element) {
+  const top = element.getBoundingClientRect().top;
+  if (element.ownerDocument === document) return top;
+  const frame = avEl("av-frame");
+  return frame ? frame.getBoundingClientRect().top + top : top;
+}
+
+// Scrolls the reader — the only scroller either document has. `heading` lands the target at the top
+// and glides (you are choosing where to read); `hit` centres it and jumps (you are stepping through
+// matches, and easing between them just adds lag).
+function avScrollTo(element, mode) {
+  const body = avEl("av-dbody"), box = body.getBoundingClientRect();
+  body.scrollTo({
+    top: body.scrollTop + avDocTop(element) - box.top - (mode === "hit" ? box.height / 2 - 40 : 8),
+    behavior: mode === "hit" ? "auto" : "smooth",
+  });
+}
 
 async function renderArtifactReader(rest) {
   setNav("artifacts", false);
@@ -1226,6 +1370,9 @@ async function renderArtifactReader(rest) {
     return;
   }
   document.title = "tx-ide — " + (AV.detail.title || AV.detail.filename);
+  // A frame reports its height only once it has loaded, so the restore below would clamp to the top
+  // of a 240px placeholder; `avBindFrame` re-applies this the moment the page has its real height.
+  AV.pendingTop = bodyTop;
   await avRenderDoc();
   avEl("av-dbody").scrollTop = bodyTop;
 }
@@ -1321,12 +1468,14 @@ function avRenderIndex() {
 async function avRenderDoc() {
   const detail = AV.detail, body = avEl("av-dbody");
   avSyncHead();
+  if (avKeepFrame()) { AV.pendingTop = null; avRenderRail(); return; }
   body.innerHTML = '<div class="av-page"><div class="muted">loading…</div></div>';
   if (AV.cmp) await avRenderDiff();
   else if (AV.rev != null) await avRenderRev();
-  else body.innerHTML = '<div class="av-page">' + avViewerHtml({
+  else body.innerHTML = '<div class="' + avPageClass(detail.working.encoding) + '">' + avViewerHtml({
     ...detail.working, id: detail.id, rev: null, filename: detail.filename,
   }) + "</div>";
+  avBindFrame();
   // Re-marking after a re-render must NOT jump the viewport — the 5s refresh tick lands here, and
   // scrolling the reader back to the current hit every minute would fight whoever is reading.
   avApplyFind(false);
@@ -1351,6 +1500,12 @@ function avSyncCtls() {
   if (!AV.detail || AV.detail.id !== AV.id) return;
   avEl("av-findbtn").onclick = () => (AV.finding ? avCloseFind() : avOpenFind());
   if (AV.rev != null || AV.cmp) avEl("av-current").onclick = () => avGo(AV.id, null, null);
+  if (avEl("av-source")) avEl("av-source").onclick = event => {
+    const pick = event.target.closest("[data-src]");
+    if (!pick || AV.source === (pick.dataset.src === "1")) return;
+    AV.source = pick.dataset.src === "1";
+    avSave(); avRenderDoc();
+  };
   if (!AV.cmp) return;
   avEl("av-sbs").onclick = event => {
     const pick = event.target.closest("[data-sbs]");
@@ -1398,9 +1553,15 @@ function avCtlsHtml() {
       avSegHtml("av-full", "full", AV.fullDiff, "changes", "whole doc",
                 "just the changed regions with context, or every line of the document")
     : "";
+  // Only an HTML artifact has two ways to be read, and only outside a diff — a diff IS the markup.
+  const source = AV.detail.working.encoding === "html" && !AV.cmp
+    ? avSegHtml("av-source", "src", AV.source, "rendered", "source",
+                "render the page, or read the markup behind it")
+    : "";
   return panels +
     '<span class="sep"></span>' +
     '<button class="av-btn' + (AV.finding ? " on" : "") + '" id="av-findbtn" title="find in document  ( / )">find</button>' +
+    (source ? '<span class="sep"></span>' + source : "") +
     (mode || diff ? '<span class="sep"></span>' + mode + diff : "") +
     '<a class="av-btn sp" href="' + avRawUrl(AV.detail.id, AV.rev) + '" title="download these bytes">↓ raw</a>';
 }
@@ -1426,8 +1587,9 @@ async function avRevText(rev) {
 
 async function avRenderRev() {
   const detail = AV.detail, body = avEl("av-dbody");
-  if (detail.working.encoding === "binary") {
-    body.innerHTML = '<div class="av-page">' + avViewerHtml({
+  const page = '<div class="' + avPageClass(detail.working.encoding) + '">';
+  if (avSelfSourced(detail.working.encoding)) {
+    body.innerHTML = page + avViewerHtml({
       ...detail.working, id: detail.id, rev: AV.rev, filename: detail.filename }) + "</div>";
     return;
   }
@@ -1435,7 +1597,7 @@ async function avRenderRev() {
   try { text = await avRevText(AV.rev); }
   catch (e) { body.innerHTML = '<div class="av-page"><div class="err">' + esc(e.message) + "</div></div>"; return; }
   if (AV.rev == null || AV.cmp) return;   // navigated away while the rev was in flight
-  body.innerHTML = '<div class="av-page">' + avViewerHtml({
+  body.innerHTML = page + avViewerHtml({
     encoding: detail.working.encoding, text, size: text.length,
     id: detail.id, rev: AV.rev, filename: detail.filename,
   }) + "</div>";
@@ -1582,23 +1744,33 @@ function avRenderRail() {
 }
 
 // Headings lifted out of the RENDERED document, so it works for any viewer that emits them and
-// needs no second parse of the source.
+// needs no second parse of the source. The elements themselves are kept (rather than stamped with
+// generated ids and looked back up): half of them can live in the frame's document, and an HTML
+// artifact's own anchors are part of its content — reading it must not rewrite them.
 function avRenderOutline() {
-  const body = avEl("av-dbody");
-  const headings = Array.from(body.querySelectorAll("h1, h2, h3, h4"));
-  headings.forEach((heading, k) => { heading.id = "av-h" + k; });
-  avEl("av-rbody").innerHTML = headings.length
-    ? '<div class="av-toc">' + headings.map((heading, k) =>
+  const root = avHeadingRoot();
+  AV.headings = root ? Array.from(root.querySelectorAll("h1, h2, h3, h4")) : [];
+  avEl("av-rbody").innerHTML = AV.headings.length
+    ? '<div class="av-toc">' + AV.headings.map((heading, k) =>
         '<a href="#" data-h="' + k + '" class="l' + heading.tagName[1] + '" title="' +
         esc(heading.textContent) + '">' + esc(heading.textContent) + "</a>").join("") + "</div>"
-    : '<div class="av-rhint">This document has no headings to outline.</div>';
+    : '<div class="av-rhint">' +
+      (root ? "This document has no headings to outline." : "Rendering the page…") + "</div>";
   avEl("av-rbody").onclick = event => {
     const link = event.target.closest("a[data-h]");
     if (!link) return;
     event.preventDefault();
-    headings[+link.dataset.h].scrollIntoView({ block: "start", behavior: "smooth" });
+    avScrollTo(AV.headings[+link.dataset.h], "heading");
   };
   avSpy();
+}
+// Where the document's headings live: the frame's body for a rendered HTML artifact, the reader's
+// own body otherwise. null while a frame is still loading — no headings YET is a different answer
+// from no headings, and only one of the two is worth telling the reader about.
+function avHeadingRoot() {
+  const frame = avEl("av-frame");
+  if (!frame) return avEl("av-dbody");
+  return frame.dataset.ready === "1" ? frame.contentDocument.body : null;
 }
 // Scroll-spy: the last heading at or above the top of the viewport is the one you are reading.
 function avSpy() {
@@ -1607,8 +1779,8 @@ function avSpy() {
   const body = avEl("av-dbody"), links = Array.from(toc.children);
   let active = 0;
   links.forEach((link, k) => {
-    const heading = avEl("av-h" + k);
-    if (heading && heading.getBoundingClientRect().top - body.getBoundingClientRect().top < 60) active = k;
+    const heading = AV.headings[k];
+    if (heading && avDocTop(heading) - body.getBoundingClientRect().top < 60) active = k;
   });
   links.forEach((link, k) => link.classList.toggle("on", k === active));
 }
@@ -1724,47 +1896,73 @@ function avCloseFind() {
   avSyncCtls();
   avApplyFind(false);
 }
+// Find spans BOTH documents — the reader's own, and the frame's when a page is rendered in it. The
+// frame is the whole document in that mode, so without this the find bar would report no match on a
+// page full of them.
+// A rendered page carries text that is NOT on the page: a stylesheet's rules, a script's source. It
+// is still text in the DOM, so an unfiltered walk both counts hits nobody can see (find lands on an
+// invisible match) and threads <mark> elements through a <style> body.
+const AV_UNSEARCHABLE = /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|TITLE)$/;
+function avFindRoots() {
+  const frame = avEl("av-frame");
+  return frame
+    ? (frame.dataset.ready === "1" ? [frame.contentDocument.body] : [])
+    : [avEl("av-dbody")];
+}
 function avApplyFind(scroll) {
-  const body = avEl("av-dbody");
-  body.querySelectorAll("mark.av-hit").forEach(hit => hit.replaceWith(document.createTextNode(hit.textContent)));
-  body.normalize();
+  const roots = avFindRoots();
+  for (const root of roots) {
+    root.querySelectorAll("mark.av-hit").forEach(
+      hit => hit.replaceWith(root.ownerDocument.createTextNode(hit.textContent)));
+    root.normalize();
+  }
   const needle = AV.find.trim().toLowerCase();
   if (needle.length < 2) { avEl("av-findn").textContent = needle ? "type more" : ""; return; }
-  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
-  const targets = [];
-  while (walker.nextNode()) {
-    if (walker.currentNode.nodeValue.toLowerCase().includes(needle)) targets.push(walker.currentNode);
+  for (const root of roots) {
+    const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: node => AV_UNSEARCHABLE.test(node.parentNode.nodeName)
+        ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+    });
+    const targets = [];
+    while (walker.nextNode()) {
+      if (walker.currentNode.nodeValue.toLowerCase().includes(needle)) targets.push(walker.currentNode);
+    }
+    for (const node of targets) avMarkNode(node, needle);
   }
-  for (const node of targets) avMarkNode(node, needle);
   avFindStep(0, scroll);
 }
 function avMarkNode(node, needle) {
+  // Every node is built by the document it is going into — the marks for a rendered page belong to
+  // the frame's document, not to this one.
+  const doc = node.ownerDocument;
   const text = node.nodeValue, lower = text.toLowerCase();
-  const fragment = document.createDocumentFragment();
+  const fragment = doc.createDocumentFragment();
   let at = 0, found = lower.indexOf(needle);
   while (found >= 0) {
-    if (found > at) fragment.appendChild(document.createTextNode(text.slice(at, found)));
-    const mark = document.createElement("mark");
+    if (found > at) fragment.appendChild(doc.createTextNode(text.slice(at, found)));
+    const mark = doc.createElement("mark");
     mark.className = "av-hit";
     mark.textContent = text.slice(found, found + needle.length);
     fragment.appendChild(mark);
     at = found + needle.length;
     found = lower.indexOf(needle, at);
   }
-  if (at < text.length) fragment.appendChild(document.createTextNode(text.slice(at)));
+  if (at < text.length) fragment.appendChild(doc.createTextNode(text.slice(at)));
   node.replaceWith(fragment);
 }
 function avFindStep(delta, scroll = true) {
-  const hits = Array.from(avEl("av-dbody").querySelectorAll("mark.av-hit"));
+  const hits = avFindRoots().flatMap(root => Array.from(root.querySelectorAll("mark.av-hit")));
   if (!hits.length) { avEl("av-findn").textContent = "no match"; return; }
   AV.findAt = (AV.findAt + delta + hits.length) % hits.length;
   hits.forEach((hit, k) => hit.classList.toggle("cur", k === AV.findAt));
-  if (scroll) hits[AV.findAt].scrollIntoView({ block: "center" });
+  if (scroll) avScrollTo(hits[AV.findAt], "hit");
   avEl("av-findn").textContent = AV.findAt + 1 + "/" + hits.length;
 }
 
 // ---- keyboard: walk the index, scrub revisions, find ----
-document.addEventListener("keydown", event => {
+// A named handler because it is bound twice: to this document, and — once a rendered page loads — to
+// the frame's. Clicking inside that page moves focus into it, and the shortcuts have to survive it.
+function avKeydown(event) {
   if (!avEl("av-wrap") || event.metaKey || event.ctrlKey || event.altKey) return;
   const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName);
   if (event.key === "/" && !inField) { event.preventDefault(); avOpenFind(); return; }
@@ -1792,7 +1990,8 @@ document.addEventListener("keydown", event => {
     const next = Math.min(last, Math.max(0, at + (event.key === "]" ? 1 : -1)));
     avGo(AV.id, next === last && !AV.detail.dirty ? null : next, null);
   }
-});
+}
+document.addEventListener("keydown", avKeydown);
 
 
 // ---- timeline view ----
