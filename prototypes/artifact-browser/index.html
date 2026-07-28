@@ -224,15 +224,25 @@
      a rail that switches between the document's OUTLINE and its REVISIONS. A full-height app view
      wants no page scroll under it, so `body.full` drops main's bottom padding. */
   body.full main { padding-bottom: 22px; }
-  .av-wrap { display: flex; border: 1px solid var(--line); background: var(--panel);
-             height: calc(100vh - 112px); min-height: 340px; }
+  /* The control bar spans the WHOLE window, above the panel — the controls used to live in the
+     document header, where they were bounded by the document column and simply ran off its edge
+     underneath the right rail (353px of them, at a 1031px window). Here they have the full width,
+     and `flex-wrap` means a narrow window grows a second row instead of hiding a control. */
+  .av-ctls { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-bottom: 8px; }
+  .av-ctls .sep { width: 1px; height: 16px; background: var(--line); margin: 0 3px; }
+  .av-ctls .sp { margin-left: auto; }
+  .av-ctls .lbl { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .1em;
+                  color: var(--dim); }
+  .av-wrap { display: flex; overflow: hidden; border: 1px solid var(--line); background: var(--panel);
+             height: calc(100vh - 121px); min-height: 300px; }
   .av-wrap.norail .av-rail { display: none; }
   .av-wrap.noindex .av-index { display: none; }
 
   /* index rail — the artifact list, banded by effort group like the timeline's lane groups.
      `min-width: 0` throughout: a flex item defaults to `min-width: auto`, so one nowrap plan title
      would push a fixed-basis rail as wide as its longest line and eat the document's measure. */
-  .av-index { flex: 0 0 268px; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+  .av-index { flex: 0 1 268px; min-width: 168px; display: flex; flex-direction: column;
+              border-right: 1px solid var(--line); }
   .av-ifilter { padding: 8px; border-bottom: 1px solid var(--line); flex: none; }
   .av-ifilter input { width: 100%; background: var(--panel-2); border: 1px solid var(--line);
                       color: var(--text); padding: 5px 9px; font: 12.5px var(--sans); }
@@ -253,15 +263,20 @@
              color: var(--muted); border: 1px solid var(--line); padding: 0 3px; margin-right: 5px; }
 
   /* document pane */
-  .av-doc { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  .av-dhead { display: flex; align-items: center; gap: 9px; flex: none;
+  /* A real floor, because `flex: 1` gives the document a 0 basis — with nothing to shrink FROM it
+     collapses to nothing while the two rails sit at full width. The floor makes the rails yield
+     first, down to their own. */
+  .av-doc { flex: 1 1 0; min-width: 300px; display: flex; flex-direction: column; }
+  /* Identity only — what you are reading. Every control moved to `.av-ctls`, so this row can no
+     longer outgrow the document column; `overflow: hidden` makes that structural rather than a
+     hope, and the two text items give ground in order (subtitle first, then title). */
+  .av-dhead { display: flex; align-items: center; gap: 9px; flex: none; overflow: hidden;
               padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
-  /* the title is the only header item allowed to give ground — everything else keeps its size */
   .av-dhead > * { flex: none; }
   .av-dhead .ti { flex: 1 1 auto; min-width: 60px; font-size: 13.5px; font-weight: 600;
                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .av-dhead .sub { font: 11px var(--mono); color: var(--dim); white-space: nowrap;
-                   overflow: hidden; text-overflow: ellipsis; }
+  .av-dhead .sub { flex: 0 1 auto; min-width: 0; font: 11px var(--mono); color: var(--dim);
+                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .av-acts { margin-left: auto; display: flex; gap: 6px; align-items: center; flex: none; }
   .av-btn { background: var(--panel-2); border: 1px solid var(--line); color: var(--muted);
             font: 11.5px var(--mono); padding: 3px 8px; cursor: pointer; white-space: nowrap; }
@@ -291,7 +306,11 @@
   .av-page pre.diff span { display: block; padding-left: 1.4em; text-indent: -1.4em; }
 
   /* right rail — outline | revisions */
-  .av-rail { flex: 0 0 262px; min-width: 0; display: flex; flex-direction: column;
+  /* An explicit floor, not `min-width: 0`: the rails keep their basis while there is room and
+     give ground before the document does, so a narrow window never squeezes the prose to nothing.
+     Explicit rather than `auto` — `auto` means min-content, which is what once let one long plan
+     title inflate a rail past its basis. */
+  .av-rail { flex: 0 1 262px; min-width: 168px; display: flex; flex-direction: column;
              border-left: 1px solid var(--line); background: var(--panel); }
   .av-rtabs { display: flex; flex: none; border-bottom: 1px solid var(--line); }
   .av-rtab { flex: 1; text-align: center; padding: 7px 0; cursor: pointer; user-select: none;
@@ -1191,6 +1210,7 @@ async function renderArtifactReader(rest) {
         : "No artifacts yet. Create one with <code>tx artifact create &lt;file&gt;</code>.") +
       "</div></div>";
     avEl("av-rbody").innerHTML = "";
+    avSyncCtls();
     return;
   }
   try { AV.detail = await getJSON("/api/artifacts/" + encodeURIComponent(AV.id)); }
@@ -1210,6 +1230,7 @@ function avShell() {
   if (avEl("av-wrap")) { avSyncChrome(); return; }
   filterables = [];
   app.innerHTML =
+    '<div class="av-ctls" id="av-ctls"></div>' +
     '<div class="av-wrap" id="av-wrap">' +
       '<div class="av-index">' +
         '<div class="av-ifilter"><input id="av-filter" type="search" placeholder="filter artifacts…" autocomplete="off"></div>' +
@@ -1252,6 +1273,7 @@ function avShell() {
   avEl("av-findnext").onclick = () => avFindStep(1);
   avEl("av-findprev").onclick = () => avFindStep(-1);
   avEl("av-findclose").onclick = avCloseFind;
+  avSyncCtls();
   avSyncChrome();
 }
 function avSyncChrome() {
@@ -1308,23 +1330,30 @@ async function avRenderDoc() {
 // The header is re-rendered on its own for layout toggles — collapsing a rail must not cost a
 // re-render of the document (or a re-fetch of the revs behind a diff).
 function avSyncHead() {
-  avEl("av-dhead").innerHTML = avHeadHtml(AV.detail);
-  avEl("av-findbtn").onclick = () => (AV.finding ? avCloseFind() : avOpenFind());
-  avEl("av-indexbtn").onclick = () => { AV.noindex = !AV.noindex; avSave(); avSyncChrome(); avSyncHead(); };
+  if (AV.detail && AV.detail.id === AV.id) avEl("av-dhead").innerHTML = avHeadHtml(AV.detail);
+  avSyncCtls();
+}
+
+// Rebuilt on its own whenever a control changes state, so toggling a panel costs a bar re-render
+// rather than a re-render (or re-fetch) of the document behind it.
+function avSyncCtls() {
+  avEl("av-ctls").innerHTML = avCtlsHtml();
+  avEl("av-indexbtn").onclick = () => { AV.noindex = !AV.noindex; avSave(); avSyncChrome(); avSyncCtls(); };
   avEl("av-railbtn").onclick = () => {
-    AV.norail = !AV.norail; avSave(); avSyncChrome(); avSyncHead(); avRenderRail();
+    AV.norail = !AV.norail; avSave(); avSyncChrome(); avSyncCtls(); avRenderRail();
   };
+  if (!AV.detail || AV.detail.id !== AV.id) return;
+  avEl("av-findbtn").onclick = () => (AV.finding ? avCloseFind() : avOpenFind());
   if (AV.rev != null || AV.cmp) avEl("av-current").onclick = () => avGo(AV.id, null, null);
   if (!AV.cmp) return;
   avEl("av-sbs").onclick = event => {
     const pick = event.target.closest("[data-sbs]");
     if (!pick || AV.sbs === (pick.dataset.sbs === "1")) return;
     AV.sbs = pick.dataset.sbs === "1";
-    // Side-by-side halves the measure, so it takes the rail's width — visibly, and undoably with
-    // the rail button. Leaving side-by-side hands back whatever the rail was doing before.
-    if (AV.sbs) { AV.railBeforeSbs = AV.norail; AV.norail = true; }
-    else if (AV.railBeforeSbs !== undefined) { AV.norail = AV.railBeforeSbs; AV.railBeforeSbs = undefined; }
-    avSave(); avSyncChrome(); avRenderRail(); avRenderDoc();
+    // Side-by-side used to grab the rail's width automatically. It no longer does: hiding a panel
+    // behind the user's back left stale state on the way out, and the control bar makes reclaiming
+    // that width one obvious click — an explicit toggle beats a clever one.
+    avSave(); avRenderDoc();
   };
   avEl("av-full").onclick = event => {
     const pick = event.target.closest("[data-full]");
@@ -1340,22 +1369,34 @@ function avHeadHtml(detail) {
     groupChip(detail) +
     (detail.dirty ? '<span class="badge" title="the working copy has edits no rev has captured yet">dirty</span>' : "") +
     '<span class="sub">' + esc(detail.filename) + " · " + detail.revs + "r · " +
-      fmtBytes(detail.working.size) + "</span>" +
-    '<span class="av-acts">' +
-      (AV.rev != null || AV.cmp
-        ? '<button class="av-btn on" id="av-current" title="back to the working copy">' +
-          (AV.cmp ? "rev " + AV.cmp.a + " → " + AV.cmp.b : "reading rev " + AV.rev) + " ✕</button>"
-        : "") +
-      (AV.cmp ? avSegHtml("av-sbs", "sbs", AV.sbs, "unified", "side-by-side", "how to lay the diff out") +
-        avSegHtml("av-full", "full", AV.fullDiff, "changes", "whole doc",
-                  "just the changed regions with context, or every line of the document") : "") +
-      '<button class="av-btn" id="av-findbtn" title="find in document  ( / )">find</button>' +
-      '<button class="av-btn" id="av-indexbtn" title="show / hide the artifact index">' +
-        (AV.noindex ? "index ▸" : "◂ index") + "</button>" +
-      '<button class="av-btn" id="av-railbtn" title="show / hide the outline / revisions rail">' +
-        (AV.norail ? "◂ rail" : "rail ▸") + "</button>" +
-      '<a class="av-btn" href="' + avRawUrl(detail.id, AV.rev) + '" title="download these bytes">↓</a>' +
-    "</span>";
+      fmtBytes(detail.working.size) + "</span>";
+}
+
+// The control bar: the two panel toggles first (they are what you reach for most), then the
+// document controls, then whatever the current mode adds. Everything that used to crowd the
+// document header lives here, where it has the window's full width to spread into.
+function avCtlsHtml() {
+  const panels =
+    '<span class="lbl">panels</span>' +
+    '<button class="av-btn' + (AV.noindex ? "" : " on") + '" id="av-indexbtn" ' +
+      'title="show / hide the artifact index on the left">' + (AV.noindex ? "index ▸" : "◂ index") + "</button>" +
+    '<button class="av-btn' + (AV.norail ? "" : " on") + '" id="av-railbtn" ' +
+      'title="show / hide the outline / revisions rail on the right">' + (AV.norail ? "◂ rail" : "rail ▸") + "</button>";
+  if (!AV.detail || AV.detail.id !== AV.id) return panels;   // detail for THIS artifact, or panels only
+  const mode = AV.rev != null || AV.cmp
+    ? '<button class="av-btn on" id="av-current" title="back to the working copy">' +
+      (AV.cmp ? "rev " + AV.cmp.a + " → " + AV.cmp.b : "reading rev " + AV.rev) + " ✕</button>"
+    : "";
+  const diff = AV.cmp
+    ? avSegHtml("av-sbs", "sbs", AV.sbs, "unified", "side-by-side", "how to lay the diff out") +
+      avSegHtml("av-full", "full", AV.fullDiff, "changes", "whole doc",
+                "just the changed regions with context, or every line of the document")
+    : "";
+  return panels +
+    '<span class="sep"></span>' +
+    '<button class="av-btn' + (AV.finding ? " on" : "") + '" id="av-findbtn" title="find in document  ( / )">find</button>' +
+    (mode || diff ? '<span class="sep"></span>' + mode + diff : "") +
+    '<a class="av-btn sp" href="' + avRawUrl(AV.detail.id, AV.rev) + '" title="download these bytes">↓ raw</a>';
 }
 
 // `off`/`on` are the two labels; `state` picks which is lit. The chosen value comes back as the
@@ -1665,6 +1706,7 @@ function avRenderRevs() {
 function avOpenFind() {
   AV.finding = true;
   avSyncChrome();
+  avSyncCtls();
   const input = avEl("av-findinput");
   input.value = AV.find;
   input.focus();
@@ -1673,6 +1715,7 @@ function avOpenFind() {
 function avCloseFind() {
   AV.finding = false; AV.find = ""; AV.findAt = 0;
   avSyncChrome();
+  avSyncCtls();
   avApplyFind(false);
 }
 function avApplyFind(scroll) {
