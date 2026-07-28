@@ -1,14 +1,21 @@
 <!doctype html>
 <html lang="en">
 <head>
+<script>
+// Behind a prefix-stripping path mount (tailscale serve --set-path /messages) the page must sit on
+// a slash-terminated URL, or the relative refs below (manifest, icon, shared.js) resolve into the
+// parent mount. Root serving ("/") passes through untouched.
+if (location.pathname !== "/" && !/\/$|\.html$/.test(location.pathname))
+  location.replace(location.pathname + "/" + location.search + location.hash);
+</script>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="tx remote" />
 <meta name="theme-color" content="#000000" />
-<link rel="manifest" href="/manifest.json" />
-<link rel="apple-touch-icon" href="/icon.png" />
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icon.png" />
 <title>tx remote</title>
 <style>
   /* iOS-dark messenger idiom: black canvas, grey received bubbles, blue sent bubbles, proportional
@@ -323,7 +330,7 @@
   <input id="gateInput" type="password" placeholder="token" autocomplete="off" />
 </div>
 
-<script src="/shared.js"></script>
+<script src="shared.js"></script>
 <script>
 "use strict";
 // The MOBILE face: full-screen list ⇄ thread navigation (body.thread-open), a back button, and

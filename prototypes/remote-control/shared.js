@@ -19,7 +19,15 @@ const $ = (id) => document.getElementById(id);
 // rides a query param on every request.
 let token = "";
 try { token = localStorage.getItem("tx-remote-token") || ""; } catch { /* private mode */ }
-const withToken = (url) => token ? `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}` : url;
+// The page may sit behind a prefix-stripping path mount (tailscale serve --set-path /messages),
+// where absolute "/api/…" URLs escape the mount and land on whatever owns the root. Every request
+// carries the page's own base instead — "" when served at the root, so direct access is unchanged.
+// It rides inside withToken because every request (fetch + EventSource) already funnels through it.
+const BASE = location.pathname.replace(/\/(index\.html)?$/, "");
+const withToken = (url) => {
+  const based = BASE + url;
+  return token ? `${based}${based.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}` : based;
+};
 function showGate() {
   document.body.classList.add("gated");
   disconnectStream();
@@ -74,7 +82,7 @@ const typingHtml = (extra) => `<span class="typing${extra ? " " + extra : ""}"><
 function renderImages(html) {
   return html.replace(/\[img:([^\]]+)\]/g, (_, path) => {
     const name = path.split("/").pop();
-    return `<img class="imgmsg" src="/uploads/${encodeURIComponent(name)}" alt="attached image" />`;
+    return `<img class="imgmsg" src="${BASE}/uploads/${encodeURIComponent(name)}" alt="attached image" />`;
   });
 }
 

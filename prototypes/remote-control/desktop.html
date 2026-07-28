@@ -1,6 +1,13 @@
 <!doctype html>
 <html lang="en">
 <head>
+<script>
+// Behind a prefix-stripping path mount (tailscale serve --set-path /messages) the page must sit on
+// a slash-terminated URL, or the relative shared.js ref below resolves into the parent mount.
+// Root serving ("/") passes through untouched.
+if (location.pathname !== "/" && !/\/$|\.html$/.test(location.pathname))
+  location.replace(location.pathname + "/" + location.search + location.hash);
+</script>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="theme-color" content="#000000" />
@@ -336,7 +343,7 @@
   <input id="gateInput" type="password" placeholder="token" autocomplete="off" />
 </div>
 
-<script src="/shared.js"></script>
+<script src="shared.js"></script>
 <script>
 "use strict";
 // The DESKTOP face: a persistent split-pane — list left, thread right, both always visible — so
