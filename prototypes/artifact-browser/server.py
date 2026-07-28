@@ -64,9 +64,27 @@ HERE = Path(__file__).resolve().parent
 PAGE = HERE / "index.html"
 DEFAULT_PORT = 8766
 
-# Extensions whose working copy the page renders as markdown; anything else utf-8 is preformatted
-# text, and anything that does not decode as utf-8 is offered as a binary download.
+# Extensions whose working copy the page renders as markdown, and those it renders as a PAGE in a
+# sandboxed frame (`/render`); anything else utf-8 is preformatted text, and anything that does not
+# decode as utf-8 is offered as a binary download.
 MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
+HTML_SUFFIXES = frozenset({".html", ".htm"})
+
+# Artifact HTML is agent-authored — untrusted markup — and THIS origin can POST keystrokes into live
+# tmux panes (`message_session`). Rendered markup must therefore never execute here: the reader frames
+# `/render` with `sandbox="allow-same-origin"` (no `allow-scripts`), and these headers make the
+# response inert on its own too, so the URL opened directly in a tab is still script-free and offline.
+# `allow-same-origin` is what lets the reader reach into the frame for its outline and find, and it is
+# safe precisely BECAUSE scripts are withheld — the combination that defeats a sandbox is
+# allow-same-origin WITH allow-scripts. Subresources are `data:`-only: an artifact must not be able to
+# beacon whether (or when) it was read.
+RENDER_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; "
+        "frame-ancestors 'self'; sandbox allow-same-origin"
+    ),
+    "X-Content-Type-Options": "nosniff",
+}
 
 # A canonical id (artifact or tx session) is a uuid. The stores join ids into filesystem paths, so
 # the browser accepts ONLY that exact token in a route — a crafted `..` / `/` (literal OR
@@ -901,19 +919,29 @@ def detail_payload(artifact_id: str) -> dict | None:
 
 
 def _render_working_copy(artifact: Artifact, raw: bytes) -> dict:
-    """Classify the working copy for the detail view: markdown (rendered client-side), plain utf-8
-    text (preformatted), or binary (a download link only). Classification is by extension + a utf-8
-    decode probe; the store's bytes are authoritative."""
+    """Classify the working copy for the detail view: markdown (rendered client-side), html (rendered
+    as a page in the reader's sandboxed frame), plain utf-8 text (preformatted), or binary (a download
+    link only). Classification is by extension + a utf-8 decode probe; the store's bytes are
+    authoritative. `text` rides along for html too — it is what the reader's source toggle shows."""
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         return {"encoding": "binary", "size": len(raw)}
-    suffix = Path(artifact.filename).suffix.lower()
     return {
-        "encoding": "markdown" if suffix in MARKDOWN_SUFFIXES else "text",
+        "encoding": _text_encoding(artifact.extension.lower()),
         "text": text,
         "size": len(raw),
     }
+
+
+def _text_encoding(suffix: str) -> str:
+    """Which viewer a decodable working copy belongs to, by extension alone — the one place the
+    reader's kinds are decided."""
+    if suffix in MARKDOWN_SUFFIXES:
+        return "markdown"
+    if suffix in HTML_SUFFIXES:
+        return "html"
+    return "text"
 
 
 def raw_bytes(artifact_id: str, rev: int | None) -> tuple[bytes, str] | None:
@@ -928,6 +956,22 @@ def raw_bytes(artifact_id: str, rev: int | None) -> tuple[bytes, str] | None:
     except FileNotFoundError:
         return None
     return data, artifact.filename
+
+
+def render_bytes(artifact_id: str, rev: int | None) -> bytes | None:
+    """The bytes to serve AS A PAGE (the working copy, or a frozen rev) — what the reader's sandboxed
+    frame loads. Only an html-suffixed artifact is served this way: this route is the one place bytes
+    from the store reach a real HTML parser, so it stays narrowed to the artifacts that are meant to
+    be parsed as one rather than becoming a general serve-any-artifact-as-a-page gadget. None when the
+    artifact is absent, is not html, or has no such rev."""
+    artifact = ArtifactStore().load(artifact_id)
+    if artifact is None or artifact.extension.lower() not in HTML_SUFFIXES:
+        return None
+    content = ArtifactContent()
+    try:
+        return content.read_current(artifact) if rev is None else content.read_rev(artifact, rev)
+    except FileNotFoundError:
+        return None
 
 
 def diff_payload(artifact_id: str, rev_a: int, rev_b: int) -> dict | None:
@@ -1050,7 +1094,8 @@ class BrowserHandler(BaseHTTPRequestHandler):
       chats:      `/api/chats` (list) · `/api/chats/<txid>` (detail) ·
                   `/api/chats/<txid>/dialogue` (full conversation turns)
       artifacts:  `/api/artifacts` (list) · `/api/artifacts/<id>` (detail) ·
-                  `/api/artifacts/<id>/raw?rev=N` (bytes) · `/api/artifacts/<id>/diff?a=X&b=Y`
+                  `/api/artifacts/<id>/raw?rev=N` (bytes) · `/api/artifacts/<id>/diff?a=X&b=Y` ·
+                  `/api/artifacts/<id>/render?rev=N` (an html artifact AS a page, sandboxed)
       timeline:   `/api/timeline?days=N` (swimlanes) · `/api/timeline/<txid>/dialogue` (drawer
                   feed) · POST `/api/timeline/message` (edit-mode send to tx-assistant) ·
                   POST `/api/timeline/<txid>/message` (drawer reply) · POST `/api/timeline/order`
@@ -1172,14 +1217,19 @@ class BrowserHandler(BaseHTTPRequestHandler):
         self._json(200 if payload is not None else 404, payload or {"error": "no such session"})
 
     def _route_artifact(self, rest: str, query: dict) -> None:
-        """`<id>` (detail) | `<id>/raw` (bytes) | `<id>/diff` (difflib). The id is validated to a
-        canonical uuid at this boundary — a non-uuid (a traversal payload) 404s before the store is
-        ever touched; rev params must be plain integers (`_int_param`)."""
+        """`<id>` (detail) | `<id>/raw` (bytes) | `<id>/render` (an html artifact as a page) |
+        `<id>/diff` (difflib). The id is validated to a canonical uuid at this boundary — a non-uuid
+        (a traversal payload) 404s before the store is ever touched; rev params must be plain
+        integers (`_int_param`).
+
+        `/raw` and `/render` serve the same bytes under deliberately opposite contracts: `/raw` is
+        `application/octet-stream` + `attachment`, so a browser SAVES it and never parses it, while
+        `/render` is the one route that hands artifact bytes to the HTML parser — and pays for that
+        with `RENDER_HEADERS` and the reader's sandboxed frame."""
         if rest.endswith("/raw"):
             artifact_id = _safe_artifact_id(rest[: -len("/raw")])
-            rev = self._int_param(query, "rev")  # absent => the working copy; malformed => reject
+            rev = self._rev_param(query)   # absent => the working copy; malformed => already answered
             if rev is _MALFORMED_PARAM:
-                self._respond(400, b"rev must be a plain integer\n", "text/plain; charset=utf-8")
                 return
             result = raw_bytes(artifact_id, rev) if artifact_id else None
             if result is None:
@@ -1190,6 +1240,16 @@ class BrowserHandler(BaseHTTPRequestHandler):
                 200, data, "application/octet-stream",
                 {"Content-Disposition": _content_disposition(filename)},
             )
+        elif rest.endswith("/render"):
+            artifact_id = _safe_artifact_id(rest[: -len("/render")])
+            rev = self._rev_param(query)
+            if rev is _MALFORMED_PARAM:
+                return
+            data = render_bytes(artifact_id, rev) if artifact_id else None
+            if data is None:
+                self._respond(404, b"not found\n", "text/plain; charset=utf-8")
+                return
+            self._respond(200, data, "text/html; charset=utf-8", RENDER_HEADERS)
         elif rest.endswith("/diff"):
             artifact_id = _safe_artifact_id(rest[: -len("/diff")])
             if artifact_id is None:
@@ -1207,6 +1267,15 @@ class BrowserHandler(BaseHTTPRequestHandler):
             artifact_id = _safe_artifact_id(rest)
             payload = detail_payload(artifact_id) if artifact_id is not None else None
             self._json(200 if payload is not None else 404, payload or {"error": "no such artifact"})
+
+    def _rev_param(self, query: dict):
+        """The `rev` parameter shared by the two byte routes: the int, `None` when absent (the caller
+        serves the working copy), or `_MALFORMED_PARAM` — after this method has ALREADY answered 400,
+        the same respond-then-signal shape as `_timeline_days`."""
+        rev = self._int_param(query, "rev")
+        if rev is _MALFORMED_PARAM:
+            self._respond(400, b"rev must be a plain integer\n", "text/plain; charset=utf-8")
+        return rev
 
     def _int_param(self, query: dict, name: str):
         """Three-state, because PRESENCE and PARSE are different questions (QA P2): `None` when the
