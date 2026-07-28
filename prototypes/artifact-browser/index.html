@@ -159,27 +159,55 @@
   #convLoad { color: var(--muted); font: 12px var(--mono); padding: 14px 0; }
 
   /* ---- rendered markdown ---- */
-  .md { overflow-wrap: anywhere; }
-  .md h1,.md h2,.md h3,.md h4 { line-height: 1.3; margin: 1.1em 0 .45em; font-weight: 650; }
-  .md h1 { font-size: 1.3em; } .md h2 { font-size: 1.18em; } .md h3 { font-size: 1.06em; }
-  .md h4 { font-size: 1em; }
-  .md p { margin: .55em 0; } .md ul,.md ol { margin: .45em 0; padding-left: 1.5em; }
-  .md li { margin: .18em 0; }
-  .md code { font-family: var(--mono); font-size: .87em; background: var(--panel-2);
-             padding: .1em .35em; }
-  .md pre { background: var(--panel); padding: 12px; overflow-x: auto; }
-  .md pre code { background: none; padding: 0; }
-  .md blockquote { margin: .55em 0; padding: .1em 1em; border-left: 3px solid var(--line);
+  /* A document scale, not a UI scale: space ABOVE a heading is what makes a section read as one, so
+     the headings carry generous leading margins and tight trailing ones. Artifacts are dense with
+     bold lead-ins and inline code, so `strong` brightens and `code` stays quiet — a loud code chip
+     on every third word turns a plan into confetti. */
+  /* `break-word`, NOT `anywhere`: `anywhere` also shrinks min-content to a single character, which
+     lets table auto-layout squeeze a column until `CANCELLED_PLANNING` wraps as `CANCELL/ED_PL/ANNING`.
+     `break-word` still rescues a token too long for its own line without licensing that. */
+  .md { overflow-wrap: break-word; font-size: 14.5px; line-height: 1.68; }
+  .md > :first-child { margin-top: 0; }
+  .md h1,.md h2,.md h3,.md h4,.md h5,.md h6 { line-height: 1.25; font-weight: 650; color: var(--text); }
+  .md h1 { font-size: 1.55em; margin: 1.4em 0 .5em; letter-spacing: -.012em; }
+  .md h2 { font-size: 1.28em; margin: 2.1em 0 .55em; padding-bottom: .28em;
+           border-bottom: 1px solid var(--line); }
+  .md h3 { font-size: 1.08em; margin: 1.9em 0 .4em; }
+  .md h4 { font-size: .84em; margin: 2em 0 .4em; color: var(--muted);
+           text-transform: uppercase; letter-spacing: .09em; }
+  .md h5,.md h6 { font-size: .9em; margin: 1.5em 0 .35em; color: var(--muted); }
+  .md p { margin: .9em 0; }
+  .md strong { color: #ffffff; font-weight: 650; }
+  .md em { color: var(--text); }
+  .md del { color: var(--dim); }
+  .md a { text-decoration: underline; text-underline-offset: 2px; }
+  .md ul,.md ol { margin: .9em 0; padding-left: 1.6em; }
+  .md li { margin: .34em 0; }
+  .md li::marker { color: var(--dim); }
+  .md li > ul,.md li > ol { margin: .34em 0; }
+  .md li > p { margin: .5em 0; }
+  .md code { font-family: var(--mono); font-size: .855em; color: #a9c6e8;
+             background: var(--panel-2); padding: .08em .3em; }
+  .md pre { background: var(--panel); border-left: 2px solid var(--line); margin: 1.1em 0;
+            padding: 12px 15px; overflow-x: auto; font-size: 12.5px; line-height: 1.55; }
+  .md pre code { background: none; padding: 0; color: var(--text); font-size: inherit; }
+  .md blockquote { margin: 1.1em 0; padding: .15em 0 .15em 1.1em; border-left: 2px solid var(--dim);
                    color: var(--muted); }
-  .md hr { border: none; border-top: 1px solid var(--line); margin: 1.1em 0; }
-  .md table { border-collapse: collapse; margin: .7em 0; display: block; overflow-x: auto; }
-  .md table th, .md table td { border: 1px solid var(--line); padding: 5px 10px; }
-  .md table th { background: var(--panel-2); }
+  .md blockquote > :first-child { margin-top: 0; }
+  .md blockquote > :last-child { margin-bottom: 0; }
+  .md hr { border: none; border-top: 1px solid var(--line); margin: 2.2em 0; }
+  .md img { max-width: 100%; }
+  /* The SCROLLER is the wrapper, not the table: a `display: block` table shrink-wraps to the
+     container and squeezes its columns, where a wrapper lets the table take the width it needs. */
+  .md .tablewrap { overflow-x: auto; margin: 1.2em 0; }
+  .md table { border-collapse: collapse; width: max-content; min-width: 100%; font-size: .93em; }
+  .md table th, .md table td { border: 1px solid var(--line); padding: 6px 11px;
+                               text-align: left; vertical-align: top; }
+  .md table th { background: var(--panel-2); font-weight: 600; white-space: nowrap; }
 
   pre.raw { font: 13px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
 
   /* ---- diff ---- */
-  .diffbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 12px; }
   select, button {
     font: 12.5px var(--mono); background: var(--bg); color: var(--text);
     border: 1px solid var(--line); padding: 5px 9px;
@@ -188,7 +216,165 @@
   pre.diff { font: 12.5px/1.5 var(--mono); margin: 0; overflow-x: auto; white-space: pre; }
   pre.diff .a { color: var(--green); } pre.diff .d { color: var(--red); }
   pre.diff .h { color: var(--blue); } pre.diff .c { color: var(--muted); }
+  pre.diff .s { color: var(--dim); font-style: italic; }
   .dl { display: inline-block; margin-top: 6px; }
+
+  /* ---- artifact reader ---- */
+  /* One full-height panel in the timeline's `.tl-wrap` shape: a fixed index rail, the document, and
+     a rail that switches between the document's OUTLINE and its REVISIONS. A full-height app view
+     wants no page scroll under it, so `body.full` drops main's bottom padding. */
+  body.full main { padding-bottom: 22px; }
+  /* The control bar spans the WHOLE window, above the panel — the controls used to live in the
+     document header, where they were bounded by the document column and simply ran off its edge
+     underneath the right rail (353px of them, at a 1031px window). Here they have the full width,
+     and `flex-wrap` means a narrow window grows a second row instead of hiding a control. */
+  .av-ctls { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-bottom: 8px; }
+  .av-ctls .sep { width: 1px; height: 16px; background: var(--line); margin: 0 3px; }
+  .av-ctls .sp { margin-left: auto; }
+  .av-ctls .lbl { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .1em;
+                  color: var(--dim); }
+  .av-wrap { display: flex; overflow: hidden; border: 1px solid var(--line); background: var(--panel);
+             height: calc(100vh - 121px); min-height: 300px; }
+  .av-wrap.norail .av-rail { display: none; }
+  .av-wrap.noindex .av-index { display: none; }
+
+  /* index rail — the artifact list, banded by effort group like the timeline's lane groups.
+     `min-width: 0` throughout: a flex item defaults to `min-width: auto`, so one nowrap plan title
+     would push a fixed-basis rail as wide as its longest line and eat the document's measure. */
+  .av-index { flex: 0 1 268px; min-width: 168px; display: flex; flex-direction: column;
+              border-right: 1px solid var(--line); }
+  .av-ifilter { padding: 8px; border-bottom: 1px solid var(--line); flex: none; }
+  .av-ifilter input { width: 100%; background: var(--panel-2); border: 1px solid var(--line);
+                      color: var(--text); padding: 5px 9px; font: 12.5px var(--sans); }
+  .av-ifilter input:focus { outline: none; border-color: var(--blue); }
+  .av-ilist { overflow-y: auto; flex: 1; padding-bottom: 20px; }
+  .av-gband { display: flex; align-items: center; gap: 7px; padding: 13px 10px 5px; min-width: 0;
+              font: 10.5px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--c);
+              white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .av-gband::before { content: ""; flex: none; width: 3px; height: 11px; background: var(--c); }
+  .av-row { padding: 5px 10px 6px 21px; cursor: pointer; border-left: 3px solid transparent; }
+  .av-row:hover { background: var(--panel-2); }
+  .av-row.sel { background: var(--panel-2); border-left-color: var(--blue); }
+  .av-row .t { display: block; font-size: 12.5px; color: var(--text);
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .av-row.sel .t { color: var(--blue); }
+  .av-row .m { font: 10.5px var(--mono); color: var(--dim); }
+  .av-kind { display: inline-block; font: 9.5px var(--mono); text-transform: uppercase;
+             color: var(--muted); border: 1px solid var(--line); padding: 0 3px; margin-right: 5px; }
+
+  /* document pane */
+  /* A real floor, because `flex: 1` gives the document a 0 basis — with nothing to shrink FROM it
+     collapses to nothing while the two rails sit at full width. The floor makes the rails yield
+     first, down to their own. */
+  .av-doc { flex: 1 1 0; min-width: 300px; display: flex; flex-direction: column; }
+  /* Identity only — what you are reading. Every control moved to `.av-ctls`, so this row can no
+     longer outgrow the document column; `overflow: hidden` makes that structural rather than a
+     hope, and the two text items give ground in order (subtitle first, then title). */
+  .av-dhead { display: flex; align-items: center; gap: 9px; flex: none; overflow: hidden;
+              padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .av-dhead > * { flex: none; }
+  .av-dhead .ti { flex: 1 1 auto; min-width: 60px; font-size: 13.5px; font-weight: 600;
+                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .av-dhead .sub { flex: 0 1 auto; min-width: 0; font: 11px var(--mono); color: var(--dim);
+                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .av-acts { margin-left: auto; display: flex; gap: 6px; align-items: center; flex: none; }
+  .av-btn { background: var(--panel-2); border: 1px solid var(--line); color: var(--muted);
+            font: 11.5px var(--mono); padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+  .av-btn:hover { color: var(--text); border-color: var(--blue); text-decoration: none; }
+  .av-btn.on { color: var(--blue); border-color: var(--blue); }
+  /* A two-state control shows BOTH states with the live one lit — a single button labelled with
+     either the current mode or the action it would take reads ambiguously. */
+  .av-seg { display: inline-flex; border: 1px solid var(--line); }
+  .av-seg span { padding: 3px 8px; font: 11.5px var(--mono); color: var(--dim); cursor: pointer; }
+  .av-seg span:hover { color: var(--text); }
+  .av-seg span.on { background: var(--bg); color: var(--blue); cursor: default; }
+  .av-find { display: none; align-items: center; gap: 9px; flex: none; padding: 6px 14px;
+             border-bottom: 1px solid var(--line); background: var(--panel); }
+  .av-doc.finding .av-find { display: flex; }
+  .av-find input { width: 300px; background: var(--panel-2); border: 1px solid var(--line);
+                   color: var(--text); padding: 4px 9px; font-size: 12.5px; }
+  .av-find input:focus { outline: none; border-color: var(--blue); }
+  .av-find .n { font: 11.5px var(--mono); color: var(--muted); white-space: nowrap; }
+  mark.av-hit { background: color-mix(in srgb, var(--amber) 32%, transparent); color: var(--text); }
+  mark.av-hit.cur { background: var(--amber); color: #10161f; }
+  .av-body { flex: 1; overflow-y: auto; padding: 24px 0 120px; }
+  .av-page { max-width: 90ch; margin: 0 auto; padding: 0 30px; }
+  .av-page.wide-page { max-width: none; }
+  /* Artifacts are prose, not code: a unified diff wraps rather than scrolling sideways, and the
+     hanging indent keeps every continuation clear of the +/- marker column. */
+  .av-page pre.diff { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .av-page pre.diff span { display: block; padding-left: 1.4em; text-indent: -1.4em; }
+
+  /* right rail — outline | revisions */
+  /* An explicit floor, not `min-width: 0`: the rails keep their basis while there is room and
+     give ground before the document does, so a narrow window never squeezes the prose to nothing.
+     Explicit rather than `auto` — `auto` means min-content, which is what once let one long plan
+     title inflate a rail past its basis. */
+  .av-rail { flex: 0 1 262px; min-width: 168px; display: flex; flex-direction: column;
+             border-left: 1px solid var(--line); background: var(--panel); }
+  .av-rtabs { display: flex; flex: none; border-bottom: 1px solid var(--line); }
+  .av-rtab { flex: 1; text-align: center; padding: 7px 0; cursor: pointer; user-select: none;
+             font: 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .av-rtab:hover { color: var(--text); }
+  .av-rtab.on { color: var(--blue); box-shadow: inset 0 -2px 0 var(--blue); }
+  .av-rbody { overflow-y: auto; flex: 1; padding: 6px 0 26px; }
+  .av-toc a { display: block; padding: 3px 12px 3px 0; font-size: 12px; color: var(--muted);
+              border-left: 2px solid transparent; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .av-toc a:hover { color: var(--text); background: var(--panel-2); text-decoration: none; }
+  .av-toc a.on { color: var(--blue); border-left-color: var(--blue); background: var(--panel-2); }
+  .av-toc a.l1 { padding-left: 11px; color: var(--text); font-weight: 600; }
+  .av-toc a.l2 { padding-left: 23px; }
+  .av-toc a.l3 { padding-left: 36px; font-size: 11.5px; }
+  .av-toc a.l4 { padding-left: 49px; font-size: 11.5px; color: var(--dim); }
+  .av-rev { display: grid; grid-template-columns: 40px 1fr; gap: 8px; padding: 6px 11px 7px;
+            cursor: pointer; border-left: 3px solid transparent; }
+  .av-rev:hover { background: var(--panel-2); }
+  .av-rev.on { background: var(--panel-2); border-left-color: var(--blue); }
+  .av-rev.cmp { background: var(--panel-2); border-left-color: var(--amber); }
+  .av-rev .r { font: 11.5px var(--mono); color: var(--muted); }
+  .av-rev.on .r { color: var(--blue); } .av-rev.cmp .r { color: var(--amber); }
+  .av-rev .who { font: 10.5px var(--mono); color: var(--muted);
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .av-rev .ago { font: 10px var(--mono); color: var(--dim); }
+  .av-rev .ch { font-size: 11px; line-height: 1.42; color: var(--muted); margin-top: 2px;
+                display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .av-rhint { padding: 9px 12px; font-size: 11px; line-height: 1.5; color: var(--dim);
+              border-bottom: 1px solid var(--line-soft); }
+  .av-rhint b { color: var(--muted); font-weight: 600; }
+  /* the contributor roll — every session that wrote the document, each opening its transcript */
+  .av-who { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+  .av-who a, .av-who span.mono { font-size: 11.5px; }
+  .av-who .n { color: var(--dim); font: 10px var(--mono); margin-left: 6px; }
+  /* A / B endpoint pickers, quiet until the row is hovered or the endpoint is live */
+  .av-pick { float: right; display: flex; gap: 3px; margin-left: 6px; }
+  .av-pick b { font: 9.5px var(--mono); font-weight: 600; color: var(--dim); cursor: pointer;
+               border: 1px solid var(--line-soft); padding: 0 3px; opacity: 0; }
+  .av-rev:hover .av-pick b, .av-pick b.on { opacity: 1; }
+  .av-pick b:hover { color: var(--text); border-color: var(--blue); }
+  .av-pick b[data-pick="a"].on { color: var(--amber); border-color: var(--amber); }
+  .av-pick b[data-pick="b"].on { color: var(--blue); border-color: var(--blue); }
+  /* the diff's own header — what changed, and whose conversations produced it */
+  .av-diffhead { margin: 0 0 18px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+  .av-diffhead .ln1 { font: 12px var(--mono); color: var(--muted); }
+  .av-src { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+  .av-src .k { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .1em; color: var(--dim); }
+  .av-src .n { color: var(--dim); font: 10.5px var(--mono); margin-left: 5px; }
+  .av-note { margin-top: 7px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+  .av-note .r { font: 10.5px var(--mono); color: var(--dim); margin-right: 7px; }
+  /* the turn an artifact revision links to, flashed on arrival */
+  .turn.turn-hl { outline: 2px solid var(--amber); outline-offset: 3px; }
+
+  /* side-by-side diff */
+  table.av-sbs { width: 100%; border-collapse: collapse; table-layout: fixed; font: 12px/1.5 var(--mono); }
+  .av-sbs td { padding: 0 8px; vertical-align: top; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .av-sbs col.cn { width: 42px; }
+  .av-sbs td.ln { text-align: right; color: var(--dim); font-size: 10.5px;
+                  user-select: none; background: var(--panel); }
+  .av-sbs td.gut { border-left: 1px solid var(--line); }
+  .av-sbs tr.add td.rt, .av-sbs tr.chg td.rt { background: color-mix(in srgb, var(--green) 15%, transparent); }
+  .av-sbs tr.del td.lt, .av-sbs tr.chg td.lt { background: color-mix(in srgb, var(--red) 15%, transparent); }
+  .av-sbs tr.skip td { padding: 4px 8px; font-size: 11px; font-style: italic;
+                       color: var(--dim); background: var(--panel); }
 
   /* ---- timeline view ---- */
   .tl-ctls { display: flex; gap: 16px; align-items: center; padding: 6px 2px 8px; color: var(--muted); font-size: 12.5px; position: relative; }
@@ -380,80 +566,214 @@ function sessionLink(id, name, exists) {
   return '<a class="mono" href="#/chats/' + esc(id) + '" title="' + esc(id) + '">' + esc(name) + "</a>";
 }
 
-// ---- a compact, self-contained markdown renderer (no external libs) ----
-function inline(s) {
-  s = esc(s);
-  s = s.replace(/`([^`]+)`/g, (_, c) => "<code>" + c + "</code>");
-  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) =>
-    '<a href="' + u + '" target="_blank" rel="noopener">' + t + "</a>");
-  return s;
-}
+// ---- a self-contained markdown renderer (no external libs) ----
+// Sized for what artifacts actually are: hard-wrapped prose plans, heavy on nested lists, inline
+// code and tables. The parser is line-based and block-structured — every construct collects its own
+// lines and recurses, which is what makes continuation and nesting work at all. Not CommonMark, but
+// it covers headings, fences, lists (nested, wrapped, loose/tight), tables, quotes and paragraphs.
+const MD_BULLET = /^(\s*)([-*+])(\s+)(.*)$/;
+const MD_ORDERED = /^(\s*)(\d{1,9})[.)](\s+)(.*)$/;
+const MD_FENCE = /^\s{0,3}(```+|~~~+)\s*([^\s`]*)/;
+const MD_HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
+const MD_RULE = /^\s{0,3}(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/;
+const MD_QUOTE = /^\s{0,3}>\s?(.*)$/;
+
 function renderMarkdown(text) {
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  return mdBlocks(text.replace(/\r\n?/g, "\n").split("\n")).join("\n");
+}
+
+// The head of a list item — where its marker sits and, crucially, the column its CONTENT starts at.
+// That column is what later lines are measured against to decide "still this item" vs "next block".
+function mdItemHead(line) {
+  const bullet = line.match(MD_BULLET);
+  if (bullet) {
+    return { indent: bullet[1].length, ordered: false, text: bullet[4],
+             content: bullet[1].length + 1 + bullet[3].length };
+  }
+  const ordered = line.match(MD_ORDERED);
+  if (!ordered) return null;
+  return { indent: ordered[1].length, ordered: true, text: ordered[4],
+           content: ordered[1].length + ordered[2].length + 1 + ordered[3].length,
+           start: Number(ordered[2]) };
+}
+
+function mdBlocks(lines) {
   const out = [];
   let i = 0;
-  const listOpen = []; // stack of "ul"/"ol"
-  function closeLists() { while (listOpen.length) out.push("</" + listOpen.pop() + ">"); }
   while (i < lines.length) {
-    let line = lines[i];
-    // fenced code block
-    const fence = line.match(/^```(.*)$/);
-    if (fence) {
-      closeLists(); i++;
-      const buf = [];
-      while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; }
-      i++; // closing fence
-      out.push("<pre><code>" + esc(buf.join("\n")) + "</code></pre>");
+    const line = lines[i];
+    if (line.trim() === "") { i++; continue; }
+    if (MD_RULE.test(line)) { out.push("<hr>"); i++; continue; }
+    const fence = line.match(MD_FENCE);
+    if (fence) { i = mdFence(lines, i, fence, out); continue; }
+    const heading = line.match(MD_HEADING);
+    if (heading) {
+      const level = heading[1].length;
+      out.push("<h" + level + ">" + mdInline(heading[2]) + "</h" + level + ">");
+      i++;
       continue;
     }
-    // horizontal rule
-    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { closeLists(); out.push("<hr>"); i++; continue; }
-    // heading
-    const h = line.match(/^(#{1,6})\s+(.*)$/);
-    if (h) { closeLists(); const n = h[1].length; out.push("<h" + n + ">" + inline(h[2]) + "</h" + n + ">"); i++; continue; }
-    // pipe table: header row followed by a |---|--- separator
-    if (/\|/.test(line) && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|[\s:|-]+$/.test(lines[i + 1])) {
-      closeLists();
-      const cells = r => r.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map(c => c.trim());
-      const head = cells(line);
-      i += 2;
-      let t = "<table><thead><tr>" + head.map(c => "<th>" + inline(c) + "</th>").join("") + "</tr></thead><tbody>";
-      while (i < lines.length && /\|/.test(lines[i]) && lines[i].trim() !== "") {
-        t += "<tr>" + cells(lines[i]).map(c => "<td>" + inline(c) + "</td>").join("") + "</tr>"; i++;
-      }
-      out.push(t + "</tbody></table>");
-      continue;
-    }
-    // blockquote (consume consecutive)
-    if (/^\s*>\s?/.test(line)) {
-      closeLists(); const buf = [];
-      while (i < lines.length && /^\s*>\s?/.test(lines[i])) { buf.push(lines[i].replace(/^\s*>\s?/, "")); i++; }
-      out.push("<blockquote>" + renderMarkdown(buf.join("\n")) + "</blockquote>");
-      continue;
-    }
-    // list items
-    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
-    const ol = line.match(/^\s*\d+\.\s+(.*)$/);
-    if (ul || ol) {
-      const kind = ul ? "ul" : "ol";
-      if (listOpen[listOpen.length - 1] !== kind) { closeLists(); out.push("<" + kind + ">"); listOpen.push(kind); }
-      out.push("<li>" + inline((ul || ol)[1]) + "</li>"); i++; continue;
-    }
-    // blank line
-    if (line.trim() === "") { closeLists(); i++; continue; }
-    // paragraph (gather until a blank / block boundary)
-    closeLists();
-    const para = [line]; i++;
-    while (i < lines.length && lines[i].trim() !== "" &&
-           !/^(#{1,6}\s|```|\s*>|\s*[-*+]\s|\s*\d+\.\s|\s*(-{3,}|\*{3,})\s*$)/.test(lines[i])) {
-      para.push(lines[i]); i++;
-    }
-    out.push("<p>" + inline(para.join(" ")) + "</p>");
+    if (MD_QUOTE.test(line)) { i = mdQuote(lines, i, out); continue; }
+    const table = mdTable(lines, i);
+    if (table) { out.push(table.html); i = table.next; continue; }
+    if (mdItemHead(line)) { i = mdList(lines, i, out); continue; }
+    i = mdParagraph(lines, i, out);
   }
-  closeLists();
-  return out.join("\n");
+  return out;
+}
+
+function mdFence(lines, i, fence, out) {
+  const marker = fence[1], language = fence[2];
+  const body = [];
+  i++;
+  while (i < lines.length && !new RegExp("^\\s{0,3}" + marker[0] + "{" + marker.length + ",}\\s*$").test(lines[i])) {
+    body.push(lines[i]);
+    i++;
+  }
+  out.push('<pre><code' + (language ? ' class="lang-' + esc(language) + '"' : "") + ">" +
+    esc(body.join("\n")) + "</code></pre>");
+  return i + 1;   // past the closing fence (or past the end, for an unterminated one)
+}
+
+function mdQuote(lines, i, out) {
+  const body = [];
+  // A quote absorbs lazy continuations too: a wrapped quote paragraph drops the '>' on later lines.
+  while (i < lines.length && lines[i].trim() !== "") {
+    const quoted = lines[i].match(MD_QUOTE);
+    if (!quoted && !body.length) break;
+    if (!quoted && mdStartsBlock(lines[i])) break;
+    body.push(quoted ? quoted[1] : lines[i].trim());
+    i++;
+  }
+  out.push("<blockquote>" + mdBlocks(body).join("\n") + "</blockquote>");
+  return i;
+}
+
+function mdStartsBlock(line) {
+  return MD_RULE.test(line) || MD_FENCE.test(line) || MD_HEADING.test(line) ||
+    MD_QUOTE.test(line) || !!mdItemHead(line);
+}
+
+// Lists: the construct the old renderer got wrong, and the one these documents lean on hardest.
+// An item keeps collecting lines while they are indented to its content column (nested blocks) OR
+// are a plain wrapped continuation of its paragraph. Each item's collected lines are de-indented and
+// run back through mdBlocks, so nesting, code and sub-lists inside an item all just work.
+function mdList(lines, i, out) {
+  const first = mdItemHead(lines[i]);
+  const items = [];
+  let loose = false, blank = false;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.trim() === "") { blank = true; i++; continue; }
+    const indent = line.length - line.trimStart().length;
+    const head = mdItemHead(line);
+    if (head && indent <= first.indent + 1) {
+      if (head.ordered !== first.ordered) break;      // a different list kind starts a new list
+      if (blank && items.length) loose = true;
+      blank = false;
+      items.push({ content: head.content, lines: [head.text] });
+      i++;
+      continue;
+    }
+    if (!items.length) break;
+    const item = items[items.length - 1];
+    const indented = indent >= item.content;
+    // A blank line only continues the item if what follows is indented into it; otherwise the list
+    // has ended. Un-indented text with no blank before it is a wrapped line of the same paragraph.
+    if (!indented && (blank || mdStartsBlock(line))) break;
+    if (blank) { item.lines.push(""); loose = true; blank = false; }
+    item.lines.push(indented ? line.slice(item.content) : line.trim());
+    i++;
+  }
+  const html = items.map(item => {
+    const blocks = mdBlocks(item.lines);
+    // A tight list drops the wrapper around its item's FIRST paragraph — only the first, so an item
+    // that also carries a nested list keeps that list as a proper block.
+    if (!loose && blocks.length && blocks[0].startsWith("<p>")) {
+      blocks[0] = blocks[0].slice(3, -4);
+    }
+    return "<li>" + blocks.join("\n") + "</li>";
+  }).join("");
+  const tag = first.ordered ? "ol" : "ul";
+  const start = first.ordered && first.start !== 1 ? ' start="' + first.start + '"' : "";
+  out.push("<" + tag + start + ">" + html + "</" + tag + ">");
+  return i;
+}
+
+function mdTable(lines, i) {
+  if (!lines[i].includes("|")) return null;
+  const divider = lines[i + 1];
+  if (!divider || !/^\s{0,3}\|?[\s:|-]+\|[\s:|-]+$/.test(divider) || !divider.includes("-")) return null;
+  const cells = row => row.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map(cell => cell.trim());
+  const align = cells(divider).map(spec => {
+    const left = spec.startsWith(":"), right = spec.endsWith(":");
+    return left && right ? "center" : right ? "right" : "";
+  });
+  const cell = (tag, text, column) =>
+    "<" + tag + (align[column] ? ' style="text-align:' + align[column] + '"' : "") + ">" +
+    mdInline(text) + "</" + tag + ">";
+  let html = '<div class="tablewrap"><table><thead><tr>' +
+    cells(lines[i]).map((text, column) => cell("th", text, column)).join("") + "</tr></thead><tbody>";
+  let next = i + 2;
+  while (next < lines.length && lines[next].includes("|") && lines[next].trim() !== "") {
+    html += "<tr>" + cells(lines[next]).map((text, column) => cell("td", text, column)).join("") + "</tr>";
+    next++;
+  }
+  return { html: html + "</tbody></table></div>", next };
+}
+
+function mdParagraph(lines, i, out) {
+  const body = [lines[i]];
+  i++;
+  while (i < lines.length && lines[i].trim() !== "" && !mdStartsBlock(lines[i]) && !mdTable(lines, i)) {
+    body.push(lines[i]);
+    i++;
+  }
+  // Hard-wrapped source: the newlines are the author's line width, not their intent.
+  out.push("<p>" + mdInline(body.join("\n").replace(/\n/g, " ")) + "</p>");
+  return i;
+}
+
+// ---- inline ----
+// Code spans come out FIRST, behind placeholders, so no later rule can reach inside them (a `**`
+// or an underscore in a code span is code, not emphasis) and their contents are escaped once at the
+// end. Everything after that operates on already-escaped text.
+function mdInline(text) {
+  // The sentinel is a private-use code point: a printable delimiter would collide with the
+  // document's own words, and restoring " 3 " in prose as a code span is exactly that bug.
+  const codes = [];
+  let out = text.replace(/(`+)([^`]|[^`][\s\S]*?)\1(?!`)/g, (whole, ticks, code) =>
+    "\uE000" + (codes.push(code.replace(/^ (.*) $/, "$1")) - 1) + "\uE000");
+  out = esc(out);
+  out = out.replace(/!\[([^\]]*)\]\(((?:[^()\s]|\([^()\s]*\))+)(?:\s+&quot;[^)]*&quot;)?\)/g, (whole, alt, url) => {
+    const safe = mdUrl(url);
+    return safe ? '<img src="' + safe + '" alt="' + alt + '">' : alt;
+  });
+  out = out.replace(/\[([^\]]+)\]\(((?:[^()\s]|\([^()\s]*\))+)(?:\s+&quot;[^)]*&quot;)?\)/g, (whole, label, url) => mdLink(label, url));
+  out = out.replace(/&lt;((?:https?|mailto):[^\s&]+)&gt;/g, (whole, url) => mdLink(url, url));
+  out = out.replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/(^|[\s(])__(?=\S)([\s\S]*?\S)__(?![\w])/g, "$1<strong>$2</strong>");
+  out = out.replace(/(^|[^*\w])\*(?=\S)([^*\n]*?\S)\*(?!\*)/g, "$1<em>$2</em>");
+  out = out.replace(/(^|[^_\w])_(?=\S)([^_\n]*?\S)_(?![\w])/g, "$1<em>$2</em>");
+  out = out.replace(/~~(?=\S)([\s\S]*?\S)~~/g, "<del>$1</del>");
+  return out.replace(/\uE000(\d+)\uE000/g, (whole, index) => "<code>" + esc(codes[Number(index)]) + "</code>");
+}
+
+// Artifact text is written by whoever wrote the artifact, so a link target is untrusted input: only
+// schemes that cannot execute are emitted, and the value is quoted safely into the attribute. The
+// old renderer interpolated the raw URL straight into href — `javascript:` ran, and a quote in the
+// URL escaped the attribute.
+function mdUrl(url) {
+  // The caller hands this ALREADY-escaped text, so a raw quote can no longer reach the attribute
+  // and re-escaping here would double every entity (`&` -> `&amp;amp;`).
+  const target = url.trim();
+  if (!/^(?:https?:\/\/|mailto:|#|\/|\.{1,2}\/)/i.test(target)) return null;
+  return target.replace(/"/g, "%22");
+}
+function mdLink(label, url) {
+  const safe = mdUrl(url);
+  if (!safe) return label;   // an unsupported scheme degrades to its plain label, never a live link
+  return '<a href="' + safe + '" target="_blank" rel="noopener noreferrer">' + label + "</a>";
 }
 
 // ---- search (client-side filter over the current list) + subtree collapse ----
@@ -658,7 +978,7 @@ async function renderChats() {
 }
 
 // ---- chat (session) detail ----
-async function renderChatDetail(id) {
+async function renderChatDetail(id, anchor) {
   setNav("chats", false);
   app.innerHTML = '<div class="empty">loading…</div>';
   let d;
@@ -749,15 +1069,15 @@ async function renderChatDetail(id) {
 
     '<section><h2>Conversation</h2><div id="conv"><div id="convLoad">loading full history…</div></div></section>';
 
-  return loadConversation(id, d);
+  return loadConversation(id, d, anchor);
 }
 
-async function loadConversation(id, detail) {
+async function loadConversation(id, detail, anchor) {
   const conv = document.getElementById("conv");
   let data;
   try { data = await getJSON("/api/chats/" + encodeURIComponent(id) + "/dialogue"); }
   catch (e) { conv.innerHTML = '<div class="err">' + esc(e.message) + "</div>"; return; }
-  if (location.hash !== "#/chats/" + id) return;   // user navigated away meanwhile
+  if (!location.hash.startsWith("#/chats/" + id)) return;   // user navigated away meanwhile
   const parts = [];
   data.chats.forEach((chat, index) => {
     const label = detail.chats[index] || {};
@@ -777,117 +1097,696 @@ async function loadConversation(id, detail) {
         parts.push('<div class="turn tools">· ' + turn.count + " tool call" + (turn.count === 1 ? "" : "s") +
                    (names ? " — " + esc(names) : "") + " ·</div>");
       } else if (turn.who === "you") {
-        parts.push('<div class="turn you"><span class="who">you</span><span class="ts">' + fmtTs(turn.ts) +
+        parts.push('<div class="turn you" data-ts="' + (turn.ts || 0) + '"><span class="who">you</span><span class="ts">' + fmtTs(turn.ts) +
                    '</span><div class="body">' + esc(turn.text) + "</div></div>");
       } else {
-        parts.push('<div class="turn agent"><span class="who">agent</span><span class="ts">' + fmtTs(turn.ts) +
+        parts.push('<div class="turn agent" data-ts="' + (turn.ts || 0) + '"><span class="who">agent</span><span class="ts">' + fmtTs(turn.ts) +
                    '</span><div class="body md">' + renderMarkdown(turn.text) + "</div></div>");
       }
     }
   });
   conv.innerHTML = parts.join("") || '<div class="muted">no conversation recorded.</div>';
+  if (anchor) avAnchorTurn(conv, anchor);
 }
 
-// ---- artifacts list ----
-async function renderArtifacts() {
-  setNav("artifacts", true);
-  app.innerHTML = '<div class="empty">loading…</div>';
-  let data;
-  try { data = await getJSON("/api/artifacts"); }
-  catch (e) { app.innerHTML = '<div class="err">' + esc(e.message) + "</div>"; return; }
-  if (!data.artifacts.length) { app.innerHTML = '<div class="empty">No artifacts yet. Create one with <code>tx artifact create &lt;file&gt;</code>.</div>'; return; }
-  const rows = data.artifacts.map(a => {
-    const authors = a.authors.map(x => '<span class="chip" title="' + esc(x.id) + '">' + esc(x.name) + "</span>").join("");
-    return '<tr class="rowlink" data-href="#/artifacts/' + esc(a.id) + '">' +
-      '<td><b>' + esc(a.title || a.filename) + '</b></td>' +
-      '<td>' + groupChip(a) + '</td>' +
-      '<td class="mono muted" style="font-size:12px">' + esc(a.filename) + '</td>' +
-      '<td class="right num">' + a.revs + '</td>' +
-      '<td>' + authors + '</td>' +
-      '<td class="right muted mono" style="font-size:12px">' + esc(a.updated_ago) + ' ago</td></tr>';
-  }).join("");
-  app.innerHTML =
-    '<table class="grid"><thead><tr>' +
-    '<th>artifact</th><th>group</th><th>file</th><th class="right">revs</th><th>authors</th><th class="right">updated</th>' +
-    '</tr></thead><tbody>' + rows + '</tbody></table>';
-  const tbody = app.querySelector("tbody");
-  tbody.addEventListener("click", e => {
-    const row = e.target.closest("tr[data-href]");
-    if (row && !e.target.closest("a")) location.hash = row.dataset.href.slice(1);
-  });
-  bindFilter(tbody);
-}
-
-// ---- artifact detail ----
-async function renderArtifactDetail(id) {
-  setNav("artifacts", false);
-  app.innerHTML = '<div class="empty">loading…</div>';
-  let d;
-  try { d = await getJSON("/api/artifacts/" + encodeURIComponent(id)); }
-  catch (e) { app.innerHTML = '<div class="err">' + esc(e.message) + "</div>"; return; }
-
-  const w = d.working;
-  let working;
-  if (w.encoding === "markdown") working = '<div class="md">' + renderMarkdown(w.text) + "</div>";
-  else if (w.encoding === "text") working = '<pre class="raw">' + esc(w.text) + "</pre>";
-  else working = '<p class="muted">Binary content (' + w.size + ' bytes).</p>' +
-    '<a class="dl" href="/api/artifacts/' + encodeURIComponent(id) + '/raw">↓ download ' + esc(d.filename) + "</a>";
-
-  const rows = d.history.map(t =>
-    '<tr><td class="num">r' + t.rev + '</td>' +
-    '<td>' + sessionLink(t.session_id, t.actor, t.session_exists) + '</td>' +
-    '<td class="muted mono" style="font-size:12px">' + esc(t.ago) + ' ago</td>' +
-    '<td class="muted" style="font-size:13px">' + (t.changes ? esc(t.changes) : "—") + "</td></tr>").join("");
-
-  const opts = d.history.map(t => '<option value="' + t.rev + '">rev ' + t.rev + "</option>").join("");
-  const defA = Math.max(0, d.revs - 2), defB = d.revs - 1;
-  const dirty = d.dirty ? ' <span class="badge">working copy dirty — unsnapshotted edits</span>' : "";
-
-  app.innerHTML =
-    '<div class="crumbs"><a href="#/artifacts">artifacts</a> / <span>' + esc(shortId(d.id)) + "</span></div>" +
-    '<h1 class="doc">' + esc(d.title || d.filename) + "</h1>" +
-    '<p class="subhead"><span class="mono" style="font-size:12px">' + esc(d.id) + '</span><br>' +
-    '<span class="mono">' + esc(d.filename) + '</span> · ' + d.revs + ' revision' + (d.revs === 1 ? "" : "s") +
-    ' · created ' + esc(d.created_ago) + ' ago · updated ' + esc(d.updated_ago) + " ago" +
-    ' · ' + groupChip(d) + dirty + "</p>" +
-
-    '<section><h2>Touched by</h2><table class="grid"><thead><tr>' +
-    '<th>rev</th><th>session</th><th>when</th><th>changes</th>' +
-    '</tr></thead><tbody>' + rows + "</tbody></table></section>" +
-
-    '<section><h2>Working copy</h2><div style="padding-top:8px">' + working + "</div></section>" +
-
-    (d.revs > 1 ?
-      '<section><h2>Diff revisions</h2>' +
-      '<div class="diffbar"><select id="ra">' + opts + '</select><span class="muted">→</span>' +
-      '<select id="rb">' + opts + '</select><button id="dodiff">compare</button></div>' +
-      '<pre class="diff" id="diffout"><span class="c">pick two revisions and press compare</span></pre>' +
-      "</section>"
-      : "");
-
-  if (d.revs > 1) {
-    document.getElementById("ra").value = defA;
-    document.getElementById("rb").value = defB;
-    document.getElementById("dodiff").onclick = () => runDiff(id);
-    runDiff(id);
+// Land on the turn that was live when an artifact revision was taken: the LAST turn at or before
+// that moment, because the conversation that produced an edit precedes it. Highlighted briefly so
+// the arrival point is obvious after the jump.
+function avAnchorTurn(conv, at) {
+  const turns = Array.from(conv.querySelectorAll(".turn[data-ts]"));
+  if (!turns.length) return;
+  let target = null;
+  for (const turn of turns) {
+    const ts = Number(turn.dataset.ts);
+    if (ts && ts <= at) target = turn;
   }
+  target = target || turns[0];
+  target.scrollIntoView({ block: "center" });
+  target.classList.add("turn-hl");
+  setTimeout(() => target.classList.remove("turn-hl"), 2600);
 }
 
-async function runDiff(id) {
-  const a = document.getElementById("ra").value, b = document.getElementById("rb").value;
-  const out = document.getElementById("diffout");
-  out.innerHTML = '<span class="c">computing…</span>';
-  let r;
-  try { r = await getJSON("/api/artifacts/" + encodeURIComponent(id) + "/diff?a=" + a + "&b=" + b); }
-  catch (e) { out.innerHTML = '<span class="d">' + esc(e.message) + "</span>"; return; }
-  if (r.error) { out.innerHTML = '<span class="d">' + esc(r.error) + "</span>"; return; }
-  if (!r.diff) { out.innerHTML = '<span class="c">(no differences between rev ' + a + " and rev " + b + ")</span>"; return; }
-  out.innerHTML = r.diff.split("\n").map(line => {
-    const cls = line.startsWith("+") ? "a" : line.startsWith("-") ? "d" :
-                line.startsWith("@@") ? "h" : "c";
-    return '<span class="' + cls + '">' + esc(line) + "</span>";
-  }).join("\n");
+// ---- artifact reader ----
+// One persistent panel replacing the old list page + detail page: an index rail (banded by effort
+// group), the document, and a rail that switches between the document's OUTLINE and its REVISIONS.
+// Picking an artifact swaps the centre only — never a page navigation — so a set of plans can be
+// skimmed at keyboard speed. The whole reading position rides in the hash and deep-links:
+//   #/artifacts            the reader, nothing open
+//   #/artifacts/<id>       the working copy
+//   #/artifacts/<id>@7     the frozen rev 7
+//   #/artifacts/<id>@5..7  rev 5 → rev 7, diffed
+const AV = {
+  index: null, detail: null, id: null,
+  rev: null,             // null = the working copy; N = reading that frozen snapshot
+  cmp: null,             // {a, b} = diffing two snapshots
+  text: new Map(),       // "<id>@<rev>" -> text; a rev is immutable, so this never goes stale
+  filter: "", find: "", findAt: 0, finding: false, fullDiff: false,
+};
+try { AV.rail = localStorage.getItem("txide-av-rail") || "outline"; } catch (e) { AV.rail = "outline"; }
+try { AV.norail = localStorage.getItem("txide-av-norail") === "1"; } catch (e) { AV.norail = false; }
+try { AV.noindex = localStorage.getItem("txide-av-noindex") === "1"; } catch (e) { AV.noindex = false; }
+try { AV.sbs = localStorage.getItem("txide-av-sbs") === "1"; } catch (e) { AV.sbs = false; }
+function avSave() {
+  try {
+    localStorage.setItem("txide-av-rail", AV.rail);
+    localStorage.setItem("txide-av-norail", AV.norail ? "1" : "0");
+    localStorage.setItem("txide-av-noindex", AV.noindex ? "1" : "0");
+    localStorage.setItem("txide-av-sbs", AV.sbs ? "1" : "0");
+  } catch (e) {}
 }
+function avEl(id) { return document.getElementById(id); }
+function avRawUrl(id, rev) {
+  return "/api/artifacts/" + encodeURIComponent(id) + "/raw" + (rev == null ? "" : "?rev=" + rev);
+}
+function avKind(filename) {
+  const ext = filename.includes(".") ? filename.split(".").pop().toLowerCase() : "";
+  return ({ markdown: "md", patch: "diff", yml: "yaml", text: "txt" })[ext] || ext || "raw";
+}
+
+// The hash carries the reading position; these two are its only parser and only writer.
+function avParse(rest) {
+  const at = rest.indexOf("@");
+  if (at < 0) return { id: rest, rev: null, cmp: null };
+  const id = rest.slice(0, at), spec = rest.slice(at + 1);
+  const range = spec.match(/^(\d+)\.\.(\d+)$/);
+  if (range) return { id, rev: null, cmp: { a: +range[1], b: +range[2] } };
+  return { id, rev: /^\d+$/.test(spec) ? +spec : null, cmp: null };
+}
+function avGo(id, rev, cmp) {
+  if (!id) { location.hash = "/artifacts"; return; }
+  location.hash = "/artifacts/" + id +
+    (cmp ? "@" + cmp.a + ".." + cmp.b : rev != null ? "@" + rev : "");
+}
+
+// One function per content kind — the seam every future format drops into. A new format is a `kind`
+// from the server's classifier plus a renderer here; nothing else in the reader moves.
+const AV_VIEWERS = {
+  markdown: v => '<div class="md">' + renderMarkdown(v.text) + "</div>",
+  text: v => '<pre class="raw">' + esc(v.text) + "</pre>",
+  binary: v => '<p class="muted">Binary content · ' + fmtBytes(v.size) + "</p>" +
+    '<a class="dl" href="' + avRawUrl(v.id, v.rev) + '">↓ download ' + esc(v.filename) + "</a>",
+};
+function avViewerHtml(view) { return (AV_VIEWERS[view.encoding] || AV_VIEWERS.binary)(view); }
+
+async function renderArtifactReader(rest) {
+  setNav("artifacts", false);
+  const want = rest ? avParse(rest) : { id: null, rev: null, cmp: null };
+  const sameView = want.id === AV.id && want.rev === AV.rev &&
+    JSON.stringify(want.cmp) === JSON.stringify(AV.cmp);
+  if (want.id !== AV.id) { AV.find = ""; AV.findAt = 0; AV.finding = false; }
+  AV.id = want.id; AV.rev = want.rev; AV.cmp = want.cmp;
+  avShell();
+  const list = avEl("av-ilist"), body = avEl("av-dbody");
+  const listTop = list.scrollTop, bodyTop = sameView ? body.scrollTop : 0;
+  try { AV.index = await getJSON("/api/artifacts"); }
+  catch (e) { list.innerHTML = '<div class="err" style="padding:16px">' + esc(e.message) + "</div>"; return; }
+  avRenderIndex();
+  list.scrollTop = listTop;
+  if (!AV.id) {
+    avEl("av-dhead").innerHTML = '<span class="ti muted">no artifact open</span>';
+    body.innerHTML = '<div class="av-page"><div class="empty">' +
+      (AV.index.artifacts.length
+        ? "Pick an artifact on the left, or press <b>j</b>/<b>k</b> to walk the list."
+        : "No artifacts yet. Create one with <code>tx artifact create &lt;file&gt;</code>.") +
+      "</div></div>";
+    avEl("av-rbody").innerHTML = "";
+    avSyncCtls();
+    return;
+  }
+  try { AV.detail = await getJSON("/api/artifacts/" + encodeURIComponent(AV.id)); }
+  catch (e) {
+    avEl("av-dhead").innerHTML = '<span class="ti muted">not found</span>';
+    body.innerHTML = '<div class="av-page"><div class="err">' + esc(e.message) + "</div></div>";
+    return;
+  }
+  document.title = "tx-ide — " + (AV.detail.title || AV.detail.filename);
+  await avRenderDoc();
+  avEl("av-dbody").scrollTop = bodyTop;
+}
+
+// The shell is built once and then only its three bodies are re-filled, so the index rail keeps its
+// scroll across the refresh tick. Leaving the view and coming back rebuilds it.
+function avShell() {
+  if (avEl("av-wrap")) { avSyncChrome(); return; }
+  filterables = [];
+  app.innerHTML =
+    '<div class="av-ctls" id="av-ctls"></div>' +
+    '<div class="av-wrap" id="av-wrap">' +
+      '<div class="av-index">' +
+        '<div class="av-ifilter"><input id="av-filter" type="search" placeholder="filter artifacts…" autocomplete="off"></div>' +
+        '<div class="av-ilist" id="av-ilist"></div>' +
+      '</div>' +
+      '<div class="av-doc" id="av-doc">' +
+        '<div class="av-dhead" id="av-dhead"></div>' +
+        '<div class="av-find" id="av-findbar">' +
+          '<input id="av-findinput" type="text" placeholder="find in document…" autocomplete="off">' +
+          '<span class="n" id="av-findn"></span>' +
+          '<button class="av-btn" id="av-findprev" title="previous (shift-enter)">↑</button>' +
+          '<button class="av-btn" id="av-findnext" title="next (enter)">↓</button>' +
+          '<button class="av-btn" id="av-findclose" title="close (esc)">✕</button>' +
+        '</div>' +
+        '<div class="av-body" id="av-dbody"></div>' +
+      '</div>' +
+      '<div class="av-rail" id="av-rail">' +
+        '<div class="av-rtabs">' +
+          '<div class="av-rtab" data-tab="outline">outline</div>' +
+          '<div class="av-rtab" data-tab="revs">revisions</div>' +
+        '</div>' +
+        '<div class="av-rbody" id="av-rbody"></div>' +
+      '</div>' +
+    '</div>';
+  avEl("av-filter").value = AV.filter;
+  avEl("av-filter").oninput = e => { AV.filter = e.target.value; avRenderIndex(); };
+  avEl("av-ilist").onclick = e => {
+    const row = e.target.closest(".av-row");
+    if (row) avGo(row.dataset.id, null, null);
+  };
+  document.querySelectorAll(".av-rtab").forEach(tab => {
+    tab.onclick = () => { AV.rail = tab.dataset.tab; AV.norail = false; avSave(); avSyncChrome(); avRenderRail(); };
+  });
+  avEl("av-dbody").addEventListener("scroll", avSpy, { passive: true });
+  avEl("av-findinput").oninput = e => { AV.find = e.target.value; AV.findAt = 0; avApplyFind(true); };
+  avEl("av-findinput").onkeydown = e => {
+    if (e.key === "Enter") { e.preventDefault(); avFindStep(e.shiftKey ? -1 : 1); }
+    else if (e.key === "Escape") { e.preventDefault(); avCloseFind(); }
+  };
+  avEl("av-findnext").onclick = () => avFindStep(1);
+  avEl("av-findprev").onclick = () => avFindStep(-1);
+  avEl("av-findclose").onclick = avCloseFind;
+  avSyncCtls();
+  avSyncChrome();
+}
+function avSyncChrome() {
+  avEl("av-wrap").classList.toggle("norail", AV.norail);
+  avEl("av-wrap").classList.toggle("noindex", AV.noindex);
+  avEl("av-doc").classList.toggle("finding", AV.finding);
+  document.querySelectorAll(".av-rtab").forEach(t => t.classList.toggle("on", t.dataset.tab === AV.rail));
+}
+
+function avRenderIndex() {
+  const needle = AV.filter.trim().toLowerCase();
+  const matches = AV.index.artifacts.filter(a => !needle ||
+    (a.title || "").toLowerCase().includes(needle) ||
+    a.filename.toLowerCase().includes(needle) ||
+    (a.resolved_group || "").toLowerCase().includes(needle) ||
+    a.authors.some(author => author.name.toLowerCase().includes(needle)));
+  // Band by effort group while KEEPING the payload's newest-touched-first order: a group takes the
+  // position of its freshest artifact, so recent work still floats to the top of the rail.
+  const groups = [], byGroup = new Map();
+  for (const artifact of matches) {
+    const group = artifact.resolved_group || "—";
+    if (!byGroup.has(group)) { byGroup.set(group, []); groups.push(group); }
+    byGroup.get(group).push(artifact);
+  }
+  avEl("av-ilist").innerHTML = groups.map(group => {
+    const items = byGroup.get(group);
+    return '<div class="av-gband" style="--c:' + esc(items[0].group_color || "var(--dim)") + '">' +
+      esc(group) + "</div>" +
+      items.map(a =>
+        '<div class="av-row' + (a.id === AV.id ? " sel" : "") + '" data-id="' + esc(a.id) + '">' +
+          '<span class="t" title="' + esc(a.title || a.filename) + '">' + esc(a.title || a.filename) + "</span>" +
+          '<span class="m"><span class="av-kind">' + esc(avKind(a.filename)) + "</span>" +
+          a.revs + "r · " + esc(a.updated_ago) + "</span>" +
+        "</div>").join("");
+  }).join("") || '<div class="empty" style="padding:44px 12px;font-size:12.5px">no match</div>';
+}
+
+// ---- the document pane: working copy | a frozen rev | a diff ----
+async function avRenderDoc() {
+  const detail = AV.detail, body = avEl("av-dbody");
+  avSyncHead();
+  body.innerHTML = '<div class="av-page"><div class="muted">loading…</div></div>';
+  if (AV.cmp) await avRenderDiff();
+  else if (AV.rev != null) await avRenderRev();
+  else body.innerHTML = '<div class="av-page">' + avViewerHtml({
+    ...detail.working, id: detail.id, rev: null, filename: detail.filename,
+  }) + "</div>";
+  // Re-marking after a re-render must NOT jump the viewport — the 5s refresh tick lands here, and
+  // scrolling the reader back to the current hit every minute would fight whoever is reading.
+  avApplyFind(false);
+  avRenderRail();
+}
+
+// The header is re-rendered on its own for layout toggles — collapsing a rail must not cost a
+// re-render of the document (or a re-fetch of the revs behind a diff).
+function avSyncHead() {
+  if (AV.detail && AV.detail.id === AV.id) avEl("av-dhead").innerHTML = avHeadHtml(AV.detail);
+  avSyncCtls();
+}
+
+// Rebuilt on its own whenever a control changes state, so toggling a panel costs a bar re-render
+// rather than a re-render (or re-fetch) of the document behind it.
+function avSyncCtls() {
+  avEl("av-ctls").innerHTML = avCtlsHtml();
+  avEl("av-indexbtn").onclick = () => { AV.noindex = !AV.noindex; avSave(); avSyncChrome(); avSyncCtls(); };
+  avEl("av-railbtn").onclick = () => {
+    AV.norail = !AV.norail; avSave(); avSyncChrome(); avSyncCtls(); avRenderRail();
+  };
+  if (!AV.detail || AV.detail.id !== AV.id) return;
+  avEl("av-findbtn").onclick = () => (AV.finding ? avCloseFind() : avOpenFind());
+  if (AV.rev != null || AV.cmp) avEl("av-current").onclick = () => avGo(AV.id, null, null);
+  if (!AV.cmp) return;
+  avEl("av-sbs").onclick = event => {
+    const pick = event.target.closest("[data-sbs]");
+    if (!pick || AV.sbs === (pick.dataset.sbs === "1")) return;
+    AV.sbs = pick.dataset.sbs === "1";
+    // Side-by-side used to grab the rail's width automatically. It no longer does: hiding a panel
+    // behind the user's back left stale state on the way out, and the control bar makes reclaiming
+    // that width one obvious click — an explicit toggle beats a clever one.
+    avSave(); avRenderDoc();
+  };
+  avEl("av-full").onclick = event => {
+    const pick = event.target.closest("[data-full]");
+    if (!pick || AV.fullDiff === (pick.dataset.full === "1")) return;
+    AV.fullDiff = pick.dataset.full === "1";
+    avRenderDoc();
+  };
+}
+
+function avHeadHtml(detail) {
+  return '<span class="ti" title="' + esc(detail.title || detail.filename) + '">' +
+      esc(detail.title || detail.filename) + "</span>" +
+    groupChip(detail) +
+    (detail.dirty ? '<span class="badge" title="the working copy has edits no rev has captured yet">dirty</span>' : "") +
+    '<span class="sub">' + esc(detail.filename) + " · " + detail.revs + "r · " +
+      fmtBytes(detail.working.size) + "</span>";
+}
+
+// The control bar: the two panel toggles first (they are what you reach for most), then the
+// document controls, then whatever the current mode adds. Everything that used to crowd the
+// document header lives here, where it has the window's full width to spread into.
+function avCtlsHtml() {
+  const panels =
+    '<span class="lbl">panels</span>' +
+    '<button class="av-btn' + (AV.noindex ? "" : " on") + '" id="av-indexbtn" ' +
+      'title="show / hide the artifact index on the left">' + (AV.noindex ? "index ▸" : "◂ index") + "</button>" +
+    '<button class="av-btn' + (AV.norail ? "" : " on") + '" id="av-railbtn" ' +
+      'title="show / hide the outline / revisions rail on the right">' + (AV.norail ? "◂ rail" : "rail ▸") + "</button>";
+  if (!AV.detail || AV.detail.id !== AV.id) return panels;   // detail for THIS artifact, or panels only
+  const mode = AV.rev != null || AV.cmp
+    ? '<button class="av-btn on" id="av-current" title="back to the working copy">' +
+      (AV.cmp ? "rev " + AV.cmp.a + " → " + AV.cmp.b : "reading rev " + AV.rev) + " ✕</button>"
+    : "";
+  const diff = AV.cmp
+    ? avSegHtml("av-sbs", "sbs", AV.sbs, "unified", "side-by-side", "how to lay the diff out") +
+      avSegHtml("av-full", "full", AV.fullDiff, "changes", "whole doc",
+                "just the changed regions with context, or every line of the document")
+    : "";
+  return panels +
+    '<span class="sep"></span>' +
+    '<button class="av-btn' + (AV.finding ? " on" : "") + '" id="av-findbtn" title="find in document  ( / )">find</button>' +
+    (mode || diff ? '<span class="sep"></span>' + mode + diff : "") +
+    '<a class="av-btn sp" href="' + avRawUrl(AV.detail.id, AV.rev) + '" title="download these bytes">↓ raw</a>';
+}
+
+// `off`/`on` are the two labels; `state` picks which is lit. The chosen value comes back as the
+// data attribute `key`, so one delegated handler per control reads it.
+function avSegHtml(id, key, state, off, on, title) {
+  const seg = (label, value, lit) =>
+    "<span data-" + key + '="' + value + '"' + (lit ? ' class="on"' : "") + ">" + label + "</span>";
+  return '<span class="av-seg" id="' + id + '" title="' + esc(title) + '">' +
+    seg(off, 0, !state) + seg(on, 1, state) + "</span>";
+}
+
+async function avRevText(rev) {
+  const key = AV.id + "@" + rev;
+  if (AV.text.has(key)) return AV.text.get(key);
+  const response = await fetch(avRawUrl(AV.id, rev));
+  if (!response.ok) throw new Error("rev " + rev + ": HTTP " + response.status);
+  const text = await response.text();
+  AV.text.set(key, text);
+  return text;
+}
+
+async function avRenderRev() {
+  const detail = AV.detail, body = avEl("av-dbody");
+  if (detail.working.encoding === "binary") {
+    body.innerHTML = '<div class="av-page">' + avViewerHtml({
+      ...detail.working, id: detail.id, rev: AV.rev, filename: detail.filename }) + "</div>";
+    return;
+  }
+  let text;
+  try { text = await avRevText(AV.rev); }
+  catch (e) { body.innerHTML = '<div class="av-page"><div class="err">' + esc(e.message) + "</div></div>"; return; }
+  if (AV.rev == null || AV.cmp) return;   // navigated away while the rev was in flight
+  body.innerHTML = '<div class="av-page">' + avViewerHtml({
+    encoding: detail.working.encoding, text, size: text.length,
+    id: detail.id, rev: AV.rev, filename: detail.filename,
+  }) + "</div>";
+}
+
+async function avRenderDiff() {
+  const body = avEl("av-dbody");
+  let left, right;
+  try { [left, right] = await Promise.all([avRevText(AV.cmp.a), avRevText(AV.cmp.b)]); }
+  catch (e) { body.innerHTML = '<div class="av-page"><div class="err">' + esc(e.message) + "</div></div>"; return; }
+  if (!AV.cmp) return;   // navigated away while the revs were in flight
+  const rows = avPairRows(avLineDiff(left, right));
+  const changed = rows.filter(row => row.kind !== "eq").length;
+  const shown = AV.fullDiff ? rows : avCollapse(rows);
+  body.innerHTML = '<div class="av-page' + (AV.sbs ? " wide-page" : "") + '">' + avDiffHead(changed) +
+    (AV.sbs ? avSbsHtml(shown) : avUnifiedHtml(shown)) + "</div>";
+}
+
+// The provenance of the change on screen: the revisions inside the span, and — the point of it —
+// the conversations that wrote them, linked. This is the "what influenced this edit" answer.
+function avDiffHead(changed) {
+  const span = avRevSpan(AV.cmp.a, AV.cmp.b);
+  const sessions = avContributors(span);
+  const sources = sessions.length
+    ? '<div class="av-src"><span class="k">written by</span>' +
+      sessions.map(person =>
+        avChatLink(person.id, person.actor, person.exists, person.touches[person.touches.length - 1].at) +
+        '<span class="n">' + person.touches.map(touch => "r" + touch.rev).join(" ") + "</span>").join("") +
+      "</div>"
+    : "";
+  const notes = span.filter(touch => touch.changes).map(touch =>
+    '<div class="av-note"><span class="r">r' + touch.rev + "</span>" + esc(touch.changes) + "</div>").join("");
+  return '<div class="av-diffhead"><div class="ln1">rev ' + AV.cmp.a + " → rev " + AV.cmp.b +
+    " · " + (changed ? changed + " changed line" + (changed === 1 ? "" : "s") : "identical") +
+    " · " + span.length + " revision" + (span.length === 1 ? "" : "s") + " in between</div>" +
+    sources + notes + "</div>";
+}
+
+// A line diff by LCS. We store whole versions, not deltas, so the comparison is computed here — one
+// op list, rendered two ways. The common prefix/suffix is trimmed first: these are long plans whose
+// revs mostly match, and the O(n·m) table then only has to cover what actually moved.
+function avLineDiff(left, right) {
+  const a = left.split("\n"), b = right.split("\n");
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head &&
+         a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  const am = a.slice(head, a.length - tail), bm = b.slice(head, b.length - tail);
+  const n = am.length, m = bm.length;
+  const lcs = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i][j] = am[i] === bm[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const ops = [];
+  for (let k = 0; k < head; k++) ops.push({ op: "=", text: a[k], la: k + 1, lb: k + 1 });
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (am[i] === bm[j]) ops.push({ op: "=", text: am[i], la: head + i++ + 1, lb: head + j++ + 1 });
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) ops.push({ op: "-", text: am[i], la: head + i++ + 1, lb: null });
+    else ops.push({ op: "+", text: bm[j], la: null, lb: head + j++ + 1 });
+  }
+  while (i < n) ops.push({ op: "-", text: am[i], la: head + i++ + 1, lb: null });
+  while (j < m) ops.push({ op: "+", text: bm[j], la: null, lb: head + j++ + 1 });
+  for (let k = 0; k < tail; k++) {
+    ops.push({ op: "=", text: a[a.length - tail + k], la: a.length - tail + k + 1, lb: b.length - tail + k + 1 });
+  }
+  return ops;
+}
+
+// Pair each run of deletions with the run of additions that follows it, so a rewritten line shows as
+// ONE changed row with both sides — the shape both renderings want.
+function avPairRows(ops) {
+  const rows = [];
+  let i = 0;
+  while (i < ops.length) {
+    if (ops[i].op === "=") { rows.push({ kind: "eq", left: ops[i], right: ops[i] }); i++; continue; }
+    const dels = [], adds = [];
+    while (i < ops.length && ops[i].op === "-") dels.push(ops[i++]);
+    while (i < ops.length && ops[i].op === "+") adds.push(ops[i++]);
+    for (let k = 0; k < Math.max(dels.length, adds.length); k++) {
+      const left = dels[k] || null, right = adds[k] || null;
+      rows.push({ kind: left && right ? "chg" : left ? "del" : "add", left, right });
+    }
+  }
+  return rows;
+}
+
+const AV_CONTEXT = 3;
+function avCollapse(rows) {
+  const keep = rows.map(() => false);
+  rows.forEach((row, k) => {
+    if (row.kind === "eq") return;
+    for (let x = Math.max(0, k - AV_CONTEXT); x <= Math.min(rows.length - 1, k + AV_CONTEXT); x++) keep[x] = true;
+  });
+  const out = [];
+  let hidden = 0;
+  rows.forEach((row, k) => {
+    if (!keep[k]) { hidden++; return; }
+    if (hidden) { out.push({ kind: "skip", n: hidden }); hidden = 0; }
+    out.push(row);
+  });
+  if (hidden) out.push({ kind: "skip", n: hidden });
+  return out;
+}
+function avSkipLabel(row) {
+  return "⋯ " + row.n + " unchanged line" + (row.n === 1 ? "" : "s");
+}
+
+function avUnifiedHtml(rows) {
+  const lines = [];
+  for (const row of rows) {
+    if (row.kind === "skip") { lines.push('<span class="s">' + esc(avSkipLabel(row)) + "</span>"); continue; }
+    if (row.kind === "eq") { lines.push('<span class="c"> ' + esc(row.left.text) + "</span>"); continue; }
+    if (row.left) lines.push('<span class="d">-' + esc(row.left.text) + "</span>");
+    if (row.right) lines.push('<span class="a">+' + esc(row.right.text) + "</span>");
+  }
+  // Each span is its own block (wrapped lines get a hanging indent), so the spans butt together —
+  // a newline between them would render as an extra blank line inside the <pre>.
+  return '<pre class="diff">' + lines.join("") + "</pre>";
+}
+
+function avSbsHtml(rows) {
+  // An explicit colgroup, because `table-layout: fixed` takes its widths from the FIRST row — and
+  // that row is often a colspan-4 "N unchanged lines" marker, which would leave all four columns
+  // to split evenly and strand the text in quarter-width gutters.
+  return '<table class="av-sbs"><colgroup><col class="cn"><col><col class="cn"><col></colgroup>' +
+    rows.map(row => {
+    if (row.kind === "skip") return '<tr class="skip"><td colspan="4">' + esc(avSkipLabel(row)) + "</td></tr>";
+    const left = '<td class="ln">' + (row.left ? row.left.la : "") + '</td><td class="lt">' +
+      (row.left ? esc(row.left.text) : "") + "</td>";
+    const right = '<td class="ln gut">' + (row.right ? row.right.lb : "") + '</td><td class="rt">' +
+      (row.right ? esc(row.right.text) : "") + "</td>";
+    return '<tr class="' + row.kind + '">' + left + right + "</tr>";
+  }).join("") + "</table>";
+}
+
+// ---- the rail: outline | revisions ----
+function avRenderRail() {
+  if (AV.norail) return;
+  if (AV.rail === "revs") avRenderRevs(); else avRenderOutline();
+}
+
+// Headings lifted out of the RENDERED document, so it works for any viewer that emits them and
+// needs no second parse of the source.
+function avRenderOutline() {
+  const body = avEl("av-dbody");
+  const headings = Array.from(body.querySelectorAll("h1, h2, h3, h4"));
+  headings.forEach((heading, k) => { heading.id = "av-h" + k; });
+  avEl("av-rbody").innerHTML = headings.length
+    ? '<div class="av-toc">' + headings.map((heading, k) =>
+        '<a href="#" data-h="' + k + '" class="l' + heading.tagName[1] + '" title="' +
+        esc(heading.textContent) + '">' + esc(heading.textContent) + "</a>").join("") + "</div>"
+    : '<div class="av-rhint">This document has no headings to outline.</div>';
+  avEl("av-rbody").onclick = event => {
+    const link = event.target.closest("a[data-h]");
+    if (!link) return;
+    event.preventDefault();
+    headings[+link.dataset.h].scrollIntoView({ block: "start", behavior: "smooth" });
+  };
+  avSpy();
+}
+// Scroll-spy: the last heading at or above the top of the viewport is the one you are reading.
+function avSpy() {
+  const toc = document.querySelector(".av-toc");
+  if (!toc) return;
+  const body = avEl("av-dbody"), links = Array.from(toc.children);
+  let active = 0;
+  links.forEach((link, k) => {
+    const heading = avEl("av-h" + k);
+    if (heading && heading.getBoundingClientRect().top - body.getBoundingClientRect().top < 60) active = k;
+  });
+  links.forEach((link, k) => link.classList.toggle("on", k === active));
+}
+
+// Every session that ever touched the artifact, creator first, with the revisions it produced —
+// the "whose conversations do I read to understand this document" question, answered off `history`.
+function avContributors(history) {
+  const order = [], bySession = new Map();
+  for (const touch of history) {
+    if (!bySession.has(touch.session_id)) { bySession.set(touch.session_id, []); order.push(touch.session_id); }
+    bySession.get(touch.session_id).push(touch);
+  }
+  return order.map(sessionId => {
+    const touches = bySession.get(sessionId);
+    return { id: sessionId, touches, actor: touches[0].actor, exists: touches[0].session_exists };
+  });
+}
+
+// A link into the writing session's transcript, anchored at the moment of the touch — `at` puts the
+// chat view on the turn that was live when the revision was taken. The `user` sentinel and vanished
+// records have no transcript to open, so they stay plain text.
+function avChatLink(sessionId, label, exists, at) {
+  if (!exists) return '<span class="mono" title="' + esc(sessionId) + ' — no session record">' + esc(label) + "</span>";
+  return '<a class="mono" href="#/chats/' + esc(sessionId) + (at ? "@" + Math.round(at) : "") +
+    '" title="open this conversation at the moment of the touch">' + esc(label) + "</a>";
+}
+
+function avRevSpan(a, b) {
+  // The revisions that actually produced a diff A→B are the touches AFTER a, up to and including b.
+  const [low, high] = a <= b ? [a, b] : [b, a];
+  return AV.detail.history.filter(touch => touch.rev > low && touch.rev <= high);
+}
+
+function avRenderRevs() {
+  const detail = AV.detail;
+  const contributors = avContributors(detail.history);
+  const who = '<div class="av-rhint"><b>' + contributors.length + " session" +
+    (contributors.length === 1 ? "" : "s") + "</b> wrote this document<div class=\"av-who\">" +
+    contributors.map(person =>
+      avChatLink(person.id, person.actor, person.exists, person.touches[person.touches.length - 1].at) +
+      '<span class="n">' + person.touches.length + "r</span>").join("") + "</div></div>";
+  const hint = '<div class="av-rhint">Click a revision to read it · <b>A</b>/<b>B</b> (or shift-click) to diff any two</div>';
+  // The working copy is its own row above the history, because it is its own thing: normally equal
+  // to the last rev, but when dirty it is content no revision holds. Reading "current" selects it.
+  const working = '<div class="av-rev' + (AV.rev == null && !AV.cmp ? " on" : "") + '" data-rev="current">' +
+    '<div><div class="r">now</div></div><div><div class="who">working copy</div>' +
+    '<div class="ch">' + (detail.dirty
+      ? "edits beyond rev " + (detail.revs - 1) + ", not yet snapshotted"
+      : "identical to rev " + (detail.revs - 1)) + "</div></div></div>";
+  // Newest first. A long history is usually one session hammering away, so the author is printed
+  // only where it CHANGES — the rail then reads as "who took over when" instead of a repeated name.
+  const newestFirst = detail.history.slice().reverse();
+  const rows = newestFirst.map((touch, k) => {
+    const selected = AV.rev === touch.rev || (AV.cmp && AV.cmp.b === touch.rev);
+    const compared = AV.cmp && AV.cmp.a === touch.rev;
+    const previous = newestFirst[k - 1];
+    const handover = !previous || previous.session_id !== touch.session_id;
+    // A and B are the two diff endpoints, settable independently — the pair is arbitrary, and
+    // moving one end is one click rather than re-picking both.
+    const pick = '<span class="av-pick">' +
+      '<b data-pick="a"' + (compared ? ' class="on"' : "") + ' title="use as the LEFT side">A</b>' +
+      '<b data-pick="b"' + (AV.cmp && AV.cmp.b === touch.rev ? ' class="on"' : "") +
+      ' title="use as the RIGHT side">B</b></span>';
+    return '<div class="av-rev' + (selected ? " on" : compared ? " cmp" : "") + '" data-rev="' + touch.rev + '">' +
+      '<div><div class="r">r' + touch.rev + '</div><div class="ago">' + esc(touch.ago) + "</div></div>" +
+      "<div>" + pick +
+      (handover ? '<div class="who">' + avChatLink(touch.session_id, touch.actor, touch.session_exists, touch.at) + "</div>" : "") +
+      (touch.changes ? '<div class="ch">' + esc(touch.changes) + "</div>" : "") + "</div></div>";
+  }).join("");
+  avEl("av-rbody").innerHTML = who + hint + working + rows;
+  avEl("av-rbody").onclick = event => {
+    if (event.target.closest("a")) return;    // a contributor link navigates to its chat
+    const row = event.target.closest(".av-rev");
+    if (!row) return;
+    const last = AV.detail.revs - 1;
+    // The working-copy row has no rev of its own; for a comparison it stands in as the last one.
+    const rev = row.dataset.rev === "current" ? last : +row.dataset.rev;
+    // A / B set one endpoint each, leaving the other where it was — so any pair is reachable, and
+    // walking one side through the history is a single click per step.
+    const pick = event.target.closest("[data-pick]");
+    if (pick) {
+      const current = AV.cmp || { a: Math.max(0, last - 1), b: last };
+      const pair = pick.dataset.pick === "a" ? { a: rev, b: current.b } : { a: current.a, b: rev };
+      if (pair.a === pair.b) return;          // a revision against itself is not a comparison
+      avGo(AV.id, null, pair);
+      return;
+    }
+    // shift-click is the shortcut for the same thing: the other end is whatever is already open.
+    if (event.shiftKey) {
+      const anchor = AV.cmp ? AV.cmp.b : AV.rev != null ? AV.rev : last;
+      if (anchor === rev) return;
+      avGo(AV.id, null, { a: Math.min(anchor, rev), b: Math.max(anchor, rev) });
+      return;
+    }
+    // Clicking the newest rev on a clean artifact is the working copy — same bytes, simpler hash.
+    avGo(AV.id, row.dataset.rev !== "current" && !(rev === last && !AV.detail.dirty) ? rev : null, null);
+  };
+}
+
+// ---- find in document ----
+function avOpenFind() {
+  AV.finding = true;
+  avSyncChrome();
+  avSyncCtls();
+  const input = avEl("av-findinput");
+  input.value = AV.find;
+  input.focus();
+  input.select();
+}
+function avCloseFind() {
+  AV.finding = false; AV.find = ""; AV.findAt = 0;
+  avSyncChrome();
+  avSyncCtls();
+  avApplyFind(false);
+}
+function avApplyFind(scroll) {
+  const body = avEl("av-dbody");
+  body.querySelectorAll("mark.av-hit").forEach(hit => hit.replaceWith(document.createTextNode(hit.textContent)));
+  body.normalize();
+  const needle = AV.find.trim().toLowerCase();
+  if (needle.length < 2) { avEl("av-findn").textContent = needle ? "type more" : ""; return; }
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+  const targets = [];
+  while (walker.nextNode()) {
+    if (walker.currentNode.nodeValue.toLowerCase().includes(needle)) targets.push(walker.currentNode);
+  }
+  for (const node of targets) avMarkNode(node, needle);
+  avFindStep(0, scroll);
+}
+function avMarkNode(node, needle) {
+  const text = node.nodeValue, lower = text.toLowerCase();
+  const fragment = document.createDocumentFragment();
+  let at = 0, found = lower.indexOf(needle);
+  while (found >= 0) {
+    if (found > at) fragment.appendChild(document.createTextNode(text.slice(at, found)));
+    const mark = document.createElement("mark");
+    mark.className = "av-hit";
+    mark.textContent = text.slice(found, found + needle.length);
+    fragment.appendChild(mark);
+    at = found + needle.length;
+    found = lower.indexOf(needle, at);
+  }
+  if (at < text.length) fragment.appendChild(document.createTextNode(text.slice(at)));
+  node.replaceWith(fragment);
+}
+function avFindStep(delta, scroll = true) {
+  const hits = Array.from(avEl("av-dbody").querySelectorAll("mark.av-hit"));
+  if (!hits.length) { avEl("av-findn").textContent = "no match"; return; }
+  AV.findAt = (AV.findAt + delta + hits.length) % hits.length;
+  hits.forEach((hit, k) => hit.classList.toggle("cur", k === AV.findAt));
+  if (scroll) hits[AV.findAt].scrollIntoView({ block: "center" });
+  avEl("av-findn").textContent = AV.findAt + 1 + "/" + hits.length;
+}
+
+// ---- keyboard: walk the index, scrub revisions, find ----
+document.addEventListener("keydown", event => {
+  if (!avEl("av-wrap") || event.metaKey || event.ctrlKey || event.altKey) return;
+  const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName);
+  if (event.key === "/" && !inField) { event.preventDefault(); avOpenFind(); return; }
+  if (event.key === "Escape" && AV.finding) { event.preventDefault(); avCloseFind(); return; }
+  if (inField) return;
+  if (event.key === "n" || event.key === "N") {
+    if (!AV.find) return;
+    event.preventDefault(); avFindStep(event.key === "n" ? 1 : -1); return;
+  }
+  if (event.key === "j" || event.key === "k" || event.key === "ArrowDown" || event.key === "ArrowUp") {
+    const rows = Array.from(document.querySelectorAll(".av-row"));
+    if (!rows.length) return;
+    event.preventDefault();
+    const at = rows.findIndex(row => row.dataset.id === AV.id);
+    const step = event.key === "j" || event.key === "ArrowDown" ? 1 : -1;
+    const next = rows[Math.min(rows.length - 1, Math.max(0, (at < 0 ? (step > 0 ? -1 : rows.length) : at) + step))];
+    next.scrollIntoView({ block: "nearest" });
+    avGo(next.dataset.id, null, null);
+    return;
+  }
+  if ((event.key === "[" || event.key === "]") && AV.detail) {
+    event.preventDefault();
+    const last = AV.detail.revs - 1;
+    const at = AV.cmp ? AV.cmp.b : AV.rev == null ? last : AV.rev;
+    const next = Math.min(last, Math.max(0, at + (event.key === "]" ? 1 : -1)));
+    avGo(AV.id, next === last && !AV.detail.dirty ? null : next, null);
+  }
+});
 
 
 // ---- timeline view ----
@@ -1683,16 +2582,22 @@ function setNav(tab, isList) {
   tabTimeline.classList.toggle("active", tab === "timeline");
   searchBox.classList.toggle("hidden", !isList);
   hotWindowControl.classList.toggle("hidden", !(tab === "chats" && isList));
+  // The reader is a full-height app view with its own filter box — it wants no page scroll under it.
+  document.body.classList.toggle("full", tab === "artifacts");
   if (!isList) filterables = [];
 }
 const UUID_RE = /^[0-9a-fA-F-]{36}$/;
 function route() {
   const hash = location.hash.replace(/^#/, "");
-  if (hash.startsWith("/chats/")) return renderChatDetail(hash.slice("/chats/".length));
+  if (hash.startsWith("/chats/")) {
+    // `<id>@<epoch>` — an artifact revision links here to say "the conversation at THIS moment".
+    const [chatId, anchor] = hash.slice("/chats/".length).split("@");
+    return renderChatDetail(chatId, anchor ? Number(anchor) : null);
+  }
   if (hash === "/timeline" || hash.startsWith("/timeline/")) return renderTimeline(hash.startsWith("/timeline/") ? decodeURIComponent(hash.slice("/timeline/".length)) : null);
-  if (hash === "/artifacts") return renderArtifacts();
-  if (hash.startsWith("/artifacts/")) return renderArtifactDetail(hash.slice("/artifacts/".length));
-  if (hash.startsWith("/") && UUID_RE.test(hash.slice(1))) return renderArtifactDetail(hash.slice(1)); // legacy links
+  if (hash === "/artifacts") return renderArtifactReader(null);
+  if (hash.startsWith("/artifacts/")) return renderArtifactReader(hash.slice("/artifacts/".length));
+  if (hash.startsWith("/") && UUID_RE.test(hash.slice(1))) return renderArtifactReader(hash.slice(1)); // legacy links
   return renderChats();
 }
 document.getElementById("nav-refresh").onclick = route;
@@ -1708,7 +2613,7 @@ const REFRESH_MS = 5000, FORCE_AGE_REFRESH_EVERY = 12;
 function viewUrls() {
   const hash = location.hash.replace(/^#/, "");
   if (hash.startsWith("/chats/")) {
-    const id = encodeURIComponent(hash.slice("/chats/".length));
+    const id = encodeURIComponent(hash.slice("/chats/".length).split("@")[0]);   // drop a time anchor
     return ["/api/chats/" + id, "/api/chats/" + id + "/dialogue"];
   }
   if (hash === "/timeline" || hash.startsWith("/timeline/")) {
@@ -1716,9 +2621,12 @@ function viewUrls() {
     if (hash.startsWith("/timeline/")) urls.push("/api/timeline/" + encodeURIComponent(hash.slice("/timeline/".length)) + "/dialogue");
     return urls;
   }
+  // The reader always shows the index rail beside the document, so both feeds are its live surface.
   if (hash === "/artifacts") return ["/api/artifacts"];
-  if (hash.startsWith("/artifacts/")) return ["/api/artifacts/" + encodeURIComponent(hash.slice("/artifacts/".length))];
-  if (hash.startsWith("/") && UUID_RE.test(hash.slice(1))) return ["/api/artifacts/" + hash.slice(1)];
+  if (hash.startsWith("/artifacts/")) {
+    return ["/api/artifacts", "/api/artifacts/" + encodeURIComponent(avParse(hash.slice("/artifacts/".length)).id)];
+  }
+  if (hash.startsWith("/") && UUID_RE.test(hash.slice(1))) return ["/api/artifacts", "/api/artifacts/" + hash.slice(1)];
   return ["/api/chats"];
 }
 const stripVolatile = (k, v) => (k === "ago" || k.endsWith("_ago") ? undefined : v);
@@ -1739,17 +2647,10 @@ async function refreshTick() {
     lastFingerprint = fingerprint;
     const scroll = { x: scrollX, y: scrollY };
     const openFolds = Array.from(document.querySelectorAll("details[open] summary")).map(s => s.textContent);
-    const diff = document.getElementById("ra")
-      ? { a: document.getElementById("ra").value, b: document.getElementById("rb").value } : null;
     await route();
     document.querySelectorAll("details summary").forEach(s => {
       if (openFolds.includes(s.textContent)) s.parentElement.open = true;
     });
-    if (diff && document.getElementById("ra")) {
-      document.getElementById("ra").value = diff.a;
-      document.getElementById("rb").value = diff.b;
-      document.getElementById("dodiff").click();
-    }
     scrollTo(scroll.x, scroll.y);
   } catch (e) {
     // transient fetch failure — the next tick retries
