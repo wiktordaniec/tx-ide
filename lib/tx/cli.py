@@ -760,6 +760,19 @@ class SendMessageCommand(Command):
         return 0
 
 
+class SendUserMessageCommand(Command):
+    name = "send-user-message"
+    summary = "Message another session as the operator (<from-user>, not a peer agent)."
+
+    def run(self, argv: list[str]) -> int:
+        parser = self._parser()
+        parser.add_argument("target")
+        parser.add_argument("body")
+        args = parser.parse_args(argv)
+        self.service.send_user_message(args.target, args.body)
+        return 0
+
+
 class ArtifactCommand(Command):
     name = "artifact"
     summary = "Create / modify / inspect durable versioned artifacts (tx artifact <subcommand>)."
@@ -1892,6 +1905,7 @@ PUBLIC_COMMANDS: list[type[Command]] = [
     RenameCommand,
     WhoamiCommand,
     SendMessageCommand,
+    SendUserMessageCommand,
     KillCommand,
     ArchiveCommand,
     RmCommand,
@@ -1929,7 +1943,7 @@ def _print_help() -> None:
     print("usage: tx <command> [args]\n")
     print("commands:")
     for cls in PUBLIC_COMMANDS:
-        print(f"  {cls.name:<13} {cls.summary}")
+        print(f"  {cls.name:<18} {cls.summary}")
 
 
 def main(argv: list[str] | None = None) -> int:

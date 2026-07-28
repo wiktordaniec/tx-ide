@@ -148,13 +148,20 @@ You may be running alongside other agent sessions in tmux on this machine. They 
 
 Treat these as peer messages, not user messages. You MAY reply, but don't have to.
 
-**Sending:** use `tx send-message`. Messages are single-line — escape literal newlines as `\n` if needed.
+A second envelope carries the **operator**, not a peer:
+
+    <from-user session="wrangler-p1-diff">body</from-user>
+
+That is the human speaking — treat it with the same authority as anything typed directly into your session, and answer it. The `session` attribute is **not** a sender: it is where they typed it (usually an nvim companion asking about the code under its cursor), so you know which file they are looking at.
+
+**Sending:** use `tx send-message` (as a peer) or `tx send-user-message` (as the operator — the nvim `<leader>ac` ask path). Messages are single-line — escape literal newlines as `\n` if needed.
 
 ```bash
 tx send-message <target-session> "your message"
+tx send-user-message <target-session> "the operator's message"
 ```
 
-Both ends resolve through the store: `<target-session>` may be a session's display name (tmux targets it by id under the hood), and `session="$SELF"` is auto-filled with the *sender's* display name (resolved from `#S`, which for a worker is its id). It builds the envelope, types it into the target's active pane, sleeps 0.3s (required — the agent's input box drops Enter if it arrives too fast), then sends Enter.
+Both ends resolve through the store: `<target-session>` may be a session's display name (tmux targets it by id under the hood), and `session="$SELF"` is auto-filled — the *sender's* display name for `send-message` (from `#S`, which for a worker is its id), the *originating* session's for `send-user-message` (from `$TX_SESSION_ID`, so an editor nested in a view is labelled as itself and not as the view). Both build the envelope, type it into the target's active pane, sleep 0.3s (required — the agent's input box drops Enter if it arrives too fast), then send Enter.
 
 **Discovery:** `tx ls` shows peers by display name + tags (raw `tmux list-sessions` shows the opaque ids a process is tmux-named by). Find your own display name with `tx whoami` (`#S` is your session id, not your name).
 

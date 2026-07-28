@@ -22,9 +22,9 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
-from .events import EventLog
+from .events import ACTOR_ENV, EventLog
 from .engines import registry
-from .messages import build_envelope
+from .messages import TAG_AGENT, TAG_USER, build_envelope
 from .read_only import ReadOnlySandboxError, wrap_read_only_command
 from .reconcile import Reconciler
 from .session import (
@@ -59,6 +59,10 @@ class SessionNotFound(ServiceError):
 
 
 class NotInsideTmux(ServiceError):
+    pass
+
+
+class NotInsideTxSession(ServiceError):
     pass
 
 
@@ -507,26 +511,55 @@ class SessionService:
     # ----- messaging -----------------------------------------------------------------------
 
     def send_message(self, target: str, body: str) -> None:
-        """Peer-message another session: wrap the body in the neutral `<from-agent session="…">`
-        envelope, type it into the target's active pane, pause, then send Enter (the agent's input
-        box drops an Enter that arrives too fast — COMMON.md). Both ends resolve through the store: the
-        user addresses a PROCESS by its human name but tmux targets it by id, and the envelope must
-        carry the sender's human name, not the raw `#S` (which is the sender's id for a worker)."""
+        """Peer-message another session on the agent↔agent channel: `<from-agent session="…">`,
+        sender = the tmux client that ran the command."""
+        record = self._deliver(target, self._client_session_name(), body, tag=TAG_AGENT)
+        self.log.append("send-message", f"→ {record.name}")
+
+    def send_user_message(self, target: str, body: str) -> None:
+        """Message another session as the OPERATOR: `<from-user session="…">`. Same delivery, other
+        envelope — the recipient (and the message parser) reads it as you speaking, not a peer.
+        `session` is the ORIGINATING session, so a question keeps the editor it was asked from."""
+        record = self._deliver(target, self._origin_session_name(), body, tag=TAG_USER)
+        self.log.append("send-user-message", f"→ {record.name}")
+
+    def _deliver(self, target: str, sender: str, body: str, *, tag: str) -> Session:
+        """The one send path behind both verbs: wrap the body in the chosen envelope, type it into
+        the target's active pane, pause, then send Enter (the agent's input box drops an Enter that
+        arrives too fast — COMMON.md). The target resolves through the store because the user
+        addresses a PROCESS by its human name while tmux targets it by id."""
         record = self._resolve(target)
         if record is None or not self.tmux.has_session(record.tmux_name):
             raise SessionNotFound(f"target session '{target}' does not exist")
+        self.tmux.send_keys(record.tmux_name, build_envelope(sender, body, tag=tag))
+        time.sleep(0.3)
+        self.tmux.send_keys(record.tmux_name, "Enter")
+        return record
+
+    def _client_session_name(self) -> str:
+        """The sender for a peer message: the tmux session whose pane ran the command, resolved
+        through the store so the envelope carries a human name and not the raw `#S` (which is the
+        session's id for a worker)."""
         current = self.tmux.current_session_name()
         if current is None:
             raise NotInsideTmux(
                 "send-message must run inside tmux (needs the sender session name)"
             )
         sender = self._resolve(current)
-        sender_name = sender.name if sender is not None else current
-        envelope = build_envelope(sender_name, body)
-        self.tmux.send_keys(record.tmux_name, envelope)
-        time.sleep(0.3)
-        self.tmux.send_keys(record.tmux_name, "Enter")
-        self.log.append("send-message", f"→ {record.name}")
+        return sender.name if sender is not None else current
+
+    def _origin_session_name(self) -> str:
+        """The originating session for an operator message: `$TX_SESSION_ID` (exported into every tx
+        session at spawn), resolved to its display name. Deliberately NOT the tmux client `#S` —
+        that resolves to the HOSTING VIEW, which is what made a question typed in
+        `wrangler-shapeA-sketch` arrive labelled `session="upside-office"`."""
+        session_id = os.environ.get(ACTOR_ENV)
+        if not session_id:
+            raise NotInsideTxSession(
+                f"send-user-message must run inside a tx session (${ACTOR_ENV} is unset)"
+            )
+        record = self.store.load(session_id)
+        return record.name if record is not None else session_id
 
     # ----- reads ---------------------------------------------------------------------------
 

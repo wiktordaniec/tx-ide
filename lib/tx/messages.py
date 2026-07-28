@@ -13,9 +13,16 @@ The **recipient** is the session that owns the transcript; the **sender** is the
 typed turn:
 
     <from-agent session="X">…</from-agent>     peer message — the agent↔agent channel (COMMON.md)
+    <from-user session="X">…</from-user>       you → this session, typed in session X (an editor)
     <tx-command-prompt …/> <text>              you → tx-assistant via prefix+/ (bin/tx-assistant)
     Act on tx session… / Act on these N…       you → tx-assistant via the viewer composer
     (no marker, plain text)                     you → this session, typed directly
+
+`<from-user>` (`tx send-user-message`) is the operator channel: same wire shape as the peer envelope,
+opposite attribution. Its `session` attribute is NOT the sender — you are — it is the session the
+operator typed in (the nvim companion asking about the code under its cursor), kept on `Message.origin`
+as real provenance. Without that split an operator question lands on the agent↔agent channel,
+misattributed to a peer.
 
 Only genuine input turns count: `type==user`, `message.role==user`, `userType==external`, content
 is plain text (a string or all-`text` blocks — a `tool_result` line is the harness, not a turn),
@@ -52,6 +59,9 @@ from .store import SessionStore
 # to the LAST close tag, so a body that itself mentions a `</from-…>` close tag still closes correctly.
 # DOTALL — bodies are one logical line but may carry escaped newlines.
 _PEER = re.compile(r'^<from-(?:agent|claude) session="([^"]*)">(.*)</from-(?:agent|claude)>\s*\Z', re.S)
+# The operator envelope (`tx send-user-message`). Same anchored whole-turn gate as `_PEER` — a turn
+# that merely MENTIONS the tag (a tool result reading this file, a message quoting it) is not one.
+_USER = re.compile(r'^<from-user session="([^"]*)">(.*)</from-user>\s*\Z', re.S)
 # The prefix+/ forward: a self-closing focus envelope, then the user's actual message after it.
 _COMMAND_PROMPT = re.compile(r"^<tx-command-prompt\b[^>]*/>\s*(.*)\Z", re.S)
 # The viewer composer's fixed template (server.py `_compose_message`).
@@ -61,12 +71,17 @@ _HARNESS_PREFIXES = ("<task-notification", "<local-command", "<command-", "[Requ
 
 SENDER_YOU = "you"
 KIND_AGENT = "agent"   # an llm session sent it (the inter-agent channel)
-KIND_YOU = "you"       # you sent it (typed, prefix+/, composer, or send-message from your home)
+KIND_YOU = "you"       # you sent it (typed, prefix+/, composer, or a send from your home)
+
+TAG_AGENT = "from-agent"  # the peer channel — `tx send-message`
+TAG_USER = "from-user"    # the operator channel — `tx send-user-message`
 
 
-def build_envelope(sender: str, body: str) -> str:
-    """Build the engine-neutral peer-message envelope (`_PEER` still parses the legacy tag too)."""
-    return f'<from-agent session="{sender}">{body}</from-agent>'
+def build_envelope(sender: str, body: str, *, tag: str = TAG_AGENT) -> str:
+    """Build a message envelope: the engine-neutral peer one by default (`_PEER` still parses the
+    legacy `<from-claude>` tag too), or the operator one with `tag=TAG_USER`. One builder for both
+    channels — they differ only in the tag, so they can never drift on wire shape."""
+    return f'<{tag} session="{sender}">{body}</{tag}>'
 
 
 @dataclass
@@ -85,6 +100,7 @@ class Message:
     body: str          # the message text
     chat_id: str       # the chat uuid the turn lives in
     uuid: str          # the transcript line uuid
+    origin: str = ""   # the session the operator typed in (`<from-user>` only; "" everywhere else)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -153,7 +169,7 @@ def parse_message(
     classified = _classify(text.lstrip(), recipient_cmd, sender_role)
     if classified is None:
         return None
-    kind, via, sender, body = classified
+    kind, via, sender, body, origin = classified
     if not body:
         return None
     ts, iso = _parse_timestamp(obj.get("timestamp"))
@@ -161,15 +177,15 @@ def parse_message(
     return Message(
         ts=ts, iso=iso, kind=kind, via=via, sender=sender,
         recipient=recipient_name or recipient_id, recipient_id=recipient_id,
-        body=body, chat_id=chat_id, uuid=uuid,
+        body=body, chat_id=chat_id, uuid=uuid, origin=origin,
     )
 
 
 def _classify(
     text: str, recipient_cmd: str, sender_role: Callable[[str], Role | None]
-) -> tuple[str, str, str, str] | None:
-    """(kind, via, sender, body) for a genuine plain-text turn, or None if it is not a message.
-    `text` is already left-stripped."""
+) -> tuple[str, str, str, str, str] | None:
+    """(kind, via, sender, body, origin) for a genuine plain-text turn, or None if it is not a
+    message. `origin` is set only by the operator envelope. `text` is already left-stripped."""
     peer = _PEER.match(text)
     if peer:
         sender = peer.group(1)
@@ -177,12 +193,18 @@ def _classify(
         # The envelope IS the inter-agent channel; only a send from a non-llm home (you ran
         # `tx send-message`) flips it to "you". An unknown sender stays on the agent channel.
         kind = KIND_YOU if role is not None and role != Role.LLM else KIND_AGENT
-        return kind, "send-message", sender, peer.group(2).strip()
+        return kind, "send-message", sender, peer.group(2).strip(), ""
+    user = _USER.match(text)
+    if user:
+        # The operator, whatever the originating session's role — that attribute is provenance
+        # (which editor the question came from), never the sender. No role lookup: an operator
+        # question from an llm session's pane is still the operator.
+        return KIND_YOU, "send-user-message", SENDER_YOU, user.group(2).strip(), user.group(1)
     prompt = _COMMAND_PROMPT.match(text)
     if prompt:
-        return KIND_YOU, "prompt", SENDER_YOU, prompt.group(1).strip()
+        return KIND_YOU, "prompt", SENDER_YOU, prompt.group(1).strip(), ""
     if _COMPOSER.match(text):
-        return KIND_YOU, "composer", SENDER_YOU, text.strip()
+        return KIND_YOU, "composer", SENDER_YOU, text.strip(), ""
     if any(text.startswith(prefix) for prefix in _HARNESS_PREFIXES):
         return None
     if _is_priming(text):
@@ -190,7 +212,7 @@ def _classify(
     stripped = text.strip()
     if stripped and recipient_cmd and stripped in recipient_cmd:
         return None  # the launch prompt embedded in the spawn command — not a message
-    return KIND_YOU, "typed", SENDER_YOU, stripped
+    return KIND_YOU, "typed", SENDER_YOU, stripped, ""
 
 
 # ----- collection (the only filesystem-touching path) --------------------------------------------
