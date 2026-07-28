@@ -519,7 +519,13 @@ function esc(s) {
 // then re-renders through route() — the memo makes that second read free instead of a double fetch.
 const _fetchCache = new Map();  // url -> {at, promise}
 const FETCH_REUSE_MS = 2000;
+// The page may sit behind a prefix-stripping path mount (tailscale serve --set-path /artifacts),
+// where absolute "/api/…" URLs escape the mount and land on whatever owns the root. Every request
+// carries the page's own base instead — it collapses to "" at the root, so direct-port access is
+// unchanged. Same mechanism as sessions-graph's BASE.
+const BASE = location.pathname.replace(/\/(index\.html)?$/, "");
 async function getJSON(url, fresh) {
+  url = BASE + url;
   const hit = _fetchCache.get(url);
   if (!fresh && hit && Date.now() - hit.at < FETCH_REUSE_MS) return hit.promise;
   const promise = (async () => {
@@ -1156,7 +1162,7 @@ function avSave() {
 }
 function avEl(id) { return document.getElementById(id); }
 function avRawUrl(id, rev) {
-  return "/api/artifacts/" + encodeURIComponent(id) + "/raw" + (rev == null ? "" : "?rev=" + rev);
+  return BASE + "/api/artifacts/" + encodeURIComponent(id) + "/raw" + (rev == null ? "" : "?rev=" + rev);
 }
 function avKind(filename) {
   const ext = filename.includes(".") ? filename.split(".").pop().toLowerCase() : "";
@@ -2074,7 +2080,7 @@ async function tlReorderGroup(src, before) {
   tlVisKey = "";
   tlRender();                                   // optimistic — the saved order returns on the next tick
   try {
-    await fetch("/api/timeline/order", {
+    await fetch(BASE + "/api/timeline/order", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ order }),
     });
@@ -2095,7 +2101,7 @@ async function tlSendMsg() {
   if (!request) { status.textContent = "type a message"; return; }
   status.textContent = "sending…";
   try {
-    const r = await fetch("/api/timeline/message", {
+    const r = await fetch(BASE + "/api/timeline/message", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids: [...TL.sel], request }),
     });
@@ -2121,7 +2127,7 @@ async function tlDrawerSend() {
   if (!target || !request) return;
   status.textContent = "sending…";
   try {
-    const r = await fetch("/api/timeline/" + encodeURIComponent(target) + "/message", {
+    const r = await fetch(BASE + "/api/timeline/" + encodeURIComponent(target) + "/message", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ request }),
     });
