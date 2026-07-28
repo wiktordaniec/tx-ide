@@ -121,3 +121,7 @@ require("config.tmux-nav").setup()
 
 -- Keymap usage telemetry (see lua/config/keylog.lua)
 require("config.keylog").setup()
+
+-- <leader>at / <leader>ac — ask a live tx llm session about the code under the
+-- cursor (see lua/config/tx-ask.lua)
+require("config.tx-ask")

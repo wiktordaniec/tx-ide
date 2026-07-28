@@ -31,7 +31,6 @@ return {
       enhanced_diff_hl = true, -- proper add/delete/change colors instead of generic blue
     },
     keys = {
-      { "<leader>ac", "<cmd>DiffviewClose<cr>", desc = "Close diffview" },
       { "<leader>af", "<cmd>DiffviewFileHistory<cr>", desc = "File history (all)" },
       { "<leader>ah", "<cmd>DiffviewFileHistory %<cr>", desc = "File history (current file)" },
       {
