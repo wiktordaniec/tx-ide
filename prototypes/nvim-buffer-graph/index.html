@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nvim buffer graph</title>
+<style>
+/* tokyonight-night, mirroring sessions-graph / shared/palette.sh */
+:root {
+  color-scheme: dark;
+  --bg: #16161e;
+  --panel: #1a1b26;
+  --panel2: #1f2233;
+  --border: #2a2e42;
+  --fg: #c0caf5;
+  --muted: #565f89;
+  --accent: #7aa2f7;
+  --red: #f7768e;
+  --green: #9ece6a;
+  --cyan: #7dcfff;
+  --magenta: #bb9af7;
+  --orange: #ff9e64;
+  --yellow: #e0af68;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.45 "SF Mono", ui-monospace, Menlo, monospace;
+  overflow: hidden;
+}
+
+/* ---- top bar ---- */
+#topbar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 30;
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+#topbar h1 { font-size: 13px; font-weight: 600; margin: 0; color: var(--accent); white-space: nowrap; }
+#picker {
+  background: var(--panel2); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  font: inherit; padding: 3px 6px; max-width: 340px;
+}
+#session-tags { display: flex; gap: 5px; }
+.tag-chip {
+  padding: 0 7px; border-radius: 9px; font-size: 11px; line-height: 17px;
+  border: 1px solid var(--border); color: var(--fg); white-space: nowrap;
+}
+#topbar .spacer { flex: 1; }
+#status { color: var(--muted); font-size: 11px; white-space: nowrap; }
+#status.err { color: var(--red); }
+#topbar label { color: var(--muted); font-size: 11px; display: flex; gap: 4px; align-items: center; }
+#topbar button {
+  background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 4px; font: inherit; font-size: 11px; padding: 3px 9px; cursor: pointer;
+}
+#topbar button:hover { border-color: var(--accent); }
+
+/* ---- legend ---- */
+#legend {
+  position: fixed; top: 46px; right: 12px; z-index: 25;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 12px; font-size: 11px; color: var(--muted);
+}
+#legend .lg { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+#legend svg { flex: none; }
+
+/* ---- graph world ---- */
+#viewport { position: absolute; inset: 0; top: 37px; overflow: hidden; cursor: grab; }
+#viewport.panning { cursor: grabbing; }
+#world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+#edges { position: absolute; left: -20000px; top: -20000px; width: 40000px; height: 40000px;
+         pointer-events: none; overflow: visible; }
+#edges path.vis { fill: none; }
+#edges path.hit { fill: none; stroke: transparent; stroke-width: 11; pointer-events: stroke; cursor: pointer; }
+#edges.tracing path.vis { opacity: 0.10; }
+#edges path.vis.hl { opacity: 1; stroke-width: 2.2; }
+#edges path.vis.up { opacity: 1; stroke-width: 1.8; stroke-dasharray: 5 3; }
+
+/* ---- file cards ---- */
+.card {
+  position: absolute; width: max-content; min-width: 180px; max-width: 300px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  user-select: none;
+}
+.card.dim { opacity: 0.22; }
+.card.dragging { border-color: var(--accent); z-index: 10; }
+.card-head {
+  display: flex; align-items: baseline; gap: 6px;
+  padding: 6px 9px 4px; border-bottom: 1px solid var(--border); cursor: grab;
+}
+.card-head .fname { color: var(--accent); font-weight: 600; white-space: nowrap;
+                    overflow: hidden; text-overflow: ellipsis; }
+.card-head .dirty { color: var(--orange); font-size: 15px; line-height: 0; }
+.card-dir { padding: 2px 9px 3px; color: var(--muted); font-size: 10px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            border-bottom: 1px solid var(--border); }
+.rows { padding: 3px 0 4px; }
+.row {
+  display: flex; align-items: baseline; gap: 6px;
+  padding: 1px 9px; cursor: pointer; white-space: nowrap;
+}
+.row:hover { background: var(--panel2); }
+.row.sel { background: #283457; }
+.row.touch { background: var(--panel2); }
+.row .ico { flex: none; width: 12px; text-align: center; font-size: 10px; font-weight: 700; }
+.row.class .ico { color: var(--yellow); }
+.row.method .ico { color: var(--muted); }
+.row.function .ico { color: var(--cyan); }
+.row.class { font-weight: 600; }
+.row.method { padding-left: 22px; color: #a9b1d6; }
+.row .nm { overflow: hidden; text-overflow: ellipsis; }
+.row .ln { margin-left: auto; color: var(--muted); font-size: 10px; }
+.card-note { padding: 2px 9px 4px; font-size: 11px; color: var(--muted); font-style: italic; }
+.card-note.err { color: var(--red); }
+
+/* ---- pills ---- */
+#trace-pill, #empty {
+  position: fixed; z-index: 25; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font-size: 12px;
+}
+#trace-pill { bottom: 14px; left: 14px; display: none; color: var(--fg); }
+#trace-pill b { color: var(--accent); }
+#trace-pill .esc { color: var(--muted); font-size: 11px; margin-left: 8px; }
+#empty { display: none; top: 45%; left: 50%; transform: translate(-50%, -50%);
+         color: var(--muted); text-align: center; padding: 18px 26px; }
+#edge-tip {
+  position: fixed; z-index: 40; display: none; pointer-events: none;
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 4px 9px; font-size: 11px; color: var(--fg); white-space: nowrap;
+}
+#counts { position: fixed; bottom: 14px; right: 14px; z-index: 25;
+          color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="topbar">
+  <h1>nvim buffer graph</h1>
+  <select id="picker"></select>
+  <div id="session-tags"></div>
+  <div class="spacer"></div>
+  <span id="status">loading…</span>
+  <button id="relayout">re-layout</button>
+  <label><input type="checkbox" id="auto" checked> auto</label>
+</div>
+
+<div id="legend">
+  <div class="lg"><svg width="26" height="6"><line x1="0" y1="3" x2="26" y2="3" stroke="#7aa2f7" stroke-width="2"/></svg> calls</div>
+  <div class="lg"><svg width="26" height="6"><line x1="0" y1="3" x2="26" y2="3" stroke="#9ece6a" stroke-width="2"/></svg> instantiates</div>
+  <div class="lg"><svg width="26" height="6"><line x1="0" y1="3" x2="26" y2="3" stroke="#7dcfff" stroke-width="2" stroke-dasharray="4 3"/></svg> has instance</div>
+  <div class="lg"><svg width="26" height="6"><line x1="0" y1="3" x2="26" y2="3" stroke="#bb9af7" stroke-width="2" stroke-dasharray="7 3"/></svg> inherits</div>
+</div>
+
+<div id="viewport">
+  <div id="world">
+    <svg id="edges"></svg>
+  </div>
+</div>
+<div id="trace-pill"></div>
+<div id="edge-tip"></div>
+<div id="empty"></div>
+<div id="counts"></div>
+
+<script>
+"use strict";
+const BASE = location.pathname.replace(/\/(index\.html)?$/, "");
+const REFRESH_MS = 5000;
+const NVIMS_EVERY = 2;              // refresh the picker every Nth graph poll
+
+const EDGE_COLOR = {
+  calls: "#7aa2f7", instantiates: "#9ece6a",
+  has_instance: "#7dcfff", inherits: "#bb9af7",
+};
+const EDGE_DASH = { has_instance: "4 3", inherits: "7 3" };
+
+/* ---------- state ---------- */
+let sessionKey = null;              // tx uuid or socket path
+let graphData = null;               // last /api/graph payload
+let fingerprint = "";
+let nodes = new Map();              // rel -> node {x,y,vx,vy,w,h,el,rows:Map(sym->yMid),pinned}
+let fileEdges = [];                 // aggregated per file pair for springs
+let selected = null;                // "rel::sym" in trace mode
+let alpha = 0;
+let pollTimer = null, pollCount = 0, lastOk = 0;
+
+/* view transform */
+let panX = 60, panY = 60, zoom = 1;
+
+const viewport = document.getElementById("viewport");
+const world = document.getElementById("world");
+const edgesSvg = document.getElementById("edges");
+const picker = document.getElementById("picker");
+const statusEl = document.getElementById("status");
+const emptyEl = document.getElementById("empty");
+const tracePill = document.getElementById("trace-pill");
+const edgeTip = document.getElementById("edge-tip");
+const countsEl = document.getElementById("counts");
+
+function esc(text) {
+  return String(text).replace(/[&<>"']/g,
+    (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+/* ---------- force simulation ---------- */
+const CHARGE = 34000, SPRING_LEN = 420, SPRING_K = 0.025, GRAVITY = 0.0016;
+const SEP_PAD = 30, SEP_K = 0.24, DAMPING = 0.82, COOL = 0.985;
+const ALPHA_MIN = 0.02, MAX_V = 80;
+
+function kick(a) { alpha = Math.max(alpha, a); scheduleTick(); }
+
+let ticking = false;
+function scheduleTick() {
+  if (!ticking) { ticking = true; requestAnimationFrame(tick); }
+}
+
+function tick() {
+  ticking = false;
+  if (alpha < ALPHA_MIN) { updateEdges(); return; }
+  alpha *= COOL;
+  const list = [...nodes.values()];
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i];
+    for (let j = i + 1; j < list.length; j++) {
+      const b = list[j];
+      let dx = (a.x + a.w / 2) - (b.x + b.w / 2);
+      let dy = (a.y + a.h / 2) - (b.y + b.h / 2);
+      const d2 = Math.max(dx * dx + dy * dy, 900);
+      const f = CHARGE / d2 * alpha;
+      const d = Math.sqrt(d2);
+      dx /= d; dy /= d;
+      if (!a.pinned) { a.vx += dx * f; a.vy += dy * f; }
+      if (!b.pinned) { b.vx -= dx * f; b.vy -= dy * f; }
+      // AABB separation so cards never overlap
+      const ox = (a.w + b.w) / 2 + SEP_PAD - Math.abs((a.x + a.w / 2) - (b.x + b.w / 2));
+      const oy = (a.h + b.h) / 2 + SEP_PAD - Math.abs((a.y + a.h / 2) - (b.y + b.h / 2));
+      if (ox > 0 && oy > 0) {
+        const push = Math.min(ox, oy) * SEP_K;
+        const sx = (a.x + a.w / 2) < (b.x + b.w / 2) ? -1 : 1;
+        const sy = (a.y + a.h / 2) < (b.y + b.h / 2) ? -1 : 1;
+        if (ox < oy) {
+          if (!a.pinned) a.vx += sx * push;
+          if (!b.pinned) b.vx -= sx * push;
+        } else {
+          if (!a.pinned) a.vy += sy * push;
+          if (!b.pinned) b.vy -= sy * push;
+        }
+      }
+    }
+  }
+  for (const fe of fileEdges) {
+    const a = nodes.get(fe.a), b = nodes.get(fe.b);
+    if (!a || !b) continue;
+    const dx = (b.x + b.w / 2) - (a.x + a.w / 2);
+    const dy = (b.y + b.h / 2) - (a.y + a.h / 2);
+    const d = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
+    const f = (d - SPRING_LEN) * SPRING_K * alpha;
+    if (!a.pinned) { a.vx += dx / d * f; a.vy += dy / d * f; }
+    if (!b.pinned) { b.vx -= dx / d * f; b.vy -= dy / d * f; }
+  }
+  for (const n of list) {
+    if (n.pinned) { n.vx = 0; n.vy = 0; continue; }
+    n.vx += (0 - (n.x + n.w / 2)) * GRAVITY;
+    n.vy += (0 - (n.y + n.h / 2)) * GRAVITY;
+    n.vx = Math.max(-MAX_V, Math.min(MAX_V, n.vx)) * DAMPING;
+    n.vy = Math.max(-MAX_V, Math.min(MAX_V, n.vy)) * DAMPING;
+    n.x += n.vx; n.y += n.vy;
+    n.el.style.transform = `translate(${n.x}px, ${n.y}px)`;
+  }
+  updateEdges();
+  scheduleTick();
+}
+
+/* ---------- edge rendering ---------- */
+function symKey(rel, sym) { return rel + "::" + sym; }
+
+function anchor(node, sym, side) {
+  const yMid = node.rows.get(sym);
+  const y = node.y + (yMid === undefined ? node.h / 2 : yMid);
+  return { x: side === "right" ? node.x + node.w : node.x, y };
+}
+
+function updateEdges() {
+  if (!graphData) return;
+  // Rebuilding the SVG under the cursor swallows the mouseout that would
+  // normally hide the tooltip.
+  edgeTip.style.display = "none";
+  const frag = [];
+  for (let i = 0; i < graphData.edges.length; i++) {
+    const e = graphData.edges[i];
+    const a = nodes.get(e.from_file), b = nodes.get(e.to_file);
+    if (!a || !b) continue;
+    const aRight = (a.x + a.w / 2) <= (b.x + b.w / 2);
+    const p1 = anchor(a, e.from_symbol, aRight ? "right" : "left");
+    const p2 = anchor(b, e.to_symbol, aRight ? "left" : "right");
+    const dx = Math.max(Math.min(Math.abs(p2.x - p1.x) * 0.45, 170), 45)
+             * (aRight ? 1 : -1);
+    const d = `M ${p1.x} ${p1.y} C ${p1.x + dx} ${p1.y}, ${p2.x - dx} ${p2.y}, ${p2.x} ${p2.y}`;
+    const color = EDGE_COLOR[e.kind] || "#565f89";
+    const dash = EDGE_DASH[e.kind] ? ` stroke-dasharray="${EDGE_DASH[e.kind]}"` : "";
+    const cls = edgeClass(e);
+    frag.push(`<path class="vis${cls}" data-i="${i}" d="${d}" stroke="${color}"` +
+      ` stroke-width="1.4"${dash} marker-end="url(#arr-${e.kind})"/>`);
+    frag.push(`<path class="hit" data-i="${i}" d="${d}"/>`);
+  }
+  edgesSvg.innerHTML = markerDefs() +
+    `<g transform="translate(20000,20000)">${frag.join("")}</g>`;
+}
+
+function markerDefs() {
+  return "<defs>" + Object.entries(EDGE_COLOR).map(([kind, color]) =>
+    `<marker id="arr-${kind}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7"` +
+    ` markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="${color}"/></marker>`
+  ).join("") + "</defs>";
+}
+
+/* trace highlighting */
+let hlEdges = new Set(), upEdges = new Set(), touchedSyms = new Set();
+
+function edgeClass(edge) {
+  const index = graphData.edges.indexOf(edge);
+  if (hlEdges.has(index)) return " hl";
+  if (upEdges.has(index)) return " up";
+  return "";
+}
+
+function computeTrace() {
+  hlEdges = new Set(); upEdges = new Set(); touchedSyms = new Set();
+  edgesSvg.classList.toggle("tracing", selected !== null);
+  if (!selected || !graphData) return;
+  touchedSyms.add(selected);
+  // Downstream: follow calls/instantiates out of the frontier; entering a class
+  // via instantiates continues from its __init__.
+  let frontier = seedSet(selected);
+  frontier.forEach((s) => touchedSyms.add(s));
+  for (let hop = 0; hop < 40 && frontier.size; hop++) {
+    const next = new Set();
+    graphData.edges.forEach((e, i) => {
+      const from = symKey(e.from_file, e.from_symbol);
+      if (!frontier.has(from) || hlEdges.has(i)) return;
+      hlEdges.add(i);
+      const to = symKey(e.to_file, e.to_symbol);
+      if (!touchedSyms.has(to)) { touchedSyms.add(to); next.add(to); }
+      if (e.kind === "instantiates") {
+        const init = symKey(e.to_file, e.to_symbol + ".__init__");
+        if (!touchedSyms.has(init)) { touchedSyms.add(init); next.add(init); }
+      }
+    });
+    frontier = next;
+  }
+  // Upstream: who reaches the selected symbol.
+  let upFrontier = seedSet(selected);
+  for (let hop = 0; hop < 40 && upFrontier.size; hop++) {
+    const next = new Set();
+    graphData.edges.forEach((e, i) => {
+      const to = symKey(e.to_file, e.to_symbol);
+      if (!upFrontier.has(to) || upEdges.has(i) || hlEdges.has(i)) return;
+      upEdges.add(i);
+      const from = symKey(e.from_file, e.from_symbol);
+      if (!touchedSyms.has(from)) { touchedSyms.add(from); next.add(from); }
+    });
+    upFrontier = next;
+  }
+  updateRowStyles();
+}
+
+function seedSet(key) {
+  // Selecting a class row also seeds its methods.
+  const set = new Set([key]);
+  const [rel, sym] = splitKey(key);
+  const file = graphData.files.find((f) => f.rel === rel);
+  if (file) {
+    for (const s of file.symbols) {
+      if (s.id === sym && s.kind === "class" && s.children) {
+        s.children.forEach((c) => set.add(symKey(rel, c.id)));
+      }
+    }
+  }
+  return set;
+}
+
+function splitKey(key) {
+  const at = key.indexOf("::");
+  return [key.slice(0, at), key.slice(at + 2)];
+}
+
+function updateRowStyles() {
+  for (const [rel, node] of nodes) {
+    let any = false;
+    node.el.querySelectorAll(".row").forEach((row) => {
+      const key = symKey(rel, row.dataset.sym);
+      const isSel = key === selected;
+      const isTouch = selected !== null && touchedSyms.has(key) && !isSel;
+      row.classList.toggle("sel", isSel);
+      row.classList.toggle("touch", isTouch);
+      if (isSel || isTouch) any = true;
+    });
+    node.el.classList.toggle("dim", selected !== null && !any);
+  }
+  if (selected) {
+    const [rel, sym] = splitKey(selected);
+    tracePill.style.display = "block";
+    tracePill.innerHTML = `tracing <b>${esc(sym)}</b> (${esc(rel.split("/").pop())})` +
+      ` — ${hlEdges.size} down, ${upEdges.size} up` +
+      `<span class="esc">Esc to clear</span>`;
+  } else {
+    tracePill.style.display = "none";
+  }
+}
+
+function select(key) {
+  selected = (selected === key) ? null : key;
+  computeTrace();
+  updateEdges();
+}
+
+/* ---------- cards ---------- */
+function rowHtml(sym, kind, name, line) {
+  const ico = { class: "C", method: "·", function: "ƒ" }[kind];
+  return `<div class="row ${kind}" data-sym="${esc(sym)}">` +
+    `<span class="ico">${ico}</span><span class="nm">${esc(name)}</span>` +
+    `<span class="ln">${line}</span></div>`;
+}
+
+function cardHtml(file) {
+  const parts = file.rel.split("/");
+  const base = parts.pop();
+  const dir = parts.join("/");
+  let html = `<div class="card-head"><span class="fname">${esc(base)}</span>` +
+    (file.changed ? `<span class="dirty" title="unsaved changes">●</span>` : "") +
+    `</div>`;
+  if (dir) html += `<div class="card-dir">${esc(dir)}</div>`;
+  if (file.error) {
+    html += `<div class="card-note err">${esc(file.error)}</div>`;
+  } else if (!file.symbols.length) {
+    const note = file.language === "python" ? "no top-level symbols"
+                                            : esc(file.language) + " — not analyzed";
+    html += `<div class="card-note">${note}</div>`;
+  } else {
+    html += `<div class="rows">`;
+    for (const s of file.symbols) {
+      html += rowHtml(s.id, s.kind, s.name, s.line);
+      if (s.children) for (const c of s.children) html += rowHtml(c.id, "method", c.name, c.line);
+    }
+    html += `</div>`;
+  }
+  return html;
+}
+
+function buildNodes() {
+  const saved = loadLayout();
+  const seen = new Set();
+  const count = graphData.files.length;
+  graphData.files.forEach((file, index) => {
+    seen.add(file.rel);
+    let node = nodes.get(file.rel);
+    if (!node) {
+      const el = document.createElement("div");
+      el.className = "card";
+      el.dataset.rel = file.rel;
+      world.appendChild(el);
+      const angle = index / Math.max(count, 1) * Math.PI * 2;
+      const radius = 320 + 40 * (index % 3);
+      node = { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius,
+               vx: 0, vy: 0, w: 200, h: 60, el, rows: new Map(), pinned: false };
+      const pos = saved[file.rel];
+      if (pos) { node.x = pos[0]; node.y = pos[1]; node.pinned = !!pos[2]; }
+      nodes.set(file.rel, node);
+      attachCardEvents(node, el);
+    }
+    node.el.innerHTML = cardHtml(file);
+    node.el.style.transform = `translate(${node.x}px, ${node.y}px)`;
+  });
+  for (const [rel, node] of nodes) {
+    if (!seen.has(rel)) { node.el.remove(); nodes.delete(rel); }
+  }
+  // Measure after layout.
+  for (const node of nodes.values()) {
+    node.w = node.el.offsetWidth;
+    node.h = node.el.offsetHeight;
+    node.rows = new Map();
+    node.el.querySelectorAll(".row").forEach((row) => {
+      node.rows.set(row.dataset.sym, row.offsetTop + row.offsetHeight / 2);
+    });
+  }
+  fileEdges = [];
+  const pairSeen = new Set();
+  for (const e of graphData.edges) {
+    const key = e.from_file < e.to_file ? e.from_file + "|" + e.to_file
+                                        : e.to_file + "|" + e.from_file;
+    if (e.from_file !== e.to_file && !pairSeen.has(key)) {
+      pairSeen.add(key);
+      fileEdges.push({ a: e.from_file, b: e.to_file });
+    }
+  }
+  if (selected && !stillExists(selected)) selected = null;
+  computeTrace();
+  updateEdges();
+}
+
+function stillExists(key) {
+  const [rel, sym] = splitKey(key);
+  const node = nodes.get(rel);
+  return !!(node && node.rows.has(sym));
+}
+
+/* ---------- interaction: drag cards, click rows ---------- */
+function attachCardEvents(node, el) {
+  el.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    const startX = event.clientX, startY = event.clientY;
+    const origX = node.x, origY = node.y;
+    let moved = false;
+    el.classList.add("dragging");
+    const onMove = (moveEvent) => {
+      const dx = (moveEvent.clientX - startX) / zoom;
+      const dy = (moveEvent.clientY - startY) / zoom;
+      if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+      if (moved) {
+        node.x = origX + dx; node.y = origY + dy;
+        node.el.style.transform = `translate(${node.x}px, ${node.y}px)`;
+        kick(0.08);
+      }
+    };
+    const onUp = (upEvent) => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      el.classList.remove("dragging");
+      if (moved) {
+        node.pinned = true;
+        saveLayout();
+      } else {
+        const row = upEvent.target.closest(".row");
+        if (row) select(symKey(el.dataset.rel, row.dataset.sym));
+      }
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  });
+  el.addEventListener("dblclick", () => {
+    node.pinned = false;
+    saveLayout();
+    kick(0.3);
+  });
+}
+
+/* pan + zoom */
+viewport.addEventListener("mousedown", (event) => {
+  if (event.button !== 0) return;
+  const startX = event.clientX, startY = event.clientY;
+  const origX = panX, origY = panY;
+  viewport.classList.add("panning");
+  const onMove = (moveEvent) => {
+    panX = origX + (moveEvent.clientX - startX);
+    panY = origY + (moveEvent.clientY - startY);
+    applyView();
+  };
+  const onUp = () => {
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+    viewport.classList.remove("panning");
+    saveLayout();
+  };
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+});
+
+viewport.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  const factor = Math.exp(-event.deltaY * 0.0015);
+  const newZoom = Math.max(0.2, Math.min(2.5, zoom * factor));
+  const rect = viewport.getBoundingClientRect();
+  const mx = event.clientX - rect.left, my = event.clientY - rect.top;
+  panX = mx - (mx - panX) * (newZoom / zoom);
+  panY = my - (my - panY) * (newZoom / zoom);
+  zoom = newZoom;
+  applyView();
+}, { passive: false });
+
+function applyView() {
+  world.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+}
+
+function fitView() {
+  if (!nodes.size) return;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const n of nodes.values()) {
+    minX = Math.min(minX, n.x); minY = Math.min(minY, n.y);
+    maxX = Math.max(maxX, n.x + n.w); maxY = Math.max(maxY, n.y + n.h);
+  }
+  const rect = viewport.getBoundingClientRect();
+  const pad = 60;
+  zoom = Math.max(0.2, Math.min(1.25,
+    Math.min((rect.width - pad) / (maxX - minX), (rect.height - pad) / (maxY - minY))));
+  panX = rect.width / 2 - (minX + maxX) / 2 * zoom;
+  panY = rect.height / 2 - (minY + maxY) / 2 * zoom;
+  applyView();
+}
+
+/* edge hover tooltip + click-to-trace */
+edgesSvg.addEventListener("mouseover", (event) => {
+  const hit = event.target.closest("path.hit");
+  if (!hit) return;
+  const e = graphData.edges[+hit.dataset.i];
+  const kindLabel = e.kind.replace("_", " ");
+  edgeTip.innerHTML = `${esc(e.from_symbol)} <span style="color:${EDGE_COLOR[e.kind]}">` +
+    `—${esc(kindLabel)}→</span> ${esc(e.to_symbol)}` +
+    ` <span style="color:var(--muted)">line ${e.line}${e.count > 1 ? " ×" + e.count : ""}</span>`;
+  edgeTip.style.display = "block";
+});
+edgesSvg.addEventListener("mousemove", (event) => {
+  edgeTip.style.left = (event.clientX + 14) + "px";
+  edgeTip.style.top = (event.clientY + 10) + "px";
+});
+edgesSvg.addEventListener("mouseout", () => { edgeTip.style.display = "none"; });
+edgesSvg.addEventListener("click", (event) => {
+  const hit = event.target.closest("path.hit");
+  if (!hit) return;
+  event.stopPropagation();
+  const e = graphData.edges[+hit.dataset.i];
+  select(symKey(e.from_file, e.from_symbol));
+});
+
+viewport.addEventListener("click", (event) => {
+  if (event.target === viewport || event.target === world) {
+    if (selected) select(selected);
+  }
+});
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && selected) select(selected);
+});
+
+document.getElementById("relayout").addEventListener("click", () => {
+  localStorage.removeItem(layoutKey());
+  for (const n of nodes.values()) n.pinned = false;
+  kick(1);
+  setTimeout(fitView, 600);
+});
+
+/* ---------- layout persistence ---------- */
+function layoutKey() { return "nbg-layout:" + sessionKey; }
+function loadLayout() {
+  try { return JSON.parse(localStorage.getItem(layoutKey())) || {}; }
+  catch { return {}; }
+}
+function saveLayout() {
+  if (!sessionKey) return;
+  const out = {};
+  for (const [rel, n] of nodes) out[rel] = [Math.round(n.x), Math.round(n.y), n.pinned ? 1 : 0];
+  out.__view = [Math.round(panX), Math.round(panY), zoom];
+  localStorage.setItem(layoutKey(), JSON.stringify(out));
+}
+
+/* ---------- data fetching ---------- */
+async function fetchNvims() {
+  const response = await fetch(BASE + "/api/nvims");
+  const payload = await response.json();
+  const current = picker.value;
+  picker.innerHTML = "";
+  const tracked = payload.nvims.filter((n) => n.tracked);
+  const untracked = payload.nvims.filter((n) => !n.tracked);
+  const addOption = (n, group) => {
+    const option = document.createElement("option");
+    option.value = n.key;
+    option.textContent = `${n.name}  [${n.buffer_count} buf]` +
+      (n.tags.length ? `  ${n.tags.join(",")}` : "");
+    group.appendChild(option);
+  };
+  if (tracked.length) {
+    const group = document.createElement("optgroup");
+    group.label = "tx sessions";
+    tracked.forEach((n) => addOption(n, group));
+    picker.appendChild(group);
+  }
+  if (untracked.length) {
+    const group = document.createElement("optgroup");
+    group.label = "untracked nvims";
+    untracked.forEach((n) => addOption(n, group));
+    picker.appendChild(group);
+  }
+  if ([...picker.options].some((o) => o.value === (sessionKey || current))) {
+    picker.value = sessionKey || current;
+  }
+  return payload.nvims;
+}
+
+async function fetchGraph() {
+  if (!sessionKey) return;
+  const response = await fetch(BASE + "/api/graph?session=" + encodeURIComponent(sessionKey));
+  if (!response.ok) {
+    statusEl.textContent = "nvim gone — waiting…";
+    statusEl.className = "err";
+    return;
+  }
+  const payload = await response.json();
+  lastOk = Date.now();
+  statusEl.className = "";
+  const print = JSON.stringify({
+    files: payload.files.map((f) => [f.rel, f.changed, f.error, f.symbols]),
+    edges: payload.edges,
+    session: [payload.session.name, payload.session.tags],
+  });
+  if (print === fingerprint) return;
+  fingerprint = print;
+  const firstBuild = graphData === null;
+  graphData = payload;
+  renderSessionTags(payload.session);
+  buildNodes();
+  countsEl.textContent = `${payload.files.length} files · ${payload.edges.length} edges`;
+  emptyEl.style.display = payload.files.length ? "none" : "block";
+  emptyEl.textContent = "no named buffers in this nvim";
+  if (firstBuild) {
+    const view = loadLayout().__view;
+    if (view) { panX = view[0]; panY = view[1]; zoom = view[2]; applyView(); }
+    else { kick(1); setTimeout(fitView, 700); }
+    kick(1);
+  } else {
+    kick(0.25);
+  }
+}
+
+function renderSessionTags(session) {
+  const holder = document.getElementById("session-tags");
+  holder.innerHTML = session.tags.map((tag) =>
+    `<span class="tag-chip" style="border-color:${esc(session.tag_colors[tag] || "#2a2e42")};` +
+    `color:${esc(session.tag_colors[tag] || "#c0caf5")}">${esc(tag)}</span>`).join("");
+}
+
+function switchSession(key) {
+  sessionKey = key;
+  location.hash = "s=" + encodeURIComponent(key);
+  localStorage.setItem("nbg-last-session", key);
+  fingerprint = "";
+  graphData = null;
+  selected = null;
+  for (const n of nodes.values()) n.el.remove();
+  nodes.clear();
+  fileEdges = [];
+  edgesSvg.classList.remove("tracing");
+  panX = 60; panY = 60; zoom = 1; applyView();
+  fetchGraph().catch(showFetchError);
+}
+
+picker.addEventListener("change", () => switchSession(picker.value));
+
+function showFetchError() {
+  statusEl.textContent = "server unreachable";
+  statusEl.className = "err";
+}
+
+async function refreshTick() {
+  if (!document.getElementById("auto").checked) return;
+  try {
+    if (pollCount % NVIMS_EVERY === 0) await fetchNvims();
+    pollCount += 1;
+    await fetchGraph();
+    if (!statusEl.className) {
+      statusEl.textContent = `↻ ${Math.round((Date.now() - lastOk) / 1000)}s ago`;
+    }
+  } catch {
+    showFetchError();
+  }
+}
+
+async function init() {
+  applyView();
+  let nvims = [];
+  try { nvims = await fetchNvims(); } catch { showFetchError(); return; }
+  const fromHash = decodeURIComponent((location.hash.match(/s=([^&]+)/) || [, ""])[1]);
+  const fromStore = localStorage.getItem("nbg-last-session") || "";
+  const known = (key) => nvims.some((n) => n.key === key);
+  let key = known(fromHash) ? fromHash : (known(fromStore) ? fromStore : null);
+  if (!key) {
+    const candidates = nvims.filter((n) => n.tracked && n.buffer_count > 0);
+    key = candidates.length ? candidates[0].key
+        : (nvims.length ? nvims[0].key : null);
+  }
+  if (!key) {
+    emptyEl.style.display = "block";
+    emptyEl.textContent = "no running nvim instances found";
+    statusEl.textContent = "idle";
+    return;
+  }
+  picker.value = key;
+  switchSession(key);
+  setInterval(refreshTick, REFRESH_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refreshTick();
+  });
+}
+
+init();
+</script>
+</body>
+</html>
