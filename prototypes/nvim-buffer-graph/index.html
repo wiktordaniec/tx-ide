@@ -118,6 +118,25 @@ body {
 .row .ln { margin-left: auto; color: var(--muted); font-size: 10px; }
 .card-note { padding: 2px 9px 4px; font-size: 11px; color: var(--muted); font-style: italic; }
 .card-note.err { color: var(--red); }
+.row.mut { opacity: 0.35; }
+.card-head .hide-btn { visibility: hidden; margin-left: auto; color: var(--muted);
+                       cursor: pointer; font-size: 12px; padding: 0 2px; }
+.card-head:hover .hide-btn { visibility: visible; }
+.card-head .hide-btn:hover { color: var(--red); }
+
+/* ---- hidden/muted restore bar ---- */
+#hidden-bar {
+  position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 25;
+  display: none; gap: 6px; align-items: center; flex-wrap: wrap; max-width: 70vw;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 10px; font-size: 11px; color: var(--muted);
+}
+#hidden-bar .hchip {
+  border: 1px solid var(--border); border-radius: 9px; padding: 0 7px;
+  line-height: 17px; cursor: pointer; color: var(--fg); white-space: nowrap;
+}
+#hidden-bar .hchip:hover { border-color: var(--accent); text-decoration: line-through; }
+#hidden-bar .hchip.sym { font-style: italic; }
 
 /* ---- pills ---- */
 #trace-pill, #empty {
@@ -154,6 +173,8 @@ body {
   <div class="lg"><svg width="26" height="6"><line x1="0" y1="3" x2="26" y2="3" stroke="#9ece6a" stroke-width="2"/></svg> instantiates</div>
   <div class="lg"><svg width="26" height="6"><line x1="0" y1="3" x2="26" y2="3" stroke="#7dcfff" stroke-width="2" stroke-dasharray="4 3"/></svg> has instance</div>
   <div class="lg"><svg width="26" height="6"><line x1="0" y1="3" x2="26" y2="3" stroke="#bb9af7" stroke-width="2" stroke-dasharray="7 3"/></svg> inherits</div>
+  <div class="lg" style="margin-top:6px">click row: trace · ⌥-click row: mute</div>
+  <div class="lg">× on card: hide file</div>
 </div>
 
 <div id="viewport">
@@ -165,6 +186,7 @@ body {
 <div id="edge-tip"></div>
 <div id="empty"></div>
 <div id="counts"></div>
+<div id="hidden-bar"></div>
 
 <script>
 "use strict";
@@ -185,6 +207,8 @@ let fingerprint = "";
 let nodes = new Map();              // rel -> node {x,y,vx,vy,w,h,el,rows:Map(sym->yMid),pinned}
 let fileEdges = [];                 // aggregated per file pair for springs
 let selected = null;                // "rel::sym" in trace mode
+let hiddenFiles = new Set();        // rel paths defocused entirely
+let mutedSyms = new Set();          // "rel::sym" defocused symbols
 let alpha = 0;
 let pollTimer = null, pollCount = 0, lastOk = 0;
 
@@ -293,7 +317,7 @@ function updateEdges() {
   for (let i = 0; i < graphData.edges.length; i++) {
     const e = graphData.edges[i];
     const a = nodes.get(e.from_file), b = nodes.get(e.to_file);
-    if (!a || !b) continue;
+    if (!a || !b || !edgeVisible(e)) continue;
     const aRight = (a.x + a.w / 2) <= (b.x + b.w / 2);
     const p1 = anchor(a, e.from_symbol, aRight ? "right" : "left");
     const p2 = anchor(b, e.to_symbol, aRight ? "left" : "right");
@@ -318,6 +342,74 @@ function markerDefs() {
   ).join("") + "</defs>";
 }
 
+/* defocus: hidden files and muted symbols */
+function symMuted(rel, sym) {
+  if (mutedSyms.has(symKey(rel, sym))) return true;
+  const dot = sym.indexOf(".");
+  return dot > 0 && mutedSyms.has(symKey(rel, sym.slice(0, dot)));
+}
+
+function edgeVisible(edge) {
+  return !hiddenFiles.has(edge.from_file) && !hiddenFiles.has(edge.to_file)
+      && !symMuted(edge.from_file, edge.from_symbol)
+      && !symMuted(edge.to_file, edge.to_symbol);
+}
+
+function hideFile(rel) {
+  hiddenFiles.add(rel);
+  saveHidden();
+  buildNodes();
+  kick(0.3);
+}
+
+function toggleMute(key) {
+  if (mutedSyms.has(key)) mutedSyms.delete(key); else mutedSyms.add(key);
+  saveHidden();
+  buildNodes();
+  kick(0.2);
+}
+
+function hideKey() { return "nbg-hide:" + sessionKey; }
+function loadHidden() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(hideKey())) || {};
+    hiddenFiles = new Set(stored.files || []);
+    mutedSyms = new Set(stored.syms || []);
+  } catch {
+    hiddenFiles = new Set(); mutedSyms = new Set();
+  }
+}
+function saveHidden() {
+  localStorage.setItem(hideKey(),
+    JSON.stringify({ files: [...hiddenFiles], syms: [...mutedSyms] }));
+}
+
+function renderHiddenBar() {
+  const bar = document.getElementById("hidden-bar");
+  const chips = [];
+  for (const rel of hiddenFiles) {
+    chips.push(`<span class="hchip" data-file="${esc(rel)}" title="${esc(rel)} — click to restore">` +
+      `${esc(rel.split("/").pop())} ×</span>`);
+  }
+  for (const key of mutedSyms) {
+    const [rel, sym] = splitKey(key);
+    chips.push(`<span class="hchip sym" data-sym="${esc(key)}" title="muted in ${esc(rel)} — click to restore">` +
+      `${esc(sym)} ×</span>`);
+  }
+  bar.style.display = chips.length ? "flex" : "none";
+  bar.innerHTML = chips.length ? "defocused: " + chips.join("") : "";
+}
+
+document.getElementById("hidden-bar").addEventListener("click", (event) => {
+  const chip = event.target.closest(".hchip");
+  if (!chip) return;
+  if (chip.dataset.file) hiddenFiles.delete(chip.dataset.file);
+  if (chip.dataset.sym) mutedSyms.delete(chip.dataset.sym);
+  saveHidden();
+  buildNodes();
+  kick(0.3);
+});
+
 /* trace highlighting */
 let hlEdges = new Set(), upEdges = new Set(), touchedSyms = new Set();
 
@@ -331,7 +423,7 @@ function edgeClass(edge) {
 function computeTrace() {
   hlEdges = new Set(); upEdges = new Set(); touchedSyms = new Set();
   edgesSvg.classList.toggle("tracing", selected !== null);
-  if (!selected || !graphData) return;
+  if (!selected || !graphData) { updateRowStyles(); return; }
   touchedSyms.add(selected);
   // Downstream: follow calls/instantiates out of the frontier; entering a class
   // via instantiates continues from its __init__.
@@ -340,6 +432,7 @@ function computeTrace() {
   for (let hop = 0; hop < 40 && frontier.size; hop++) {
     const next = new Set();
     graphData.edges.forEach((e, i) => {
+      if (!edgeVisible(e)) return;
       const from = symKey(e.from_file, e.from_symbol);
       if (!frontier.has(from) || hlEdges.has(i)) return;
       hlEdges.add(i);
@@ -357,6 +450,7 @@ function computeTrace() {
   for (let hop = 0; hop < 40 && upFrontier.size; hop++) {
     const next = new Set();
     graphData.edges.forEach((e, i) => {
+      if (!edgeVisible(e)) return;
       const to = symKey(e.to_file, e.to_symbol);
       if (!upFrontier.has(to) || upEdges.has(i) || hlEdges.has(i)) return;
       upEdges.add(i);
@@ -397,6 +491,7 @@ function updateRowStyles() {
       const isTouch = selected !== null && touchedSyms.has(key) && !isSel;
       row.classList.toggle("sel", isSel);
       row.classList.toggle("touch", isTouch);
+      row.classList.toggle("mut", symMuted(rel, row.dataset.sym));
       if (isSel || isTouch) any = true;
     });
     node.el.classList.toggle("dim", selected !== null && !any);
@@ -432,7 +527,7 @@ function cardHtml(file) {
   const dir = parts.join("/");
   let html = `<div class="card-head"><span class="fname">${esc(base)}</span>` +
     (file.changed ? `<span class="dirty" title="unsaved changes">●</span>` : "") +
-    `</div>`;
+    `<span class="hide-btn" title="hide this file from the graph">×</span></div>`;
   if (dir) html += `<div class="card-dir">${esc(dir)}</div>`;
   if (file.error) {
     html += `<div class="card-note err">${esc(file.error)}</div>`;
@@ -454,8 +549,9 @@ function cardHtml(file) {
 function buildNodes() {
   const saved = loadLayout();
   const seen = new Set();
-  const count = graphData.files.length;
-  graphData.files.forEach((file, index) => {
+  const visibleFiles = graphData.files.filter((file) => !hiddenFiles.has(file.rel));
+  const count = visibleFiles.length;
+  visibleFiles.forEach((file, index) => {
     seen.add(file.rel);
     let node = nodes.get(file.rel);
     if (!node) {
@@ -489,7 +585,10 @@ function buildNodes() {
   }
   fileEdges = [];
   const pairSeen = new Set();
+  let visibleEdgeCount = 0;
   for (const e of graphData.edges) {
+    if (!edgeVisible(e)) continue;
+    visibleEdgeCount += 1;
     const key = e.from_file < e.to_file ? e.from_file + "|" + e.to_file
                                         : e.to_file + "|" + e.from_file;
     if (e.from_file !== e.to_file && !pairSeen.has(key)) {
@@ -498,8 +597,12 @@ function buildNodes() {
     }
   }
   if (selected && !stillExists(selected)) selected = null;
+  const hiddenNote = hiddenFiles.size ? ` (${hiddenFiles.size} hidden)` : "";
+  countsEl.textContent =
+    `${visibleFiles.length} files${hiddenNote} · ${visibleEdgeCount} edges`;
   computeTrace();
   updateEdges();
+  renderHiddenBar();
 }
 
 function stillExists(key) {
@@ -534,9 +637,14 @@ function attachCardEvents(node, el) {
       if (moved) {
         node.pinned = true;
         saveLayout();
+      } else if (upEvent.target.closest(".hide-btn")) {
+        hideFile(el.dataset.rel);
       } else {
         const row = upEvent.target.closest(".row");
-        if (row) select(symKey(el.dataset.rel, row.dataset.sym));
+        if (row) {
+          const key = symKey(el.dataset.rel, row.dataset.sym);
+          if (upEvent.altKey) toggleMute(key); else select(key);
+        }
       }
     };
     window.addEventListener("mousemove", onMove);
@@ -711,7 +819,6 @@ async function fetchGraph() {
   graphData = payload;
   renderSessionTags(payload.session);
   buildNodes();
-  countsEl.textContent = `${payload.files.length} files · ${payload.edges.length} edges`;
   emptyEl.style.display = payload.files.length ? "none" : "block";
   emptyEl.textContent = "no named buffers in this nvim";
   if (firstBuild) {
@@ -735,6 +842,7 @@ function switchSession(key) {
   sessionKey = key;
   location.hash = "s=" + encodeURIComponent(key);
   localStorage.setItem("nbg-last-session", key);
+  loadHidden();
   fingerprint = "";
   graphData = null;
   selected = null;
