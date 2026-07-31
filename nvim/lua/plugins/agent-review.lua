@@ -1,3 +1,60 @@
+-- <leader>gf: history of the function/class the cursor sits in, as a diffview
+-- file-history log. Treesitter finds the enclosing definition, git is then asked
+-- for that line range.
+--
+-- The LINE RANGE form (-L<start>,<end>:<file>) and deliberately NOT git's
+-- -L:<funcname>:<file>: the latter resolves the name through git's funcname regex
+-- and dies with `fatal: -L parameter '<name>' ... no match` on anything that is
+-- not a def/class line, which is most of a real file. Hit in live use.
+local function enclosing_definition()
+  -- get_node() throws on a buffer with no treesitter parser
+  local parsed, node = pcall(vim.treesitter.get_node)
+  if not parsed then
+    return nil
+  end
+  while node do
+    local kind = node:type()
+    if
+      kind:match("function_definition")
+      or kind:match("class_definition")
+      or kind:match("method")
+      or kind == "function_declaration"
+    then
+      local start_row, _, end_row, _ = node:range()
+      local name_node = node:field("name")[1]
+      local name = name_node and vim.treesitter.get_node_text(name_node, 0) or "<anonymous>"
+      return name, start_row + 1, end_row + 1, kind
+    end
+    node = node:parent()
+  end
+end
+
+-- git wants the path relative to the repo root, not to the cwd
+local function repo_relative_path()
+  local absolute = vim.fn.expand("%:p")
+  if absolute == "" or vim.bo.buftype ~= "" or absolute:match("^diffview:") then
+    return nil
+  end
+  local root = vim.fn.systemlist({ "git", "-C", vim.fn.expand("%:p:h"), "rev-parse", "--show-toplevel" })[1]
+  if vim.v.shell_error ~= 0 or not root or root == "" then
+    return nil
+  end
+  return absolute:sub(#root + 2)
+end
+
+local function function_history()
+  local path = repo_relative_path()
+  if not path then
+    return vim.notify("not a tracked file buffer", vim.log.levels.WARN)
+  end
+  local name, start_row, end_row, kind = enclosing_definition()
+  if not name then
+    return vim.notify("no enclosing function/class at the cursor", vim.log.levels.WARN)
+  end
+  vim.notify(("history of %s (%s, lines %d-%d)"):format(name, kind, start_row, end_row))
+  vim.cmd(("DiffviewFileHistory -L%d,%d:%s"):format(start_row, end_row, path))
+end
+
 return {
   -- which-key group labels
   {
@@ -31,8 +88,12 @@ return {
       enhanced_diff_hl = true, -- proper add/delete/change colors instead of generic blue
     },
     keys = {
-      { "<leader>af", "<cmd>DiffviewFileHistory<cr>", desc = "File history (all)" },
-      { "<leader>ah", "<cmd>DiffviewFileHistory %<cr>", desc = "File history (current file)" },
+      { "<leader>gf", function_history, desc = "File history (enclosing function/class)" },
+      { "<leader>gv", "<cmd>DiffviewFileHistory %<cr>", desc = "File history (current file)" },
+      { "<leader>gH", "<cmd>DiffviewFileHistory<cr>", desc = "File history (branch)" },
+      -- the return to the origin tab is an autocmd, not this key: see
+      -- lua/config/diffview-return.lua
+      { "<leader>gq", "<cmd>DiffviewClose<cr>", desc = "Close diffview (returns to origin tab)" },
       {
         "<leader>ad",
         function()
@@ -136,10 +197,6 @@ return {
         end,
         desc = "Worktree picker",
       },
-      { "<leader>ai", "<cmd>Gitsigns diffthis<cr>", desc = "Inline diff (current file)" },
-      { "<leader>am", "<cmd>Gitsigns diffthis main<cr>", desc = "Inline diff vs main" },
-      { "<leader>as", function() Snacks.picker.git_status() end, desc = "Git status" },
-      { "<leader>al", function() Snacks.picker.git_log() end, desc = "Git log" },
     },
   },
 }

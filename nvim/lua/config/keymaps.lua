@@ -18,31 +18,26 @@ vim.keymap.set("n", "<leader>an", function()
   vim.cmd("startinsert")
 end, { desc = "Add AINote above" })
 
--- DiffView: merge-base diff against the PR base (GitHub-style view).
--- Prefers the open PR's base branch via `gh`; falls back to `origin/HEAD`
--- so it still works on branches without a PR or in repos without `gh`.
-vim.keymap.set("n", "<leader>gm", function()
-  local base
-  if vim.fn.executable("gh") == 1 then
-    local out = vim.fn.systemlist("gh pr view --json baseRefName --jq .baseRefName 2>/dev/null")
-    if vim.v.shell_error == 0 and out[1] and out[1] ~= "" then
-      base = "origin/" .. out[1]
-    end
-  end
-  if not base then
-    local out = vim.fn.systemlist("git rev-parse --abbrev-ref origin/HEAD")
-    if vim.v.shell_error == 0 and out[1] and out[1] ~= "" then
-      base = out[1]
-    end
-  end
-  if not base then
-    vim.notify("Couldn't resolve diff base — no open PR and origin/HEAD missing", vim.log.levels.ERROR)
-    return
-  end
-  -- Use single rev (not base..HEAD or base...HEAD) so the right pane is the
-  -- working tree and stays editable — needed for <leader>an (AINote).
-  vim.cmd("DiffviewOpen " .. base)
-end, { desc = "Diff branch against PR base (PR-style)" })
+-- Never-pressed LazyVim defaults, removed on the keylog's evidence (0 uses in 15
+-- days). These are set by lazyvim/config/keymaps.lua directly rather than through
+-- a plugin spec, so a `false` entry in a spec cannot reach them -- they have to be
+-- deleted here, which runs after LazyVim's own keymaps. pcall because LazyVim only
+-- maps <leader>gG when lazygit is on PATH, and may drop either in a future release.
+for _, keymap in ipairs({
+  { mode = "n", lhs = "<leader>gG" }, -- Lazygit (cwd)
+  { mode = "n", lhs = "<leader>gY" }, -- Git Browse (copy)
+  { mode = "x", lhs = "<leader>gY" },
+}) do
+  pcall(vim.keymap.del, keymap.mode, keymap.lhs)
+end
+
+-- Macro trap: q starts a recording whenever the buffer does not map it, which the
+-- keylog caught 42 times in one week -- all accidental, one still running, and
+-- snacks disables scroll animation while recording, which read as "scrolling
+-- broke". Global normal mode only, so buffer-local q (quickfix, help, diffview
+-- panels, pickers) still wins and "q to close" keeps working.
+vim.keymap.set("n", "q", "<Nop>", { desc = "disabled (use Q to record a macro)" })
+vim.keymap.set("n", "Q", "q", { desc = "Record macro" })
 
 -- Diff current buffer against HEAD (inline, single file)
 vim.keymap.set("n", "<leader>gd", "<cmd>Gitsigns diffthis<cr>", { desc = "Diff this file against HEAD" })
@@ -54,39 +49,47 @@ vim.keymap.set("n", "<leader>gD", function()
   vim.cmd("Gitsigns diffthis " .. base)
 end, { desc = "Diff this file against PR base" })
 
--- Pick commit(s) from this file's history:
---   Enter on one commit  -> inline diff: working tree vs that commit (gitsigns, single pane)
---   Tab-select two, Enter -> Diffview of the file between those two commits
--- <leader>gR resets the inline view back to normal (base = index/HEAD).
-vim.keymap.set("n", "<leader>gF", function()
-  local file = vim.api.nvim_buf_get_name(0)
+-- Inline diff vs a picked commit (gitsigns, single pane). <leader>gF toggles:
+-- no inline diff active -> pick a commit from this file's history and apply;
+-- active -> reset the base back to index/HEAD. b:inline_diff_base tracks the
+-- state and feeds the statusline indicator (see plugins/inline-diff-statusline).
+-- Multi-select is ignored on purpose -- Tab also moves the cursor.
+--
+-- This is the most-used git key in the keylog (292 all-time / 124 in the last
+-- week), which is why it sits on gF and not behind a new prefix.
+local function inline_diff_reset()
+  local gitsigns = require("gitsigns")
+  gitsigns.change_base(nil, false)
+  gitsigns.toggle_linehl(false)
+  gitsigns.toggle_deleted(false)
+  gitsigns.toggle_word_diff(false)
+  vim.b.inline_diff_base = nil
+end
+
+local function inline_diff_toggle()
+  if vim.b.inline_diff_base then
+    inline_diff_reset()
+    return
+  end
+  local buffer = vim.api.nvim_get_current_buf()
   Snacks.picker.git_log_file({
-    title = "1 pick: vs working tree (inline) | Tab x2: commit range",
+    title = "Inline diff: working tree vs picked commit",
     confirm = function(picker, item)
-      local sel = picker:selected({ fallback = true })
       picker:close()
-      if #sel >= 2 then
-        -- idx 1 = newest; sort so older commit is the left/base side
-        table.sort(sel, function(a, b) return (a.idx or 0) > (b.idx or 0) end)
-        vim.cmd(("DiffviewOpen %s..%s -- %s"):format(sel[1].commit, sel[2].commit, vim.fn.fnameescape(file)))
-      elseif sel[1] and sel[1].commit then
-        local gs = require("gitsigns")
-        gs.change_base(sel[1].commit, false)
-        gs.toggle_linehl(true)
-        gs.toggle_deleted(true)
-        gs.toggle_word_diff(true)
+      if not (item and item.commit) then
+        return
       end
+      local gitsigns = require("gitsigns")
+      gitsigns.change_base(item.commit, false)
+      gitsigns.toggle_linehl(true)
+      gitsigns.toggle_deleted(true)
+      gitsigns.toggle_word_diff(true)
+      vim.b[buffer].inline_diff_base = item.commit:sub(1, 8)
     end,
   })
-end, { desc = "Inline diff vs picked commit / range between two picks" })
+end
 
-vim.keymap.set("n", "<leader>gR", function()
-  local gs = require("gitsigns")
-  gs.change_base(nil, false)
-  gs.toggle_linehl(false)
-  gs.toggle_deleted(false)
-  gs.toggle_word_diff(false)
-end, { desc = "Reset inline diff (base back to HEAD, toggles off)" })
+vim.keymap.set("n", "<leader>gF", inline_diff_toggle, { desc = "Toggle inline diff vs picked commit" })
 
 -- Make DiffView buffers modifiable so AINote and other edits work.
 -- DiffView locks buffers via multiple code paths, so we defer and hit several events.
@@ -119,9 +122,14 @@ require("config.diff-style")
 -- C-h/j/k/l across splits, panes, and nested sessions (see lua/config/tmux-nav.lua)
 require("config.tmux-nav").setup()
 
+-- Closing a diffview lands you back on the tab you opened it from
+-- (see lua/config/diffview-return.lua)
+require("config.diffview-return").setup()
+
 -- Keymap usage telemetry (see lua/config/keylog.lua)
 require("config.keylog").setup()
 
 -- <leader>at / <leader>ac — ask a live tx llm session about the code under the
 -- cursor (see lua/config/tx-ask.lua)
 require("config.tx-ask")
+

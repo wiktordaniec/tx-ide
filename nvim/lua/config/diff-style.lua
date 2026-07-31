@@ -1,6 +1,6 @@
 -- GitHub-style diff colors, tuned for tokyonight (night/moon).
 -- One palette shared by:
---   * vim diff mode / diffview.nvim side-by-side panes (<leader>gm, <leader>ad, 2-pick <leader>gF)
+--   * vim diff mode / diffview.nvim side-by-side panes (<leader>ad, <leader>gf, <leader>gv)
 --   * gitsigns single-pane inline diff (<leader>gF: linehl + word_diff + deleted virt lines)
 --
 -- Design: soft ~15-20% tinted line backgrounds (GitHub's rgba(46,160,67,.15) /
