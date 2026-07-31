@@ -39,6 +39,31 @@ end
 vim.keymap.set("n", "q", "<Nop>", { desc = "disabled (use Q to record a macro)" })
 vim.keymap.set("n", "Q", "q", { desc = "Record macro" })
 
+-- <leader>aT: the agent's code tour, applied or cleared. Toggles the same way
+-- <leader>gF does -- nothing showing, pick a manifest from the directory the
+-- agent writes them to; a tour showing, clear its marks and annotations. One
+-- manifest is applied without asking, which is the usual case.
+vim.keymap.set("n", "<leader>aT", function()
+  local tour = require("agent-tour")
+  if tour.is_active() then
+    tour.clear()
+    return vim.notify("tour cleared")
+  end
+  local manifests = vim.fn.glob(tour.MANIFEST_DIR .. "/*.json", false, true)
+  if #manifests == 0 then
+    return vim.notify("no tour manifests in " .. tour.MANIFEST_DIR, vim.log.levels.WARN)
+  end
+  if #manifests == 1 then
+    return tour.apply_tour(manifests[1])
+  end
+  vim.ui.select(manifests, {
+    prompt = "Apply tour:",
+    format_item = function(path) return vim.fn.fnamemodify(path, ":t:r") end,
+  }, function(choice)
+    if choice then tour.apply_tour(choice) end
+  end)
+end, { desc = "Toggle agent code tour" })
+
 -- Diff current buffer against HEAD (inline, single file)
 vim.keymap.set("n", "<leader>gd", "<cmd>Gitsigns diffthis<cr>", { desc = "Diff this file against HEAD" })
 
@@ -129,7 +154,11 @@ require("config.diffview-return").setup()
 -- Keymap usage telemetry (see lua/config/keylog.lua)
 require("config.keylog").setup()
 
--- <leader>at / <leader>ac — ask a live tx llm session about the code under the
--- cursor (see lua/config/tx-ask.lua)
+-- <leader>at / <leader>ac / <leader>aC — ask a live tx llm session about the code
+-- under the cursor, one question or a queued batch (see lua/config/tx-ask.lua)
 require("config.tx-ask")
 
+-- Agent code tours: registers :TourApply / :TourClear and the autocmd that keeps
+-- annotations on screen as buffers come and go (see lua/agent-tour.lua). Nothing
+-- else pulls this module in, so without the require even :TourApply is missing.
+require("agent-tour")

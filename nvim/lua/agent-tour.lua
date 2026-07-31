@@ -21,6 +21,9 @@
 
 local M = {}
 
+-- where the agent writes its manifests, per the spawn pattern above
+M.MANIFEST_DIR = "/tmp/claude-tour"
+
 local namespace = vim.api.nvim_create_namespace("agent-tour")
 local marks_by_path = {}
 
@@ -106,9 +109,34 @@ function M.apply_tour(manifest_path)
   pcall(vim.cmd, "normal! `A")
 end
 
+-- A tour is applied for the length of a session, so it needs a way out: the
+-- annotations are extmarks in our own namespace and the jump points are global
+-- marks, and both outlive the buffer they were set from.
+function M.is_active()
+  return next(marks_by_path) ~= nil
+end
+
+function M.clear()
+  for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(buffer) then
+      vim.api.nvim_buf_clear_namespace(buffer, namespace, 0, -1)
+    end
+  end
+  for _, entries in pairs(marks_by_path) do
+    for _, entry in ipairs(entries) do
+      pcall(vim.api.nvim_del_mark, entry.mark)
+    end
+  end
+  marks_by_path = {}
+end
+
 vim.api.nvim_create_user_command("TourApply", function(opts)
   M.apply_tour(opts.args)
 end, { nargs = 1, complete = "file" })
+
+vim.api.nvim_create_user_command("TourClear", function()
+  M.clear()
+end, {})
 
 vim.api.nvim_create_autocmd({ "BufWinEnter", "BufReadPost" }, {
   callback = function(args)
