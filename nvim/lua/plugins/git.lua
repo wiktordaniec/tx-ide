@@ -10,6 +10,18 @@ return {
         },
       },
     },
+    -- Never-pressed git pickers, removed on the keylog's evidence (0 uses in 15
+    -- days). They come from LazyVim's snacks_picker extra as plugin-spec keys, so
+    -- a `false` entry here unmaps them without forking the extra. The two other
+    -- dead defaults, <leader>gG and <leader>gY, are not spec keys and are deleted
+    -- in lua/config/keymaps.lua instead.
+    keys = {
+      { "<leader>gS", false }, -- Git Stash
+      { "<leader>gi", false }, -- GitHub Issues (open)
+      { "<leader>gI", false }, -- GitHub Issues (all)
+      { "<leader>gp", false }, -- GitHub Pull Requests (open)
+      { "<leader>gP", false }, -- GitHub Pull Requests (all)
+    },
   },
   {
     "polarmutex/git-worktree.nvim",

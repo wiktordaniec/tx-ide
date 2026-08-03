@@ -1,7 +1,14 @@
 -- Ask a live tx llm session about the code under the cursor.
 --
 --   <leader>at  pick the target session (tag siblings first, tags as chips)
+--   <leader>aC  queue a question here, to send with the rest later
 --   <leader>ac  ask it, with file:line plus the visual selection or the cursor word
+--               -- and any queued questions ahead of it
+--
+-- Queued questions are ephemeral: a virtual "? Qn queued" marker sits at the end
+-- of the line, and nothing is ever written to the file -- that is what AINotes are
+-- for. Sending is the ONLY thing that empties the queue, so a mistyped or
+-- abandoned prompt can never cost the operator questions they had banked.
 --
 -- Delivery goes through `tx send-user-message`, which wraps the body in the
 -- <from-user session="…"> operator envelope -- deliberately NOT `tx send-message`,
@@ -72,17 +79,64 @@ local function resolve_target()
   return FALLBACK
 end
 
-local function send(target, body)
+-- on_sent runs only when tx accepted the message, so a failed send leaves the
+-- queue intact rather than swallowing questions the operator has to retype
+local function send(target, body, on_sent)
   vim.system({ "tx", "send-user-message", target, body }, { text = true }, function(result)
     vim.schedule(function()
       if result.code ~= 0 then
         local why = vim.trim(result.stderr or "")
         vim.notify("tx send-user-message failed: " .. why, vim.log.levels.ERROR)
-      else
-        vim.notify("sent to " .. target, vim.log.levels.INFO)
+        return
       end
+      on_sent()
     end)
   end)
+end
+
+-- The context line for a question: file:line plus the cursor word, or the visual
+-- range plus the selected text.
+local function context()
+  local mode = vim.fn.mode()
+  local file = vim.fn.expand("%:.")
+  if mode:match("[vV\022]") then
+    local from, to = vim.fn.getpos("v"), vim.fn.getpos(".")
+    local lines = vim.fn.getregion(from, to, { type = mode })
+    local first, last = math.min(from[2], to[2]), math.max(from[2], to[2])
+    -- "nx", not "n": without the x the <Esc> is only QUEUED, so it arrives after
+    -- vim.ui.input has opened and knocks the prompt out of insert mode -- the
+    -- operator's first keystrokes then go nowhere. x flushes it here instead.
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "nx", false)
+    return ("%s:%d-%d | %s"):format(file, first, last, table.concat(lines, "\\n")), first
+  end
+  -- expand("<cword>") RAISES E348 on a blank or whitespace-only line, which is most of the
+  -- lines in a file -- there is no word to name, and file:line is context enough on its own.
+  local found, word = pcall(vim.fn.expand, "<cword>")
+  local line = vim.fn.line(".")
+  local where = ("%s:%d"):format(file, line)
+  if found and word ~= "" then where = where .. (" | word: %s"):format(word) end
+  return where, line
+end
+
+-- The queue: questions banked with <leader>aC, flushed by <leader>ac.
+local namespace = vim.api.nvim_create_namespace("tx_ask_queue")
+local queue = {}
+
+local function mark_queued(buffer, line, position)
+  -- the line can be gone by now if the buffer was edited after queueing
+  pcall(vim.api.nvim_buf_set_extmark, buffer, namespace, line - 1, 0, {
+    virt_text = { { ("  ? Q%d queued"):format(position), "DiagnosticVirtualTextHint" } },
+    virt_text_pos = "eol",
+  })
+end
+
+local function clear_queue()
+  queue = {}
+  for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(buffer) then
+      vim.api.nvim_buf_clear_namespace(buffer, namespace, 0, -1)
+    end
+  end
 end
 
 -- <leader>at : choose the target session
@@ -103,29 +157,48 @@ vim.keymap.set("n", "<leader>at", function()
   end)
 end, { desc = "Pick tx session to ask" })
 
--- <leader>ac : ask the current target about cursor/selection context.
+-- <leader>aC : bank a question about this spot to send with the others later.
+vim.keymap.set({ "n", "x" }, "<leader>aC", function()
+  local where, line = context()
+  local buffer = vim.api.nvim_get_current_buf()
+  vim.ui.input({ prompt = ("Queue question (%d so far): "):format(#queue) }, function(question)
+    -- Neither branch clears the queue. vim.ui.input passes nil on Esc and "" on an
+    -- empty submit, and an earlier version read those as "empty means clear",
+    -- which silently wiped a queue the operator had spent minutes building.
+    if question == nil then return end
+    question = vim.trim(question)
+    if question == "" then return end
+    queue[#queue + 1] = { question = question, context = where }
+    mark_queued(buffer, line, #queue)
+    vim.notify(("queued %d question%s"):format(#queue, #queue == 1 and "" or "s"))
+  end)
+end, { desc = "Queue a question for the tx target" })
+
+-- <leader>ac : send -- the queued questions, plus whatever is typed now.
 -- The prompt names the target on purpose -- no blind misfires.
 vim.keymap.set({ "n", "x" }, "<leader>ac", function()
   local target = resolve_target()
-  local mode = vim.fn.mode()
-  local file = vim.fn.expand("%:.")
-  local ctx
-  if mode:match("[vV\022]") then
-    local s, e = vim.fn.getpos("v"), vim.fn.getpos(".")
-    local lines = vim.fn.getregion(s, e, { type = mode })
-    ctx = ("%s:%d-%d | %s"):format(file, math.min(s[2], e[2]), math.max(s[2], e[2]), table.concat(lines, "\\n"))
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
-  else
-    -- expand("<cword>") RAISES E348 on a blank or whitespace-only line, which is most of the
-    -- lines in a file -- there is no word to name, and file:line is context enough on its own.
-    local found, word = pcall(vim.fn.expand, "<cword>")
-    ctx = ("%s:%d"):format(file, vim.fn.line("."))
-    if found and word ~= "" then ctx = ctx .. (" | word: %s"):format(word) end
-  end
-  vim.ui.input({ prompt = ("Ask %s: "):format(target) }, function(q)
-    if not q or q == "" then return end
+  local where = context()
+  local prompt = #queue > 0 and ("Ask %s (+%d queued, empty sends queue): "):format(target, #queue)
+    or ("Ask %s: "):format(target)
+  vim.ui.input({ prompt = prompt }, function(question)
+    if question == nil then return end -- Esc cancels the send; the queue survives
+    question = vim.trim(question)
+    if question == "" and #queue == 0 then return end
+
+    local questions = {}
+    for index, item in ipairs(queue) do
+      questions[index] = ("Q%d: %s | ctx: %s"):format(index, item.question, item.context)
+    end
+    if question ~= "" then
+      questions[#questions + 1] = ("Q%d: %s | ctx: %s"):format(#questions + 1, question, where)
+    end
     -- Messages are single-line (COMMON.md) -- any real newline becomes a literal \n.
-    local body = ("Q: %s | ctx: %s"):format(q, ctx)
-    send(target, (body:gsub("\n", "\\n")))
+    local body = table.concat(questions, "  ||  "):gsub("\n", "\\n")
+    local count = #questions
+    send(target, body, function()
+      clear_queue()
+      vim.notify(("sent %d question%s to %s"):format(count, count == 1 and "" or "s", target))
+    end)
   end)
-end, { desc = "Ask current tx target about this" })
+end, { desc = "Ask current tx target (sends queued questions too)" })
