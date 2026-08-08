@@ -1,5 +1,16 @@
 return {
-  { "sindrets/diffview.nvim" },
+  {
+    "sindrets/diffview.nvim",
+    -- The file panel opens full-width at the bottom instead of diffview's stock
+    -- 35-col left sidebar: the diff splits keep the full terminal width, and the
+    -- file list reads as a list rather than a column of truncated paths. This is
+    -- how the `-diff` companions are actually read.
+    --
+    -- Position is the whole change — diffview's own <leader>b (toggle the panel)
+    -- and <leader>e (focus it) are already buffer-local and already nowait, so
+    -- they pick up the new position with nothing to override here.
+    opts = { file_panel = { win_config = { position = "bottom", height = 16 } } },
+  },
   {
     "folke/snacks.nvim",
     opts = {
