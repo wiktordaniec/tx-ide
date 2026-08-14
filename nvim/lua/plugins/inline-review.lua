@@ -80,11 +80,10 @@ local function inline_layout_class()
   return require("diffview.scene.layouts.diff_1").Diff1
 end
 
-local function side_layout_class()
-  if require("diffview.config").get_config().view.default.layout == "diff2_vertical" then
-    return require("diffview.scene.layouts.diff_2_ver").Diff2Ver
-  end
-  return require("diffview.scene.layouts.diff_2_hor").Diff2Hor
+-- The side target is the view's own resolved default layout (honors the
+-- configured diff2 variant and layout=-1), so there is nothing to dispatch.
+local function side_layout_class(view)
+  return view.default_layout
 end
 
 local function find_review_view()
@@ -102,22 +101,19 @@ local function find_review_view()
 end
 
 -- The entries inline mode can convert: their b side must be the real working
--- tree, and actually exist there. Excludes the staged section (b is an index
--- blob), rev-range views (b is a commit blob), merge conflicts (owned by the
--- merge tool), and Deleted files (b is nulled -- inline would show a blank
--- diffview://null buffer, while side-by-side shows the removed content, so D
--- entries keep their native layout in both modes).
+-- tree, and actually exist there. The view's FileDict already partitions
+-- conflicting/working/staged, and every working entry's b side is the view's
+-- right rev -- so gate once on the view being a working-tree diff (rev-range
+-- views stay side-only) and filter only Deleted files (b is nulled: inline
+-- would show a blank diffview://null buffer, while side-by-side shows the
+-- removed content, so D entries keep their native layout in both modes).
 local function working_tree_entries(view)
-  local RevType = require("diffview.vcs.rev").RevType
+  if view.right.type ~= require("diffview.vcs.rev").RevType.LOCAL then
+    return {}
+  end
   local entries = {}
-  for _, entry in ipairs(view.panel:ordered_file_list() or {}) do
-    local window_b = entry.layout.b
-    if
-      entry.kind ~= "conflicting"
-      and window_b
-      and window_b.file.rev.type == RevType.LOCAL
-      and not window_b.file.nulled
-    then
+  for _, entry in ipairs(view.files.working) do
+    if not entry.layout.b.file.nulled then
       entries[#entries + 1] = entry
     end
   end
@@ -131,11 +127,11 @@ local function view_is_inline(view)
   return entry ~= nil and entry.layout:instanceof(inline_layout_class())
 end
 
--- Base rev, derived from the open view. The sha feeds gitsigns; the label (the
--- typed rev argument when there is one, e.g. "develop") feeds the statusline.
+-- Base rev, derived from the open view. The sha feeds gitsigns; the label
+-- feeds the statusline -- the panel already carries the pretty name diffview
+-- derived from the typed rev argument (e.g. "develop").
 local function view_base(view)
-  local sha = view.left.commit
-  return sha, view.rev_arg or (sha and sha:sub(1, 8)) or "?"
+  return view.left.commit, view.panel.rev_pretty_name or view.left:abbrev(8) or "?"
 end
 
 -- gitsigns' render toggles are global. The current value lives in gitsigns'
@@ -202,7 +198,7 @@ local function inline_winopts()
 end
 
 local function convert_entries(view, inline)
-  local target_layout = inline and inline_layout_class() or side_layout_class()
+  local target_layout = inline and inline_layout_class() or side_layout_class(view)
   for _, entry in ipairs(working_tree_entries(view)) do
     if not entry.layout:instanceof(target_layout) then
       local file_b = entry.layout.b.file
@@ -336,7 +332,7 @@ local function unwind_inline_diff()
       vim.b[buffer].inline_diff_base = nil
       vim.b[buffer].inline_review_tag = nil
       vim.api.nvim_buf_call(buffer, function()
-        gitsigns.change_base(nil, false)
+        gitsigns.reset_base(false)
       end)
     end
   end
@@ -365,9 +361,9 @@ local function hook_view(view)
   end)
 end
 
--- Flip the whole view and re-open one entry with the new layout. Cursor and
--- focus restoration ride the layout's files_opened event because set_file is
--- async -- the same pattern as diffview's cycle_layout.
+-- Flip the whole view and re-open one entry with the new layout. Cursor,
+-- focus, and panel restoration ride a one-shot file_open_post hook because
+-- set_file is async and rebuilds every window, the panel's included.
 local function set_mode(view, inline, entry_to_open)
   hook_view(view)
 
@@ -381,7 +377,7 @@ local function set_mode(view, inline, entry_to_open)
   local entry = entry_to_open or view.cur_entry
   local was_focused = view.cur_layout:is_focused()
   local origin_window = vim.api.nvim_get_current_win()
-  local origin_was_panel = view.panel.winid == origin_window
+  local origin_was_panel = view.panel:is_focused()
   local cursor
   if entry and entry == view.cur_entry then
     local main_window = view.cur_layout:get_main_win()
@@ -405,7 +401,7 @@ local function set_mode(view, inline, entry_to_open)
   -- view's cached layout for the target class crashes diffview's open_files
   -- on nil window ids (the cache holds a layout whose windows were destroyed
   -- by the previous swap), which aborts the open mid-flight.
-  view.layouts[inline and inline_layout_class() or side_layout_class()] = nil
+  view.layouts[inline and inline_layout_class() or side_layout_class(view)] = nil
 
   -- file_open_post, not the layout's files_opened: files_opened can fire an
   -- extra time mid-rebuild, before the final windows exist. file_open_post is
@@ -458,7 +454,7 @@ local function flip_mode()
   if not view then
     return vim.notify("no diffview open (:DiffviewOpen <base>)", vim.log.levels.WARN)
   end
-  if vim.api.nvim_get_current_tabpage() ~= view.tabpage then
+  if not view:is_cur_tabpage() then
     vim.api.nvim_set_current_tabpage(view.tabpage)
   end
 
