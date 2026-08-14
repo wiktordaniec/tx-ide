@@ -88,6 +88,15 @@ function M.apply_tour(manifest_path)
 
   marks_by_path = {}
 
+  -- A stop is routinely a file the operator already has open in another nvim,
+  -- whose swapfile makes :edit print W325 -- once per stop, mid-apply. shortmess
+  -- "A" is the only thing that silences it: :noswapfile suppresses *creating* a
+  -- swapfile, not the check against an existing one. Restored below, because
+  -- this is the operator's editor and the flag would otherwise also hide the
+  -- prompt for their own edits.
+  local shortmess = vim.o.shortmess
+  vim.o.shortmess = shortmess .. "A"
+
   for _, entry in ipairs(manifest.marks or {}) do
     vim.cmd("edit " .. vim.fn.fnameescape(entry.file))
     local buffer = vim.api.nvim_get_current_buf()
@@ -97,6 +106,8 @@ function M.apply_tour(manifest_path)
     marks_by_path[absolute_path] = marks_by_path[absolute_path] or {}
     table.insert(marks_by_path[absolute_path], entry)
   end
+
+  vim.o.shortmess = shortmess
 
   for path, _ in pairs(marks_by_path) do
     for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
