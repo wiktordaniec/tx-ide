@@ -108,9 +108,11 @@ class EngineAdapter(Protocol):
         derivation happens first; `spawn_worker` creates the checkout after), so an engine whose
         launch is cwd-dependent — workspace-binding argv, per-worktree hook/rules files — rebinds
         here, at the one seam where the final cwd is first known (`_prepare_worker_access`, and the
-        rollover respawn which reuses the session's cwd). Idempotent: re-running against the same
-        cwd must be safe (resume reuses a prepared worktree). Claude/Codex are cwd-independent and
-        return `command` unchanged."""
+        rollover respawn which reuses the session's cwd). Every engine also materialises the
+        session's skill grant here (skills.link_skills into its discovery dir) — the seam runs
+        after worktree creation and before a read-only worker's sandbox engages. Idempotent:
+        re-running against the same cwd must be safe (resume reuses a prepared worktree).
+        Claude/Codex argv is cwd-independent and returned unchanged."""
         ...
 
     def is_read_only_command(self, command: str) -> bool:

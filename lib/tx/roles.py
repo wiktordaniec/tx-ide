@@ -1,8 +1,19 @@
 """Role-file resolution for `tx spawn --role`: names → concatenated system-prompt contents,
-following COMMON.md's override semantics (user-agents/NAME.md replaces, NAME.local.md extends)."""
+following COMMON.md's override semantics (user-agents/NAME.md replaces, NAME.local.md extends).
+
+A role file may open with a frontmatter block granting skills (see skills.py):
+
+    ---
+    tx:
+      skills: [tx-sessions, tx-artifacts]
+    ---
+
+The block is metadata for tx alone — `load_role_priming` injects only the body, and the `tx:`
+namespacing keeps the keys inert should the files ever land in an engine-scanned directory."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from .storage import agents_dir, user_agents_dir
@@ -10,6 +21,8 @@ from .storage import agents_dir, user_agents_dir
 COMMON_ROLE = "COMMON"
 ROLE_SUFFIX = ".md"
 LOCAL_SUFFIX = ".local.md"
+FRONTMATTER_DELIMITER = "---"
+SKILLS_PATTERN = re.compile(r"^\s*skills:\s*\[(.*)\]\s*$")
 
 
 class RoleError(RuntimeError):
@@ -45,7 +58,29 @@ def resolve_role_files(names: list[str]) -> list[Path]:
 
 def load_role_priming(names: list[str]) -> str:
     """The concatenated contents to inject additively into the engine's system prompt (files carry
-    their own `#` titles, so no synthetic headers)."""
+    their own `#` titles, so no synthetic headers). Frontmatter is tx metadata, never priming."""
     return "\n\n".join(
-        path.read_text().strip() for path in resolve_role_files(names)
+        _split_frontmatter(path)[1].strip() for path in resolve_role_files(names)
     )
+
+
+def parse_skill_grants(path: Path) -> list[str]:
+    """The skill names a role file grants: its frontmatter `skills: [a, b]` line, empty when the
+    file has no frontmatter or no grant."""
+    for line in _split_frontmatter(path)[0]:
+        match = SKILLS_PATTERN.match(line)
+        if match:
+            return [name.strip() for name in match.group(1).split(",") if name.strip()]
+    return []
+
+
+def _split_frontmatter(path: Path) -> tuple[list[str], str]:
+    """A role file's `(frontmatter lines, body)` — `([], whole text)` when it has none."""
+    text = path.read_text()
+    if not text.startswith(f"{FRONTMATTER_DELIMITER}\n"):
+        return [], text
+    lines = text.split("\n")
+    for index in range(1, len(lines)):
+        if lines[index].strip() == FRONTMATTER_DELIMITER:
+            return lines[1:index], "\n".join(lines[index + 1 :])
+    raise RoleError(f"{path}: unclosed frontmatter block")

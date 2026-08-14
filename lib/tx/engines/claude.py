@@ -8,6 +8,7 @@ from collections.abc import Iterator, Mapping, MutableMapping
 from pathlib import Path
 
 from ..session import Engine, State
+from ..skills import link_skills
 from ..storage import history_dir
 from .engine_adapter import DEFAULT_EFFORT, EFFORT_LEVELS, EngineAdapter, StateSource
 from .registry import registry
@@ -18,6 +19,8 @@ CLAUDE_HOME_ENV = "CLAUDE_CONFIG_DIR"
 DEFAULT_CLAUDE_HOME = "~/.claude"
 
 CLAUDE_BIN = "claude"
+# Where claude discovers workspace skills (verified 2.1.232: per-skill symlinks are followed).
+SKILLS_DIR = ".claude/skills"
 TRANSCRIPT_SUFFIX = ".jsonl"
 BUNDLE_TRANSCRIPT_NAME = "transcript.jsonl"
 SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
@@ -435,7 +438,9 @@ class ClaudeEngine(EngineAdapter):
     def prepare_workspace(
         self, command: str, cwd: str, env: Mapping[str, str]
     ) -> str:
-        """Claude launches are cwd-independent (no workspace-binding argv or per-worktree files)."""
+        """Claude argv is cwd-independent; the workspace half of a launch is the skill grant —
+        symlinks into `.claude/skills/`, claude's per-worktree discovery dir."""
+        link_skills(cwd, env, SKILLS_DIR)
         return command
 
     def is_read_only_command(self, command: str) -> bool:
