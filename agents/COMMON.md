@@ -91,11 +91,18 @@ Roles live in `~/.tx-ide/agents/` — `DEVELOPER` is the usual one; list the dir
 
 ## Session metadata
 
-Every tx-created session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` holding its `name`, `role`, `tags`, `group`, `cwd`, `cmd`, `env`, `parent`, `pid`, and (for an llm session) `chats`. One tmux pointer, `@tx_id` (set once at spawn), links the live session to its record, so the record survives a `kill-session` or a tmux restart. Spawning exports `TX_SESSION_ID` into the session; an llm spawn also records a chat id for the session, so every llm session's transcript is tracked and resumable (`tx resume`) with no extra ceremony — there is no `--chat` flag.
+Every tx session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` — its `name`, `role`,
+`tags`, `group`, `cwd`, `cmd`, `env`, `parent`, `pid`, and for an llm session its `chats`, which is
+what `tx resume` reattaches to. The tmux option `@tx_id` links the live session to its record, so
+the record outlives a kill or a tmux restart.
 
-Tags and role live in the record, not tmux options — read them by resolving `@tx_id`, and change tags through `tx tag <name> [tags]` (or the picker's Ctrl-T), never `tmux set @tag`. `role` (`llm` / `nvim` / `shell` / `other`) is derived from the launch command at spawn — there is no role tag and nothing to set by hand.
+`tags` and `role` are fields in that record, not tmux options — change tags with
+`tx tag <name> [tags]`. `role` (`llm` / `nvim` / `shell` / `other`) is derived at spawn; nothing to
+set by hand.
 
-**Views are not records.** A view (a home-base session you nest work into) is a live tmux session marked by the `@tx_view` option — that marker is its whole durable identity (it dies with the tmux server and is recreated by `tx spawn-view`). A view carries no tags, and its only tx lifecycle verbs are `tx spawn-view` (create) and `tx kill` (end): it cannot be tagged or renamed through tx.
+**Views are not records.** A view — the home-base session you nest work into — is a live tmux
+session marked `@tx_view`, so it dies with the tmux server. It carries no tags, and its only verbs
+are `tx spawn-view` and `tx kill`.
 
 ## Inter-session communication
 
