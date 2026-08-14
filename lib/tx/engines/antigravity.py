@@ -19,8 +19,8 @@ from .registry import registry
 AGY_BIN = "agy"
 # The CLI self-updates in place (brew ledger goes stale), so behavior can shift under us — this is
 # the version every recipe in this adapter (flag grammar, hooks.json schema, db fork surgery, brain
-# transcript layout) was verified against. The live fork smoke (tests/live_smoke_antigravity.py)
-# aborts on a mismatch.
+# transcript layout) was verified against. Re-verify the fork surgery before trusting it on a
+# different version, then bump this.
 AGY_VERIFIED_VERSION = "1.1.13"
 
 # Antigravity has no separate effort flag for tx to drive: models are slugs with the effort baked in
@@ -244,8 +244,7 @@ def _fork_conversation_db(source_id: str) -> str:
     byte-replace never shifts protobuf length prefixes (no varint fixups). Returns the new id.
 
     This is an UNSUPPORTED on-disk surgery (no CLI fork verb; `/fork` is interactive-only) —
-    version-fragile by nature, verified against `AGY_VERIFIED_VERSION` and covered by a dedicated
-    fixture test + live smoke."""
+    version-fragile by nature, verified against `AGY_VERIFIED_VERSION`."""
     source_db = conversation_db(source_id)
     if not source_db.is_file():
         raise EngineError(f"antigravity fork: conversation db not found: {source_db}")
