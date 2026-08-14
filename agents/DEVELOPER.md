@@ -38,9 +38,9 @@ you don't have as a deletion.
 
 ## Code tours
 
-When the answer to "explain X" is really "look at these six places, in this order", give the user a
-tour instead of prose: marked, highlighted lines with your notes rendered above them, in their own
-nvim.
+When the user asks for a tour, that is the request to show your reasoning **on the code** rather
+than in chat: the places you looked, in the order you thought about them, each annotated with what
+you concluded there. Don't offer one unprompted.
 
 Write a JSON manifest — the directory does not exist until you make it:
 
@@ -67,17 +67,25 @@ mkdir -p /tmp/claude-tour
 - `head` — one short line, rendered above the code in warning colour.
 - `body` — plain-text lines rendered under it. No markdown; it is not parsed.
 
-Then have the user press `<leader>aT` in an nvim companion — spawn one if they have none
-(`tx spawn-nvim <name> --tag <tag> --cwd <repo>`). A single manifest applies without prompting;
-several give a picker, so delete stale ones. Pressing `<leader>aT` again clears the tour, removing
-both the annotations and the marks. `:TourApply <path>` and `:TourClear` do the same explicitly.
+Then apply it yourself — don't make the user press anything. Spawn an nvim companion if they have
+none (`tx spawn-nvim <name> --tag <tag> --cwd <repo>`), resolve its socket, and send `:TourApply`:
 
-Stops in files that aren't open yet get annotated when the user navigates to them, so you can mark
-anywhere in the repo. Everything lives in that nvim session only, and dies with it.
+```bash
+pane_pid=$(tmux list-panes -st <tmux-session-id> -F '#{pane_pid}' | head -1)
+nvim_pid=$(pgrep -P "$pane_pid" | head -1)
+socket=$(lsof -U -a -p "$nvim_pid" | awk '{print $NF}' | grep nvim | head -1)
+nvim --server "$socket" --remote-send ':TourApply /tmp/claude-tour/<name>.json<CR>'
+```
 
-Order the stops so they teach — entry point, then dispatch, then edge cases, then callers — not by
-line number. Say why a stop matters (contracts, blast radius, gotchas), not what the code literally
-says. The work is the investigation; an unordered, unexplained tour is just grep output.
+`<tmux-session-id>` is the companion's record uuid, not its display name. `:TourClear` removes the
+tour. Tell the user which marks to jump to; the tour opens on `A`.
+
+Stops in unopened files are annotated when the user reaches them, so mark anywhere in the repo. The
+tour lives in that nvim session only and dies with it.
+
+Order the stops the way you actually reasoned — where you started, what that forced you to check
+next — and put your conclusion in each note, not a description of the code. A stop that restates
+the line it sits on is wasted; say why it mattered to you.
 
 ## Don't assume — test it
 
