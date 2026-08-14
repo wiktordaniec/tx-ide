@@ -79,25 +79,15 @@ tx spawn <name> --tag <scope> --cwd <project-root> \
   --role DEVELOPER,WORKFLOW-DEVELOPER --prompt "<task>"
 ```
 
-- `--role` — the role(s) this worker plays, from the list below. An unknown name fails the spawn;
-  don't guess.
-- `--effort` — `1=low`, `2=medium`, `3=high`, `4=xhigh`, `5=max`, defaulting to `3`. Workers get
-  `opus[1m]` and `5` unless you are told otherwise.
+- `--role` — the role(s) this worker plays. An unknown name fails the spawn; don't guess.
+- `--effort` — `1` to `5`, low to max, defaulting to `3`.
 - `--prompt` — the task, short and single-line. Long or special-char-laden prompts crash tmux input.
 - `--read-only` — for an investigation that must not write; not combinable with `--cmd`. Promote it
   later with `tx fork <investigation> <implementation>`, which is writable.
 
 Every worker gets its own tx-owned worktree automatically — never create one yourself.
 
-Roles live in `~/.tx-ide/agents/`. `DEVELOPER` is the coding foundation and the usual choice; list
-that directory for the rest. Pass several to layer them, as the example above does.
-
-Only a hand-written `--cmd` launch bypasses `--role`; such a worker has to be told to read the files
-itself, as the first line of its prompt:
-
-```
-Read ~/.tx-ide/agents/COMMON.md, ~/.tx-ide/agents/DEVELOPER.md, and ~/.tx-ide/agents/WORKFLOW-DEVELOPER.md as your first actions. Then, for each, also read ~/.tx-ide/user-agents/<NAME>.md (replaces it) and <NAME>.local.md (extends it) if present. Follow all of these for the duration of this session.
-```
+Roles live in `~/.tx-ide/agents/` — `DEVELOPER` is the usual one; list the directory for the rest.
 
 ## Session metadata
 
