@@ -49,6 +49,7 @@ from .render import (
     render_ls,
 )
 from .roles import RoleError, load_role_priming
+from .skills import SKILLS_ENV, resolve_role_skills
 from .service import ServiceError, SessionService
 from .session import (
     SCHEMA_VERSION,
@@ -259,6 +260,11 @@ class SpawnCommand(Command):
             or role_names
         ):
             engine = requested or Engine.CLAUDE
+            # The resolved grant travels on the launch env (the RULES_FILE_ENV precedent) so
+            # prepare_workspace can link the skills once the worktree exists — and again on resume.
+            skill_names = resolve_role_skills(role_names)
+            if skill_names:
+                environment[SKILLS_ENV] = ",".join(skill_names)
             command = shlex.join(
                 engines.registry.get(engine).build_launch_command(
                     model=args.model,
@@ -280,15 +286,28 @@ class SpawnNvimCommand(Command):
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
         parser.add_argument("name")
-        parser.add_argument("--tag", required=True)
+        parser.add_argument(
+            "--tag",
+            required=True,
+            help="scope tag(s), comma-separated — a companion takes the same tag as the "
+            "session it belongs to, so the pair surfaces together in the operator's filters",
+        )
         parser.add_argument(
             "--group",
             type=_group_value,
             help="explicit effort-group override (default: derived at read time)",
         )
-        parser.add_argument("--cwd")
-        parser.add_argument("--diff", nargs="?", const="main", default=None)
-        parser.add_argument("--open", default=None)
+        parser.add_argument("--cwd", help="working directory (default: the firing pane's)")
+        parser.add_argument(
+            "--diff",
+            nargs="?",
+            const="main",
+            default=None,
+            help="open a diffview of the worktree against BASE (default: main) — prefer the "
+            "merge-base over a branch name, which shows commits you lack as deletions once "
+            "the branch moves ahead",
+        )
+        parser.add_argument("--open", default=None, help="open FILE on startup")
         parser.add_argument("--env", action="append", type=_env_pair)
         args = parser.parse_args(argv)
         tags = _split_tags(args.tag)
@@ -750,12 +769,18 @@ class RmCommand(Command):
 
 class SendMessageCommand(Command):
     name = "send-message"
-    summary = "Peer-message another Claude Code session."
+    summary = "Peer-message another agent session (delivered in a <from-agent> envelope)."
 
     def run(self, argv: list[str]) -> int:
         parser = self._parser()
-        parser.add_argument("target")
-        parser.add_argument("body")
+        parser.add_argument(
+            "target", help="the recipient's display name, as `tx ls` prints it"
+        )
+        parser.add_argument(
+            "body",
+            help="single-line message — escape literal newlines as \\n; the recipient "
+            "receives it wrapped in a <from-agent session='<your-name>'> envelope",
+        )
         args = parser.parse_args(argv)
         self.service.send_message(args.target, args.body)
         return 0

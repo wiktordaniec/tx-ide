@@ -7,6 +7,7 @@ from collections.abc import Iterator, Mapping, MutableMapping
 from pathlib import Path
 
 from ..session import Engine, State
+from ..skills import link_skills
 from . import codex_rollout
 from .engine_adapter import DEFAULT_EFFORT, EFFORT_LEVELS, EngineAdapter, StateSource
 from .registry import registry
@@ -18,6 +19,8 @@ DEFAULT_CODEX_HOME_BASENAME = ".codex"
 DEFAULT_CODEX_HOME = "~/.codex"
 
 CODEX_BIN = "codex"
+# Where codex discovers workspace skills (verified 0.146.0: per-skill symlinks are followed).
+SKILLS_DIR = ".agents/skills"
 
 # Codex defaults. Effort is rendered as a `-c` config override, not a flag: `-c model_reasoning_effort=`.
 CODEX_MODEL = "gpt-5.6-sol"
@@ -329,7 +332,9 @@ class CodexEngine(EngineAdapter):
     def prepare_workspace(
         self, command: str, cwd: str, env: Mapping[str, str]
     ) -> str:
-        """Codex launches are cwd-independent (no workspace-binding argv or per-worktree files)."""
+        """Codex argv is cwd-independent; the workspace half of a launch is the skill grant —
+        symlinks into `.agents/skills/`, codex's per-worktree discovery dir."""
+        link_skills(cwd, env, SKILLS_DIR)
         return command
 
     def is_read_only_command(self, command: str) -> bool:

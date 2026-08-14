@@ -11,8 +11,8 @@ from collections.abc import Iterator, Mapping, MutableMapping
 from pathlib import Path
 
 from ..session import Engine, State
+from ..skills import exclude_from_git, link_skills
 from ..storage import hooks_dir, tx_ide_home
-from ..worktree import WorktreeError, WorktreeManager
 from .engine_adapter import DEFAULT_EFFORT, EngineAdapter, EngineError, StateSource
 from .registry import registry
 
@@ -335,24 +335,6 @@ def _write_workspace_customizations(cwd: str, env: Mapping[str, str]) -> None:
         shutil.copy2(rules_source, rules_directory / RULES_FILE_NAME)
 
 
-def _exclude_agents_dir(cwd: str) -> None:
-    """Hide the generated `.agents/` from git status via the repository's shared info/exclude (a
-    linked worktree has no per-worktree exclude — info/ lives in the common git dir). A non-git cwd
-    (scratch dir) has nothing to hide."""
-    try:
-        common_directory = WorktreeManager().git_common_directory(cwd)
-    except WorktreeError:
-        return
-    exclude = common_directory / "info" / "exclude"
-    line = f"{AGENTS_DIR_NAME}/"
-    existing = exclude.read_text() if exclude.is_file() else ""
-    if line in existing.splitlines():
-        return
-    exclude.parent.mkdir(exist_ok=True)
-    separator = "" if existing.endswith("\n") or not existing else "\n"
-    exclude.write_text(f"{existing}{separator}{line}\n")
-
-
 def _seed_workspace_trust(cwd: str) -> None:
     """Pre-trust the worktree in agy's settings.json (`trustedWorkspaces`) so the first TUI launch
     never stalls on the "Do you trust this folder?" prompt. settings.json is agy's own file: an
@@ -503,7 +485,9 @@ class AntigravityEngine(EngineAdapter):
         log_file.parent.mkdir(parents=True, exist_ok=True)
         tokens[1:1] = [ADD_DIR_FLAG, cwd, LOG_FILE_FLAG, str(log_file)]
         _write_workspace_customizations(cwd, env)
-        _exclude_agents_dir(cwd)
+        # agy discovers `.agents/skills/` only through --add-dir (inserted above), same dir as codex.
+        link_skills(cwd, env, f"{AGENTS_DIR_NAME}/skills")
+        exclude_from_git(cwd, f"{AGENTS_DIR_NAME}/")
         _seed_workspace_trust(cwd)
         return shlex.join(tokens)
 
