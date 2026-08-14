@@ -419,7 +419,12 @@ local function set_mode(view, inline, entry_to_open)
       -- the cross-class window rebuild drops focus onto the new file window; a
       -- flip issued from the panel should leave the panel focused, like the
       -- panel's own <CR> does. The rebuild also closes and re-opens the panel
-      -- window itself, so the panel is refound rather than restored by id.
+      -- window itself, so the panel is refound rather than restored by id --
+      -- and its cursor resets to the top, so the entry is re-highlighted (the
+      -- highlight set_file applies happens before the rebuild and is lost).
+      if view.panel:is_open() then
+        view.panel:highlight_file(entry)
+      end
       if was_focused then
         main_window:focus()
       elseif origin_was_panel and view.panel:is_open() then
