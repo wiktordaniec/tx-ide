@@ -323,7 +323,7 @@ The shipped roles live under `agents/` in this repo and are exposed at `$TX_IDE_
 symlink, so `git pull` updates them for every install:
 
 - `agents/COMMON.md` — conventions every session must follow (spawn recipes, session metadata,
-  peer messaging, the AINote workflow).
+  peer messaging, artifacts).
 - `agents/TX-ASSISTANT.md` — the assistant role (how to interpret requests, what to spawn, guard
   rails).
 - `agents/DEVELOPER.md` — the coding foundation + interactive developer: coding standards, git
