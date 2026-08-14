@@ -5,8 +5,9 @@
 --            the diff rendered by gitsigns against the view's base rev
 --            (linehl + word_diff + deleted virtual lines, ]h/[h hunk jumps)
 --
--- <leader>i flips the current file between the modes in place, inside the
--- diffview tab. The trick that keeps everything else native: the mode is not
+-- <leader>ai flips the current file between the modes in place, inside the
+-- diffview tab -- in the agent-review group next to <leader>ad/<leader>aD,
+-- which open the review diffview this mode operates on. The trick that keeps everything else native: the mode is not
 -- state held on the side -- it IS the layout class of the view's file entries.
 -- Side mode entries hold diffview's stock two-window Diff2 layout; inline mode
 -- converts them to the single-window Diff1 layout through diffview's own
@@ -209,7 +210,7 @@ local function apply_base(buffer, base_sha, attempts)
 end
 
 -- Runs on every file_open_post of an inline entry, so a file opened by any
--- route (panel <CR>, <Tab>, <leader>i) gets the base applied. Idempotent.
+-- route (panel <CR>, <Tab>, <leader>ai) gets the base applied. Idempotent.
 local function decorate_inline_buffer(view, entry)
   local buffer = entry.layout.b.file.bufnr
   if not (buffer and vim.api.nvim_buf_is_loaded(buffer)) then
@@ -406,7 +407,7 @@ return {
       },
     },
     keys = {
-      { "<leader>i", flip_mode, desc = "Flip inline <-> side-by-side (diffview)" },
+      { "<leader>ai", flip_mode, desc = "Flip inline <-> side-by-side (diffview)" },
     },
   },
 
