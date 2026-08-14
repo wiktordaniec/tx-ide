@@ -7,7 +7,7 @@ import shlex
 import shutil
 import sqlite3
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, MutableMapping
 from pathlib import Path
 
 from ..session import Engine, State
@@ -394,7 +394,7 @@ _EVENT_TO_STATE: Mapping[str, State] = {
 
 
 class AntigravityEngine(EngineAdapter):
-    """The Google Antigravity CLI (`agy`) adapter — NOT gemini-cli (the reserved `GEMINI` slot).
+    """The Google Antigravity CLI (`agy`) adapter — NOT gemini-cli, a different binary.
     Stateless; a single instance is registered for `Engine.ANTIGRAVITY`."""
 
     # ----- identity ------------------------------------------------------------------------
@@ -423,7 +423,7 @@ class AntigravityEngine(EngineAdapter):
         initial_prompt: str | None = None,
         read_only: bool = False,
         role_priming: str | None = None,
-        env: dict[str, str] | None = None,
+        env: MutableMapping[str, str] | None = None,
     ) -> list[str]:
         """Argv for a fresh session. Effort is rendered into the model slug (1→low, 2→medium,
         3→high on the pinned flash family); an explicit `model` wins verbatim — no suffixing, and

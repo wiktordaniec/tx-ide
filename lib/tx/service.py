@@ -148,8 +148,6 @@ class SessionService:
     def _prepare_worker_access(
         self, spec: SpawnSpec, worktree_directory: Path, environment: dict[str, str]
     ) -> SpawnSpec:
-        # Every llm spawn passes through here, so this is the one place the engine is required:
-        # an unset engine is refused loudly rather than silently defaulted.
         if spec.engine is None:
             raise ServiceError(
                 "worker spawn has no engine on its spec — pass --engine "
@@ -278,9 +276,7 @@ class SessionService:
             raise SessionExists(f"session '{tmux_name}' already exists")
 
         now = time.time()
-        # An llm session's engine: set from the spawn spec, read off the record thereafter, never
-        # re-derived from `cmd`. Non-None for every llm spawn — `_prepare_worker_access` (which
-        # every llm spawn passes through) refuses an unset engine; a non-llm session has none.
+        # Set from the spawn spec, read off the record thereafter, never re-derived from `cmd` (T8).
         engine = spec.engine if spec.role == Role.LLM else None
         launch_env = {"TX_SESSION_ID": session_id, **spec.env}
         chats: list[ChatRef] = []

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import shlex
 import tomllib
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, MutableMapping
 from pathlib import Path
 
 from ..session import Engine, State
@@ -254,7 +254,7 @@ class CodexEngine(EngineAdapter):
         initial_prompt: str | None = None,
         read_only: bool = False,
         role_priming: str | None = None,
-        env: dict[str, str] | None = None,
+        env: MutableMapping[str, str] | None = None,
     ) -> list[str]:
         """Argv for a fresh session. A positional prompt auto-submits in the interactive TUI, so the
         seed needs no send-keys."""

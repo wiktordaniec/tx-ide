@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, MutableMapping
 from enum import Enum
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -25,8 +25,8 @@ class EngineError(RuntimeError):
 
 
 class StateSource(str, Enum):
-    # Where an engine's turn-done → WAITING transition comes from. Claude/Codex emit a Stop hook
-    # event; an engine without one (e.g. Gemini) is polled via its statusline agent_state.
+    # Where an engine's turn-done → WAITING transition comes from. Every current engine emits a
+    # Stop hook event; an engine without one would be polled via its statusline agent_state.
     HOOK_EVENTS = "hook_events"
     STATUS_POLL = "status_poll"
 
@@ -59,7 +59,7 @@ class EngineAdapter(Protocol):
         initial_prompt: str | None = None,
         read_only: bool = False,
         role_priming: str | None = None,
-        env: dict[str, str] | None = None,
+        env: MutableMapping[str, str] | None = None,
     ) -> list[str]:
         """Argv for a fresh session. `role_priming` is injected additively (never replacing the base
         prompt) so chat ops inherit it — as a persona value-flag when the engine has one, else via a
