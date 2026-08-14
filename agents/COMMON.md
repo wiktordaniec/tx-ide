@@ -2,6 +2,10 @@
 
 These conventions apply to every agent session in this system: the tx-assistant, every worker, and any ad-hoc session you spin up inside the orchestration repo.
 
+## Reporting
+
+Be extremely concise. Sacrifice grammar for concision.
+
 ## Session self-introduction
 
 Lead your **first response** in a session with a brief self-introduction so the operator can confirm your setup at a glance:
