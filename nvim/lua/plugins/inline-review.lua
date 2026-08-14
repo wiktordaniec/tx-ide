@@ -7,8 +7,10 @@
 --
 -- <leader>ai flips the current file between the modes in place, inside the
 -- diffview tab -- in the agent-review group next to <leader>ad/<leader>aD,
--- which open the review diffview this mode operates on. The trick that keeps everything else native: the mode is not
--- state held on the side -- it IS the layout class of the view's file entries.
+-- which open the review diffview this mode operates on.
+--
+-- The trick that keeps everything else native: the mode is not state held on
+-- the side -- it IS the layout class of the view's file entries.
 -- Side mode entries hold diffview's stock two-window Diff2 layout; inline mode
 -- converts them to the single-window Diff1 layout through diffview's own
 -- FileEntry:convert_layout + view:set_file, the exact mechanism behind the
@@ -270,14 +272,15 @@ local function apply_base(buffer, base_sha, attempts)
     -- scheduled: this can run inside diffview's file_open_post continuation,
     -- where textlock forbids nvim_buf_call. change_base only acts on the
     -- current buffer, hence the buf_call. Its callback fires after the hunk
-    -- update completes, which is the moment the first-hunk jump makes sense.
+    -- update completes, which is the moment the first-hunk jump makes sense
+    -- (the removed-lines paint needs no call here: that same update fires
+    -- GitSignsUpdate, which repaints).
     vim.schedule(function()
       if vim.api.nvim_buf_is_valid(buffer) then
         vim.api.nvim_buf_call(buffer, function()
           require("gitsigns").change_base(base_sha, false, function()
             vim.schedule(function()
               if vim.api.nvim_buf_is_valid(buffer) then
-                paint_removed(buffer)
                 jump_to_first_hunk(buffer)
               end
             end)
@@ -322,7 +325,9 @@ local function decorate_inline_buffer(view, entry)
   apply_base(buffer, base_sha, 50)
 end
 
-local function unwind_buffers()
+-- Full teardown of everything inline mode put up: the global render toggles
+-- and every decorated buffer's base, statusline vars, and washes.
+local function unwind_inline_diff()
   local gitsigns = require("gitsigns")
   for buffer in pairs(touched_buffers) do
     if vim.api.nvim_buf_is_valid(buffer) then
@@ -336,6 +341,7 @@ local function unwind_buffers()
     end
   end
   touched_buffers = {}
+  render_inline_diff(false)
 end
 
 local function hook_view(view)
@@ -385,9 +391,10 @@ local function set_mode(view, inline, entry_to_open)
   end
 
   convert_entries(view, inline)
-  render_inline_diff(inline)
-  if not inline then
-    unwind_buffers()
+  if inline then
+    render_inline_diff(true)
+  else
+    unwind_inline_diff()
   end
 
   if not entry or entry.kind == "conflicting" then
@@ -437,6 +444,15 @@ local function set_mode(view, inline, entry_to_open)
   view:set_file(entry, false, true)
 end
 
+-- The file entry under the panel cursor; directories in the tree listing
+-- carry no layout and yield nothing.
+local function panel_entry_at_cursor(view)
+  local item = view.panel:get_item_at_cursor()
+  if item and item.layout then
+    return item
+  end
+end
+
 local function flip_mode()
   local view = find_review_view()
   if not view then
@@ -448,23 +464,16 @@ local function flip_mode()
 
   local entry_to_open
   if vim.bo.filetype == "DiffviewFiles" then
-    local item = view.panel:get_item_at_cursor()
-    -- directories in the tree listing carry no layout
-    if item and item.layout then
-      entry_to_open = item
-    end
+    entry_to_open = panel_entry_at_cursor(view)
   end
   set_mode(view, not view_is_inline(view), entry_to_open)
 end
 
 local function panel_open_inline()
   local view = find_review_view()
-  if not view then
-    return
-  end
-  local item = view.panel:get_item_at_cursor()
-  if item and item.layout then
-    set_mode(view, true, item)
+  local entry = view and panel_entry_at_cursor(view)
+  if entry then
+    set_mode(view, true, entry)
   end
 end
 
@@ -477,8 +486,7 @@ vim.api.nvim_create_autocmd("User", {
   pattern = "DiffviewViewClosed",
   callback = function()
     if next(touched_buffers) then
-      render_inline_diff(false)
-      unwind_buffers()
+      unwind_inline_diff()
     end
   end,
 })
