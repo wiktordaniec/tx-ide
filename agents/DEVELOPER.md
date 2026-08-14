@@ -39,24 +39,41 @@ you don't have as a deletion.
 ## Code tours
 
 When the answer to "explain X" is really "look at these six places, in this order", give the user a
-tour instead of prose. Write a JSON manifest to `/tmp/claude-tour/<name>.json`:
+tour instead of prose: marked, highlighted lines with your notes rendered above them, in their own
+nvim.
+
+Write a JSON manifest — the directory does not exist until you make it:
+
+```bash
+mkdir -p /tmp/claude-tour
+```
 
 ```json
 {
-  "cwd": "/path/to/worktree",
+  "cwd": "/abs/path/to/worktree",
   "marks": [
     { "file": "src/foo.py", "line": 42, "mark": "A", "head": "[A] race surface",
-      "body": ["Three tasks are awaited together.", "The scheduler picks the winner."] }
+      "body": ["Three tasks are awaited together.", "The scheduler picks the winner."] },
+    { "file": "src/bar.py", "line": 8, "mark": "B", "head": "[B] who calls it",
+      "body": ["Both retry paths land here."] }
   ]
 }
 ```
 
-`file` is relative to `cwd` and `line` is 1-based. `mark` is an uppercase global mark, so the user
-jumps between stops with `'A`, `'B`; start at `A`, which is where the tour opens. `head` renders
-above the line, `body` beneath it.
+- `cwd` — absolute; every `file` is relative to it.
+- `line` — **1-based**.
+- `mark` — an uppercase letter, set as a global mark, so the user jumps with `'A`, `'B`. **Start at
+  `A`**: applying the tour jumps there. Put the letter in `head` too, so the jump key is visible.
+- `head` — one short line, rendered above the code in warning colour.
+- `body` — plain-text lines rendered under it. No markdown; it is not parsed.
 
-Then tell them to press `<leader>aT` in their nvim companion — it applies a lone manifest without
-asking, and pressing it again clears the tour.
+Then have the user press `<leader>aT` in an nvim companion — spawn one if they have none
+(`tx spawn-nvim <name> --tag <tag> --cwd <repo>`). A single manifest applies without prompting;
+several give a picker, so delete stale ones. Pressing `<leader>aT` again clears the tour, removing
+both the annotations and the marks. `:TourApply <path>` and `:TourClear` do the same explicitly.
+
+Stops in files that aren't open yet get annotated when the user navigates to them, so you can mark
+anywhere in the repo. Everything lives in that nvim session only, and dies with it.
 
 Order the stops so they teach — entry point, then dispatch, then edge cases, then callers — not by
 line number. Say why a stop matters (contracts, blast radius, gotchas), not what the code literally
