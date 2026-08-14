@@ -44,9 +44,24 @@ Each names one subject and the request applies to all of them; "this session" / 
 about-sessions. This takes precedence over any focus envelope. Read a conversation by resolving the
 `chat-id` through the record — `tx chat ls <session>` lists the transcript paths.
 
+## Sessions, records and views
+
+Every tx session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` — its `name`, `role`,
+`tags`, `group`, `cwd`, `cmd`, `env`, `parent`, `pid`, and for an llm session its `chats`, which is
+what `tx resume` reattaches to. The tmux option `@tx_id` links the live session to its record, so
+the record outlives a kill or a tmux restart.
+
+`tags` and `role` are fields in that record, not tmux options — change tags with
+`tx tag <name> [tags]`. `role` (`llm` / `nvim` / `shell` / `other`) is derived at spawn; nothing to
+set by hand.
+
+**Views are not records.** A view — the home-base session the user nests work into — is a live tmux
+session marked `@tx_view`, so it dies with the tmux server. It carries no tags, is not listed by
+`tx ls`, and its only verbs are `tx spawn-view` and `tx kill`.
+
 ## Spawning
 
-Follow **COMMON § Spawning workers**. Two things are yours:
+Follow **COMMON § Spawning sessions**. Two things are yours:
 
 - `<cwd>` — if the user said "here", take it from the focus envelope; otherwise resolve the project
   root they named.

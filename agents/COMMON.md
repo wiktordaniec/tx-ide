@@ -2,21 +2,6 @@
 
 These conventions apply to every agent session in this system: the tx-assistant, every worker, and any ad-hoc session you spin up inside the orchestration repo.
 
-## tx, not raw tmux
-
-**Every operation that creates, ends, or mutates a session MUST go through `tx`, never raw `tmux`.** Raw `tmux` changes live tmux but leaves tx's session record stale, and the picker and history read that record.
-
-| operation | use | never |
-|---|---|---|
-| spawn | `tx spawn` / `tx spawn-nvim` | `tmux new-session` |
-| kill | `tx kill` | `tmux kill-session` |
-| tag | `tx tag` (or the picker's Ctrl-T) | `tmux set @tag` |
-| message | `tx send-message` | `tmux send-keys` |
-| rename | `tx rename` | `tmux rename-session` |
-| attach | `tx attach` / `tx start` | `tmux attach` / `switch-client` |
-
-Raw `tmux` is **read-only**: inspection, moving between panes/windows, scrolling, copy-mode.
-
 ## Session self-introduction
 
 Lead your **first response** in a session with a brief self-introduction so the operator can confirm your setup at a glance:
@@ -28,6 +13,10 @@ Lead your **first response** in a session with a brief self-introduction so the 
 Keep it to a few lines, then continue with whatever was asked (or wait for instructions if nothing was).
 
 ## Spawning sessions
+
+Spawning goes through `tx`, never raw `tmux` — and so does anything else that creates, ends, or
+changes a session, because raw `tmux` leaves tx's session record stale. Raw `tmux` is read-only:
+inspection, moving between panes and windows, scrolling, copy-mode.
 
 Three kinds of spawn — the role in each comment is derived from the launch command, not passed:
 
@@ -58,20 +47,10 @@ surface together when the operator filters by scope.
 Never tag a session with its role (`llm` / `nvim` / `shell`); the role is derived from the launch
 command and already has its own column.
 
-**Naming:** human-readable, says what it's for. The tag does the filtering, not the name.
+**Naming:** human-readable, says what it's for. The tag does the filtering, not the name. Groups
+derive from lineage automatically — set nothing.
 
-**Group:** derived from lineage automatically — set nothing. Pass `--group` only for sibling spawns
-with no shared ancestor; `tx group <root> <name>` re-files a whole effort.
-
-**`--role` is what makes a worker read these conventions.** It injects the role files —
-`agents/COMMON.md` plus each name you pass — into the spawned session's system prompt. Spawn an
-agent without it and it never sees any of this. See **§ Spawning workers**, which also covers the
-automatic worktree.
-
-## Spawning workers
-
-Delegate work — coding, scoping, planning, research — to an agent worker. This is the `llm` spawn
-above with the worker flags filled in:
+To delegate work — coding, scoping, planning, research — fill in the `llm` form:
 
 ```bash
 tx spawn <name> --tag <scope> --cwd <project-root> \
@@ -79,30 +58,15 @@ tx spawn <name> --tag <scope> --cwd <project-root> \
   --role DEVELOPER --prompt "<task>"
 ```
 
-- `--role` — the role(s) this worker plays. An unknown name fails the spawn; don't guess.
+- `--role` — **what makes the worker read these conventions**: it injects the role files into the
+  spawned session's system prompt, so without it the worker sees none of this. Roles live in
+  `~/.tx-ide/agents/`; `DEVELOPER` is the usual one, and an unknown name fails the spawn.
 - `--effort` — `1` to `5`, low to max, defaulting to `3`.
 - `--prompt` — the task, short and single-line. Long or special-char-laden prompts crash tmux input.
 - `--read-only` — for an investigation that must not write; not combinable with `--cmd`. Promote it
   later with `tx fork <investigation> <implementation>`, which is writable.
 
 Every worker gets its own tx-owned worktree automatically — never create one yourself.
-
-Roles live in `~/.tx-ide/agents/` — `DEVELOPER` is the usual one; list the directory for the rest.
-
-## Session metadata
-
-Every tx session has a **durable record** at `~/.tx-ide/sessions/<uuid>.json` — its `name`, `role`,
-`tags`, `group`, `cwd`, `cmd`, `env`, `parent`, `pid`, and for an llm session its `chats`, which is
-what `tx resume` reattaches to. The tmux option `@tx_id` links the live session to its record, so
-the record outlives a kill or a tmux restart.
-
-`tags` and `role` are fields in that record, not tmux options — change tags with
-`tx tag <name> [tags]`. `role` (`llm` / `nvim` / `shell` / `other`) is derived at spawn; nothing to
-set by hand.
-
-**Views are not records.** A view — the home-base session you nest work into — is a live tmux
-session marked `@tx_view`, so it dies with the tmux server. It carries no tags, and its only verbs
-are `tx spawn-view` and `tx kill`.
 
 ## Inter-session communication
 

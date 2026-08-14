@@ -74,7 +74,7 @@ directly (e.g. `.venv/bin/python`).
 
 ## nvim companions for review
 
-So the user can read your work without leaving their session, spawn an nvim companion for each reviewable artifact — and **let `tx`, not raw `tmux`, own it** (COMMON § "tx, not raw tmux"). Two kinds:
+So the user can read your work without leaving their session, spawn an nvim companion for each reviewable artifact — and **let `tx`, not raw `tmux`, own it** (COMMON § Spawning sessions). Two kinds:
 
 - **Plan** — the moment you're handed (or write) a plan file, open it: a `-plan` companion via `--open <plan-path>`.
 - **Diff** — once the PR is open (Git workflow step 6), open the branch diff against its base: a `-diff` companion via `--diff <base>`.
@@ -100,4 +100,4 @@ The companion's `nvim` role is derived from its launch command — it is never a
 
 ## Spawning sub-workers
 
-You are not limited to the nvim companions above — you may spawn your own agent workers to parallelize independent parts of a plan (a coding worker per subsystem). For answering an unknown, see **§ Experiment explorer** above. Follow **COMMON § Spawning workers** for the recipe: use the engine-built `tx spawn … --role … --prompt …` form for coding sub-workers (tx creates their worktrees automatically and injects the role files into the sub-worker's system prompt). Always prime — a bare agent spawn gets you a worker that ignores all of this.
+You are not limited to the nvim companions above — you may spawn your own agent workers to parallelize independent parts of a plan (a coding worker per subsystem). For answering an unknown, see **§ Experiment explorer** above. Follow **COMMON § Spawning sessions** for the recipe: use the engine-built `tx spawn … --role … --prompt …` form for coding sub-workers (tx creates their worktrees automatically and injects the role files into the sub-worker's system prompt). Always prime — a bare agent spawn gets you a worker that ignores all of this.
