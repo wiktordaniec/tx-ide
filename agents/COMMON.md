@@ -89,9 +89,8 @@ tx spawn <name> --tag <scope> --cwd <project-root> \
 
 Every worker gets its own tx-owned worktree automatically — never create one yourself.
 
-Roles shipped: `DEVELOPER` (the coding foundation), `WORKFLOW-DEVELOPER` (its build-fleet layer),
-`ORCHESTRATOR`, `OVERSIGHT`, `HISTORIAN`, `TX-ASSISTANT`. Layer them as needed — a build worker
-passes `--role DEVELOPER,WORKFLOW-DEVELOPER`.
+Roles live in `~/.tx-ide/agents/`. `DEVELOPER` is the coding foundation and the usual choice; list
+that directory for the rest. Pass several to layer them, as the example above does.
 
 Only a hand-written `--cmd` launch bypasses `--role`; such a worker has to be told to read the files
 itself, as the first line of its prompt:
