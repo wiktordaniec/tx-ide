@@ -26,7 +26,7 @@ usage: install.sh {install|uninstall|status} [--dry-run] [--engine NAME]...
 
   drives setup/engines/<engine>.sh for each selected engine (default: claude).
 
-  --engine NAME         add an engine (claude, codex); repeatable
+  --engine NAME         add an engine (claude, codex, antigravity); repeatable
   --dry-run             forward --dry-run to every engine
   --claude-settings P   forward to claude.sh --settings P (sandbox)
   --codex-settings P    forward to codex.sh  --settings P (sandbox)

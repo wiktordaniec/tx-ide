@@ -34,6 +34,7 @@ from .artifact_service import ArtifactService
 from .artifact_store import ArtifactStore
 from .chat import ChatOps
 from .engines import claude
+from .engines.engine_adapter import EngineError
 from .events import EventLog
 from .grouping import GroupResolver
 from .render import (
@@ -164,7 +165,7 @@ class SpawnCommand(Command):
         )
         parser.add_argument(
             "--engine",
-            choices=[Engine.CLAUDE.value, Engine.CODEX.value],
+            choices=[Engine.CLAUDE.value, Engine.CODEX.value, Engine.ANTIGRAVITY.value],
             help="build the launch command for this agent engine via its adapter "
             "(default: claude). With --cmd, declares the engine to stamp on the "
             "record (the command stays yours; the engine is never inferred from it)",
@@ -1963,6 +1964,6 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         return command.run(argv[1:])
-    except (ServiceError, TmuxError) as error:
+    except (ServiceError, TmuxError, EngineError) as error:
         print(f"tx {command_name}: {error}", file=sys.stderr)
         return 1

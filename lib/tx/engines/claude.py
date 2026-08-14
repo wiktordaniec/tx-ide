@@ -354,7 +354,7 @@ class ClaudeEngine(EngineAdapter):
         initial_prompt: str | None = None,
         read_only: bool = False,
         role_priming: str | None = None,
-        env: Mapping[str, str] | None = None,
+        env: dict[str, str] | None = None,
     ) -> list[str]:
         # A positional prompt auto-submits in interactive mode (measured); `env` is unused.
         command = [CLAUDE_BIN]
@@ -431,6 +431,12 @@ class ClaudeEngine(EngineAdapter):
                 sidecar_dir(chat_id, target_cwd),
                 dirs_exist_ok=True,
             )
+
+    def prepare_workspace(
+        self, command: str, cwd: str, env: Mapping[str, str]
+    ) -> str:
+        """Claude launches are cwd-independent (no workspace-binding argv or per-worktree files)."""
+        return command
 
     def is_read_only_command(self, command: str) -> bool:
         tokens = shlex.split(command)

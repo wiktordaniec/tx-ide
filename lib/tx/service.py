@@ -148,10 +148,14 @@ class SessionService:
     def _prepare_worker_access(
         self, spec: SpawnSpec, worktree_directory: Path, environment: dict[str, str]
     ) -> SpawnSpec:
-        command = spec.cmd
+        engine = spec.engine or Engine.CLAUDE
+        adapter = registry.get(engine)
+        # The worktree path is first known here — bind cwd-dependent engine commands to it
+        # (workspace argv + per-worktree hook/rules files; a no-op for Claude/Codex).
+        command = adapter.prepare_workspace(
+            spec.cmd, str(worktree_directory), environment
+        )
         if spec.read_only:
-            engine = spec.engine or Engine.CLAUDE
-            adapter = registry.get(engine)
             if not adapter.is_read_only_command(command):
                 raise ServiceError(
                     f"{engine.value} command does not enforce the requested read-only mode"

@@ -17,7 +17,7 @@ import shlex
 from dataclasses import dataclass, field
 
 # Side-effect import: each adapter self-registers at import, so registered() sees every engine.
-from .engines import claude, codex  # noqa: F401
+from .engines import antigravity, claude, codex  # noqa: F401
 from .engines import registry
 from .session import Engine, Role
 
