@@ -39,6 +39,8 @@
 --   R : gitsigns diffs base:<new path>, which does not exist in the base, so
 --       hunks are unavailable -- tagged "renamed from <oldpath>" in the
 --       statusline; side mode shows the true rename diff
+--   D : no working-tree file to show -- D entries keep the side-by-side
+--       layout (removed content vs empty) even while the view is inline
 --
 -- The base rev is derived from the open view (view.left), never hardcoded, and
 -- feeds the " vs <base>" statusline indicator via b:inline_diff_base (see
@@ -92,14 +94,22 @@ local function find_review_view()
 end
 
 -- The entries inline mode can convert: their b side must be the real working
--- tree. Excludes the staged section (b is an index blob), rev-range views (b is
--- a commit blob), and merge conflicts (owned by the merge tool).
+-- tree, and actually exist there. Excludes the staged section (b is an index
+-- blob), rev-range views (b is a commit blob), merge conflicts (owned by the
+-- merge tool), and Deleted files (b is nulled -- inline would show a blank
+-- diffview://null buffer, while side-by-side shows the removed content, so D
+-- entries keep their native layout in both modes).
 local function working_tree_entries(view)
   local RevType = require("diffview.vcs.rev").RevType
   local entries = {}
   for _, entry in ipairs(view.panel:ordered_file_list() or {}) do
     local window_b = entry.layout.b
-    if entry.kind ~= "conflicting" and window_b and window_b.file.rev.type == RevType.LOCAL then
+    if
+      entry.kind ~= "conflicting"
+      and window_b
+      and window_b.file.rev.type == RevType.LOCAL
+      and not window_b.file.nulled
+    then
       entries[#entries + 1] = entry
     end
   end
