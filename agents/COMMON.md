@@ -29,13 +29,20 @@ Keep it to a few lines, then continue with whatever was asked (or wait for instr
 
 ## Spawning sessions
 
-Use `tx spawn` (bare) and `tx spawn-nvim` (nvim companion). Both require `--tag`.
+Three kinds of spawn — the role in each comment is derived from the launch command, not passed:
 
 ```bash
+# shell / other — an ad-hoc process
 tx spawn <name> --tag TAGS [--cwd DIR] [--cmd "CMD"] [--env K=V ...]
+
+# llm — an agent worker
 tx spawn <name> --tag TAGS --cwd DIR --engine ENGINE [--model MODEL] [--effort {1,2,3,4,5}] [--role NAME[,NAME…]] [--read-only] [--prompt TEXT]
+
+# nvim — a companion for reading files and diffs
 tx spawn-nvim <name> --tag TAGS [--cwd DIR] [--diff [BASE]] [--open FILE] [--env K=V ...]
 ```
+
+All three require `--tag`.
 
 **Tags** are how the operator finds related sessions later. Give each session one tag naming the
 work it belongs to:
@@ -56,12 +63,10 @@ command and already has its own column.
 **Group:** derived from lineage automatically — set nothing. Pass `--group` only for sibling spawns
 with no shared ancestor; `tx group <root> <name>` re-files a whole effort.
 
-An agent **worker** is also a `tx spawn`, but it needs role priming through `--role` — see
-**§ Spawning workers** below, which also covers the automatic worktree. A bare agent CLI with no
-priming never reads these conventions.
-
-`spawn-nvim` forces a dark colorscheme because `tmux new-session -d` strips the background hint. If
-`--diff` fails with unknown-command errors, that machine needs `setup/nvim.sh install`.
+**`--role` is what makes a worker read these conventions.** It injects the role files —
+`agents/COMMON.md` plus each name you pass — into the spawned session's system prompt. Spawn an
+agent without it and it never sees any of this. See **§ Spawning workers**, which also covers the
+automatic worktree.
 
 ## Spawning workers
 
