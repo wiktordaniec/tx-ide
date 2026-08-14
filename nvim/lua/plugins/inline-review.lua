@@ -189,6 +189,34 @@ local function paint_added(buffer)
   end
 end
 
+-- Reviewers step files with <Tab>, and a freshly opened buffer lands at line
+-- 1 while its first change may sit far below the viewport. Side mode folds
+-- the context away so the change is immediately visible; inline mode jumps to
+-- the first hunk instead, once gitsigns has computed hunks against the base.
+-- Only a pristine cursor (1,1 -- diffview's fresh-open position) is moved: a
+-- flip-restored or user-moved cursor is left alone.
+local function jump_to_first_hunk(buffer)
+  local window = vim.fn.bufwinid(buffer)
+  if window == -1 then
+    return
+  end
+  local cursor = vim.api.nvim_win_get_cursor(window)
+  if cursor[1] ~= 1 or cursor[2] ~= 0 then
+    return
+  end
+  local hunks = require("gitsigns").get_hunks(buffer)
+  if not (hunks and hunks[1]) then
+    return
+  end
+  -- a delete-at-top hunk reports added.start == 0
+  local line = math.max(hunks[1].added.start, 1)
+  if pcall(vim.api.nvim_win_set_cursor, window, { line, 0 }) then
+    vim.api.nvim_win_call(window, function()
+      vim.cmd("normal! zz")
+    end)
+  end
+end
+
 -- gitsigns' attach is async and throttled per buffer: when its own autocmds
 -- already started one (they race us on freshly loaded buffers), an attach()
 -- call returns before the buffer is actually attached -- and change_base on an
@@ -202,11 +230,18 @@ local function apply_base(buffer, base_sha, attempts)
   if require("gitsigns.cache").cache[buffer] then
     -- scheduled: this can run inside diffview's file_open_post continuation,
     -- where textlock forbids nvim_buf_call. change_base only acts on the
-    -- current buffer, hence the buf_call.
+    -- current buffer, hence the buf_call. Its callback fires after the hunk
+    -- update completes, which is the moment the first-hunk jump makes sense.
     vim.schedule(function()
       if vim.api.nvim_buf_is_valid(buffer) then
         vim.api.nvim_buf_call(buffer, function()
-          require("gitsigns").change_base(base_sha, false)
+          require("gitsigns").change_base(base_sha, false, function()
+            vim.schedule(function()
+              if vim.api.nvim_buf_is_valid(buffer) then
+                jump_to_first_hunk(buffer)
+              end
+            end)
+          end)
         end)
       end
     end)
