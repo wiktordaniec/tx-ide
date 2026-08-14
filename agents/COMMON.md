@@ -70,69 +70,34 @@ automatic worktree.
 
 ## Spawning workers
 
-When you need to delegate work — coding, scoping, planning, or research/exploration — spawn an agent worker. The mechanics are `tx spawn` above; what turns a bare agent CLI into a *worker* is **role priming** — `--role` injects the role files' contents additively into the engine's system prompt at launch. Spawn one with no priming and it never reads these conventions — it has no role, no standards, no worktree discipline.
+Delegate work — coding, scoping, planning, research — to an agent worker. This is the `llm` spawn
+above with the worker flags filled in:
 
 ```bash
-tx spawn <name> --tag <scope> --cwd <cwd> \
+tx spawn <name> --tag <scope> --cwd <project-root> \
   --engine claude --model "opus[1m]" --effort 5 \
   --role DEVELOPER,WORKFLOW-DEVELOPER --prompt "<task>"
 ```
 
-- `<name>` — short, descriptive (`orchestrator-cleanup`, `auth-review`).
-- `<scope>` — the single work-scope tag (`wrangler-p1`, `PR-1840`, `cleanup`); no role. An nvim companion takes the **same** scope.
-- `<cwd>` — the project root the worker operates in.
-- `--role NAME[,NAME…]` (repeatable) — the role file(s) this worker plays; `COMMON` is always
-  injected first automatically. Each `NAME` resolves to `user-agents/NAME.md` (replaces the
-  shipped file) or `agents/NAME.md`, plus `user-agents/NAME.local.md` (extends). An unknown
-  name fails the spawn — don't guess.
-- Recommended workers use `--model "opus[1m]"` and `--effort 5`; don't downgrade unless asked.
-- Effort is engine-neutral: `1=low`, `2=medium`, `3=high`, `4=xhigh`, `5=max`. An engine-built
-  launch without `--effort` defaults to `3`.
-- Keep `<task>` short and single-line — long, quoted, special-char-laden prompts crash tmux input.
-  (Role contents are exempt: they ride inside the launch command's argv, never typed input.)
+- `--role` — the role(s) this worker plays, from the list below. An unknown name fails the spawn;
+  don't guess.
+- `--effort` — `1=low`, `2=medium`, `3=high`, `4=xhigh`, `5=max`, defaulting to `3`. Workers get
+  `opus[1m]` and `5` unless you are told otherwise.
+- `--prompt` — the task, short and single-line. Long or special-char-laden prompts crash tmux input.
+- `--read-only` — for an investigation that must not write; not combinable with `--cmd`. Promote it
+  later with `tx fork <investigation> <implementation>`, which is writable.
 
-Every agent worker—including read-only investigations, coding workers, forks, and handovers—gets a
-tx-owned worktree before the process starts, so every engine records the correct workspace from its
-first frame:
+Every worker gets its own tx-owned worktree automatically — never create one yourself.
 
-```bash
-tx spawn <name> --tag <scope> --cwd <repository> \
-  --engine <engine> --role <roles> --prompt "<task>"
-```
+Roles shipped: `DEVELOPER` (the coding foundation), `WORKFLOW-DEVELOPER` (its build-fleet layer),
+`ORCHESTRATOR`, `OVERSIGHT`, `HISTORIAN`, `TX-ASSISTANT`. Layer them as needed — a build worker
+passes `--role DEVELOPER,WORKFLOW-DEVELOPER`.
 
-tx creates a detached `$TX_IDE_HOME/worktrees/<repository-key>/<repository>--<name>` checkout and
-launches the selected Claude or Codex engine from it. The readable repository key includes a short
-hash so same-named repositories cannot collide. The checkout basename gives both engine footers the
-same branch-free `<repository>--<name>` label. Writable workers receive `TX_REQUIRE_WORKTREE=1`; the
-detached worker creates its correctly typed task branch after startup.
-
-For an explicitly read-only worker:
-
-```bash
-tx spawn <name> --tag <scope> --cwd <repository> \
-  --engine <engine> --read-only --role <roles> --prompt "<task>"
-```
-
-`--read-only` creates a separate worktree, persists `TX_READ_ONLY=1`, and wraps the entire agent
-process tree in tx's fail-closed OS sandbox. The boundary covers direct tools, Bash commands, hooks,
-MCP subprocesses, every registered checkout for that repository, the tx-owned worktrees, and shared
-Git metadata. Claude keeps Bash/Read/Grep/Glob available while denying direct editing tools; Codex runs
-without approval escalation inside the same outer boundary. It cannot be combined with a
-hand-written `--cmd`. To turn an investigation into implementation, fork it:
-`tx fork <investigation> <implementation>`. The new session is writable by default and gets its own
-worktree; pass `--read-only` to `tx fork` only when the fork must remain read-only. Resume and
-rollover preserve the source session's access mode.
-
-### Worker priming
-
-An engine-built spawn primes through **`--role`**: tx resolves the named files and injects their contents **additively** into the engine's system prompt (Claude `--append-system-prompt`, Codex `-c developer_instructions=`) — the base prompt is never replaced, and the worker is governed by the conventions from its first token, no self-load step to obey. The priming is baked into the session's recorded command, so forks, handovers, and rollovers inherit it automatically. `--prompt` then carries only the task imperative (e.g., `Implement the plan at ~/Code/foo/.claude/plans/auth-rewrite.md.`).
-
-tx-ide ships `DEVELOPER.md` (the coding foundation) and its build-fleet layer `WORKFLOW-DEVELOPER.md`, plus `ORCHESTRATOR.md` and `OVERSIGHT.md`, alongside `COMMON.md`, `HISTORIAN.md`, `TX-ASSISTANT.md`. Pass whichever role(s) this worker plays — a build worker layers `--role DEVELOPER,WORKFLOW-DEVELOPER`.
-
-Only a **hand-written `--cmd` launch** (which bypasses the engine adapter, and so `--role`) still needs the legacy read-instruction opening its prompt:
+Only a hand-written `--cmd` launch bypasses `--role`; such a worker has to be told to read the files
+itself, as the first line of its prompt:
 
 ```
-Read ~/.tx-ide/agents/COMMON.md, ~/.tx-ide/agents/DEVELOPER.md, and ~/.tx-ide/agents/WORKFLOW-DEVELOPER.md as your first actions (a build worker layers all three — COMMON conventions, the DEVELOPER coding foundation, the WORKFLOW-DEVELOPER build-fleet additions). Then, for each of those, if it exists also read the matching ~/.tx-ide/user-agents/<NAME>.md (replaces the shipped file) and <NAME>.local.md (extends it). Follow all of these for the duration of this session.
+Read ~/.tx-ide/agents/COMMON.md, ~/.tx-ide/agents/DEVELOPER.md, and ~/.tx-ide/agents/WORKFLOW-DEVELOPER.md as your first actions. Then, for each, also read ~/.tx-ide/user-agents/<NAME>.md (replaces it) and <NAME>.local.md (extends it) if present. Follow all of these for the duration of this session.
 ```
 
 ## Session metadata
