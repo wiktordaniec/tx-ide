@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, MutableMapping
 from enum import Enum
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -18,9 +18,15 @@ EFFORT_LEVELS = {
 }
 
 
+class EngineError(RuntimeError):
+    """An engine adapter could not honor a request (unsupported effort tier, failed chat surgery).
+    Lives here — not in service.py — so adapters can raise it without a service import cycle; the
+    CLI boundary catches it alongside ServiceError and maps it to a stderr line + exit 1."""
+
+
 class StateSource(str, Enum):
-    # Where an engine's turn-done → WAITING transition comes from. Claude/Codex emit a Stop hook
-    # event; an engine without one (e.g. Gemini) is polled via its statusline agent_state.
+    # Where an engine's turn-done → WAITING transition comes from. Every current engine emits a
+    # Stop hook event; an engine without one would be polled via its statusline agent_state.
     HOOK_EVENTS = "hook_events"
     STATUS_POLL = "status_poll"
 
@@ -53,11 +59,13 @@ class EngineAdapter(Protocol):
         initial_prompt: str | None = None,
         read_only: bool = False,
         role_priming: str | None = None,
-        env: Mapping[str, str] | None = None,
+        env: MutableMapping[str, str] | None = None,
     ) -> list[str]:
         """Argv for a fresh session. `role_priming` is injected additively (never replacing the base
-        prompt) as a persona value-flag so chat ops inherit it; `env` is the session's launch
-        environment, which an engine consulting its own home must resolve as the child will."""
+        prompt) so chat ops inherit it — as a persona value-flag when the engine has one, else via a
+        launch-env pointer the adapter ADDS to `env` (which is the session's launch environment,
+        mutable for exactly that purpose; an engine consulting its own home must resolve it as the
+        child will)."""
         ...
 
     def resume_command(
@@ -89,6 +97,20 @@ class EngineAdapter(Protocol):
         self, chat_id: str, source_cwd: str, target_cwd: str
     ) -> None:
         """Make an existing chat discoverable when a continuation moves to another cwd."""
+        ...
+
+    def prepare_workspace(
+        self, command: str, cwd: str, env: Mapping[str, str]
+    ) -> str:
+        """Bind an engine command to its FINAL working directory and return the bound command.
+
+        Launch commands are built before the worker's worktree exists (the CLI parse / chat-op
+        derivation happens first; `spawn_worker` creates the checkout after), so an engine whose
+        launch is cwd-dependent — workspace-binding argv, per-worktree hook/rules files — rebinds
+        here, at the one seam where the final cwd is first known (`_prepare_worker_access`, and the
+        rollover respawn which reuses the session's cwd). Idempotent: re-running against the same
+        cwd must be safe (resume reuses a prepared worktree). Claude/Codex are cwd-independent and
+        return `command` unchanged."""
         ...
 
     def is_read_only_command(self, command: str) -> bool:

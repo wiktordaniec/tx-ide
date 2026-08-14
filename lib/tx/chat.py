@@ -505,11 +505,13 @@ class ChatOps:
         # The rotated pane keeps the SAME tx session, so its hook (TX_SESSION_ID) fills the pending
         # rollover ref. No chat-control env — provenance is on the ref, the id is captured (T4).
         env = {**record.spawn_env, "TX_SESSION_ID": spec.source_txid}
-        command = _env_prefix(env) + shlex.join(
-            registry.get(record.engine).seed_command(
-                record.initial_cmd, seed, read_only=record.read_only
-            )
+        adapter = registry.get(record.engine)
+        engine_command = shlex.join(
+            adapter.seed_command(record.initial_cmd, seed, read_only=record.read_only)
         )
+        # The respawn bypasses spawn_worker, so rebind the workspace here (same cwd — idempotent).
+        engine_command = adapter.prepare_workspace(engine_command, record.cwd, env)
+        command = _env_prefix(env) + engine_command
         command = self.service.worker_launch_command(
             command, record.cwd, record.read_only
         )

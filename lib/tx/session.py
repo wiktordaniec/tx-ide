@@ -107,7 +107,7 @@ class Engine(str, Enum):
 
     CLAUDE = "claude"
     CODEX = "codex"
-    GEMINI = "gemini"  # reserved — not implemented yet; proves the seam is N-way (design §1, §9)
+    ANTIGRAVITY = "antigravity"  # Google Antigravity CLI (`agy`) — NOT gemini-cli
 
 
 @dataclass(frozen=True)

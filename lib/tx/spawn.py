@@ -17,7 +17,7 @@ import shlex
 from dataclasses import dataclass, field
 
 # Side-effect import: each adapter self-registers at import, so registered() sees every engine.
-from .engines import claude, codex  # noqa: F401
+from .engines import antigravity, claude, codex  # noqa: F401
 from .engines import registry
 from .session import Engine, Role
 
@@ -63,9 +63,10 @@ class SpawnSpec:
     # Explicit read-only mode binds tx's whole-process filesystem sandbox to repository paths.
     read_only: bool = False
     # The agent engine this session runs (v3, design §1) — set from `tx spawn --engine` and stamped
-    # onto `Session.engine` by `service._spawn`. `None` means "unspecified": `_spawn` defaults an llm
-    # session to Claude (the engine default) and leaves a non-llm session engine-less. NEVER inferred
-    # from `cmd` post-spawn — the engine is declared at spawn and read off the record thereafter (T8).
+    # onto `Session.engine` by `service._spawn`. `None` is only valid for a non-llm session: a worker
+    # spawn with no engine is refused loudly (`_prepare_worker_access`); the claude default for a bare
+    # agent spawn is applied at the CLI boundary, not here. NEVER inferred from `cmd` post-spawn —
+    # the engine is declared at spawn and read off the record thereafter (T8).
     engine: Engine | None = None
     # A chat-op that records its OWN `ChatRef` (fork / handover / resume) sets this so `_spawn` does
     # not also write a pending `original` ref (T4 capture-after-launch). A plain spawn leaves it False
@@ -95,9 +96,9 @@ class SpawnSpec:
         """A normal worker/agent/shell session (`tx spawn`). A plain llm spawn gets a pending
         `original` `ChatRef` from `SessionService._spawn`; its chat id is captured from the first hook
         payload, not minted (T4). A chat-op that records its own ref passes `records_own_chat=True`
-        (and its SOURCE session id as `parent`). `engine` carries the `--engine` choice (default
-        Claude resolved in `_spawn`); leave it `None` for a shell/nvim/other spawn or to take the
-        engine default."""
+        (and its SOURCE session id as `parent`). `engine` carries the `--engine` choice; leave it
+        `None` only for a shell/nvim/other spawn — an agent spawn without one is refused at
+        `_prepare_worker_access`."""
         return cls(
             name=name,
             role=infer_role(cmd),
