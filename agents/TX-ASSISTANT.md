@@ -61,7 +61,7 @@ session marked `@tx_view`, so it dies with the tmux server. It carries no tags, 
 
 ## Spawning
 
-Follow **COMMON § Spawning sessions**. Two things are yours:
+Follow the `tx-sessions` skill (COMMON § Sessions). Two things are yours:
 
 - `<cwd>` — if the user said "here", take it from the focus envelope; otherwise resolve the project
   root they named.
