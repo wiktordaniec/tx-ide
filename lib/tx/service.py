@@ -148,8 +148,14 @@ class SessionService:
     def _prepare_worker_access(
         self, spec: SpawnSpec, worktree_directory: Path, environment: dict[str, str]
     ) -> SpawnSpec:
-        engine = spec.engine or Engine.CLAUDE
-        adapter = registry.get(engine)
+        # Every llm spawn passes through here, so this is the one place the engine is required:
+        # an unset engine is refused loudly rather than silently defaulted.
+        if spec.engine is None:
+            raise ServiceError(
+                "worker spawn has no engine on its spec — pass --engine "
+                "(or an agent --cmd whose binary tx recognizes)"
+            )
+        adapter = registry.get(spec.engine)
         # The worktree path is first known here — bind cwd-dependent engine commands to it
         # (workspace argv + per-worktree hook/rules files; a no-op for Claude/Codex).
         command = adapter.prepare_workspace(
@@ -158,7 +164,7 @@ class SessionService:
         if spec.read_only:
             if not adapter.is_read_only_command(command):
                 raise ServiceError(
-                    f"{engine.value} command does not enforce the requested read-only mode"
+                    f"{spec.engine.value} command does not enforce the requested read-only mode"
                 )
         return replace(
             spec,
@@ -273,8 +279,9 @@ class SessionService:
 
         now = time.time()
         # An llm session's engine: set from the spawn spec, read off the record thereafter, never
-        # re-derived from `cmd`. Unset ⇒ default Claude; a non-llm session has none.
-        engine = (spec.engine or Engine.CLAUDE) if spec.role == Role.LLM else None
+        # re-derived from `cmd`. Non-None for every llm spawn — `_prepare_worker_access` (which
+        # every llm spawn passes through) refuses an unset engine; a non-llm session has none.
+        engine = spec.engine if spec.role == Role.LLM else None
         launch_env = {"TX_SESSION_ID": session_id, **spec.env}
         chats: list[ChatRef] = []
         # Capture-after-launch (design §2/§7): every plain llm spawn gets a PENDING `original` ChatRef
@@ -315,7 +322,7 @@ class SessionService:
 
         session: Session
         if spec.role == Role.LLM:
-            # engine is non-None here (the llm branch of the line above); an LlmSession also carries
+            # engine is non-None here (guarded in _prepare_worker_access); an LlmSession also carries
             # the pending `original` chat, a fresh last_activity, and an unarmed C5 turn clock.
             session = LlmSession(
                 id=session_id,
@@ -323,7 +330,7 @@ class SessionService:
                 state=State.initial_for(spec.role),
                 cwd=spec.cwd,
                 initial_cmd=spec.cmd,
-                engine=engine or Engine.CLAUDE,
+                engine=engine,
                 tags=list(spec.tags),
                 group=spec.group,
                 spawn_env=dict(spec.env),
