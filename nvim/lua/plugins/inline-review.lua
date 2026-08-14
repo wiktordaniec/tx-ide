@@ -29,7 +29,9 @@
 -- folded, so inline mode swaps them out and restores the originals on the flip
 -- back. gitsigns gets change_base(<the view's left rev>) per buffer as files
 -- open (file_open_post), and the render toggles -- GLOBAL in gitsigns -- follow
--- the mode.
+-- the mode. Removed lines are drawn by this module as red virtual lines from
+-- the hunk data (see paint_removed): gitsigns' own show_deleted mode is
+-- currently broken upstream and renders nothing.
 --
 -- Status handling:
 --   M : gitsigns hunks as usual
@@ -49,6 +51,10 @@
 -- (<base>...HEAD) have no working-tree side and stay side-by-side.
 
 local added_namespace = vim.api.nvim_create_namespace("inline_review_added")
+local removed_namespace = vim.api.nvim_create_namespace("inline_review_removed")
+
+-- Matches the padding gitsigns uses so the red wash spans the window width.
+local REMOVED_LINE_WIDTH = 300
 
 -- Buffers that received a gitsigns base / statusline vars / green wash, so the
 -- flip back to side mode (or the view closing) can unwind them.
@@ -131,18 +137,51 @@ local function view_base(view)
 end
 
 -- gitsigns' render toggles are global. The current value lives in gitsigns'
--- own config -- mirroring it in a local boolean is how it drifts.
+-- own config -- mirroring it in a local boolean is how it drifts. show_deleted
+-- is deliberately NOT toggled: its persistent mode renders nothing in current
+-- gitsigns (the window-namespace deleted_preview path never places the
+-- virtual lines, verified in isolation -- the one-shot preview_hunk_inline
+-- works, the mode does not), so removed lines are drawn by this module
+-- instead (paint_removed below).
 local function render_inline_diff(on)
   local gitsigns = require("gitsigns")
   local gitsigns_config = require("gitsigns.config").config
   if gitsigns_config.linehl ~= on then
     gitsigns.toggle_linehl(on)
   end
-  if gitsigns_config.show_deleted ~= on then
-    gitsigns.toggle_deleted(on)
-  end
   if gitsigns_config.word_diff ~= on then
     gitsigns.toggle_word_diff(on)
+  end
+end
+
+-- Removed lines as red virtual lines: below the last kept line for pure
+-- delete hunks, above the replacement lines for change hunks -- the unified
+-- look show_deleted was meant to provide. Re-painted from the current hunks
+-- on every gitsigns update, so edits keep it in sync.
+local function paint_removed(buffer)
+  vim.api.nvim_buf_clear_namespace(buffer, removed_namespace, 0, -1)
+  local hunks = require("gitsigns").get_hunks(buffer) or {}
+  for _, hunk in ipairs(hunks) do
+    if hunk.removed.count > 0 and hunk.lines then
+      local removed_lines = {}
+      for _, line in ipairs(hunk.lines) do
+        if line:sub(1, 1) == "-" then
+          local text = line:sub(2)
+          if #text < REMOVED_LINE_WIDTH then
+            text = text .. string.rep(" ", REMOVED_LINE_WIDTH - #text)
+          end
+          removed_lines[#removed_lines + 1] = { { text, "GitSignsDeleteVirtLn" } }
+        end
+      end
+      if #removed_lines > 0 then
+        local top_delete = hunk.type == "delete" and hunk.added.start == 0
+        local row = top_delete and 0 or hunk.added.start - 1
+        pcall(vim.api.nvim_buf_set_extmark, buffer, removed_namespace, row, 0, {
+          virt_lines = removed_lines,
+          virt_lines_above = hunk.type ~= "delete" or top_delete,
+        })
+      end
+    end
   end
 end
 
@@ -238,6 +277,7 @@ local function apply_base(buffer, base_sha, attempts)
           require("gitsigns").change_base(base_sha, false, function()
             vim.schedule(function()
               if vim.api.nvim_buf_is_valid(buffer) then
+                paint_removed(buffer)
                 jump_to_first_hunk(buffer)
               end
             end)
@@ -287,6 +327,7 @@ local function unwind_buffers()
   for buffer in pairs(touched_buffers) do
     if vim.api.nvim_buf_is_valid(buffer) then
       vim.api.nvim_buf_clear_namespace(buffer, added_namespace, 0, -1)
+      vim.api.nvim_buf_clear_namespace(buffer, removed_namespace, 0, -1)
       vim.b[buffer].inline_diff_base = nil
       vim.b[buffer].inline_review_tag = nil
       vim.api.nvim_buf_call(buffer, function()
@@ -422,15 +463,30 @@ local function panel_open_inline()
   end
 end
 
+local autocmd_group = vim.api.nvim_create_augroup("inline_review", { clear = true })
+
 -- The render toggles and per-buffer bases must not outlive the view,
 -- whichever way it closes (<leader>gq, :DiffviewClose, :tabclose).
 vim.api.nvim_create_autocmd("User", {
-  group = vim.api.nvim_create_augroup("inline_review", { clear = true }),
+  group = autocmd_group,
   pattern = "DiffviewViewClosed",
   callback = function()
     if next(touched_buffers) then
       render_inline_diff(false)
       unwind_buffers()
+    end
+  end,
+})
+
+-- Keep the removed-lines render in sync as gitsigns recomputes hunks (edits,
+-- saves, refreshes). Only buffers this module decorated are touched.
+vim.api.nvim_create_autocmd("User", {
+  group = autocmd_group,
+  pattern = "GitSignsUpdate",
+  callback = function(event)
+    local buffer = event.data and event.data.buffer
+    if buffer and touched_buffers[buffer] and vim.b[buffer].inline_diff_base then
+      paint_removed(buffer)
     end
   end,
 })
