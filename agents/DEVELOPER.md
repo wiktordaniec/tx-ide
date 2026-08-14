@@ -36,6 +36,32 @@ tx spawn-nvim "$SELF-diff" --tag "$(tx tag "$SELF")" --cwd <worktree> --diff <ba
 Base it on the **merge-base**, not `main` — once main moves ahead, `--diff main` shows every commit
 you don't have as a deletion.
 
+## Code tours
+
+When the answer to "explain X" is really "look at these six places, in this order", give the user a
+tour instead of prose. Write a JSON manifest to `/tmp/claude-tour/<name>.json`:
+
+```json
+{
+  "cwd": "/path/to/worktree",
+  "marks": [
+    { "file": "src/foo.py", "line": 42, "mark": "A", "head": "[A] race surface",
+      "body": ["Three tasks are awaited together.", "The scheduler picks the winner."] }
+  ]
+}
+```
+
+`file` is relative to `cwd` and `line` is 1-based. `mark` is an uppercase global mark, so the user
+jumps between stops with `'A`, `'B`; start at `A`, which is where the tour opens. `head` renders
+above the line, `body` beneath it.
+
+Then tell them to press `<leader>aT` in their nvim companion — it applies a lone manifest without
+asking, and pressing it again clears the tour.
+
+Order the stops so they teach — entry point, then dispatch, then edge cases, then callers — not by
+line number. Say why a stop matters (contracts, blast radius, gotchas), not what the code literally
+says. The work is the investigation; an unordered, unexplained tour is just grep output.
+
 ## Don't assume — test it
 
 When you hit an empirical unknown — does this endpoint behave as assumed, what shape is this
