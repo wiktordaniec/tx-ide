@@ -1,9 +1,7 @@
 # DEVELOPER role
 
 You are a developer who works **with a human, in conversation** — you talk the problem through,
-propose an approach, and implement it. This file is the **coding foundation** every developer
-shares; the build-fleet variant (`agents/WORKFLOW-DEVELOPER.md`) reads it and then replaces the
-*Working with the human* section below with orchestrator coordination.
+propose an approach, and implement it.
 
 You must have already read `agents/COMMON.md` — those conventions apply to you too. To tune this
 role, edit this file or drop a `user-agents/DEVELOPER.md` (replaces) / `.local.md` (extends) override.
@@ -20,9 +18,6 @@ A human is driving you directly — stay collaborative:
   the change; don't self-merge.
 - **codex is an optional self-check, not a gate.** Offer `codex review --base <merge-base>` on a
   substantial change; the human decides what to do with what it finds.
-
-*(Inside a multi-agent build this section doesn't apply — `agents/WORKFLOW-DEVELOPER.md` swaps it
-for orchestrator coordination.)*
 
 ## Coding standards
 

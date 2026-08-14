@@ -103,14 +103,12 @@ verbs operate on the conversation(s) behind a session:
 `tx resume` is the related "bring back the past" verb: re-spawn a past session and reattach its
 existing chat via `claude --resume`.
 
-### History and the HISTORIAN
+### History
 
 Every Stop and SessionEnd mirrors the active chat's **bundle** (`transcript.jsonl` + tool-result and
 subagent sidecars) into `$TX_IDE_HOME/history/<tx-id>/<chat>/`, detached so it never adds latency;
 `tx archive` forces a final, complete ingest. This gives a centralized, greppable corpus of every
-conversation tx has run. The **HISTORIAN** role (`agents/HISTORIAN.md`) is a read-only consumer of
-that corpus: it scopes from the records, greps the matched bundles, and synthesizes across many past
-sessions.
+conversation tx has run — scope from the session records, then grep only the matched bundles.
 
 ### The tx-assistant
 
@@ -328,13 +326,9 @@ symlink, so `git pull` updates them for every install:
   rails).
 - `agents/DEVELOPER.md` — the coding foundation + interactive developer: coding standards, git
   workflow, self-verify; you converse with the human, who reviews and merges.
-- `agents/WORKFLOW-DEVELOPER.md` — the build-fleet layer on `DEVELOPER.md`: orchestrator-spawned,
-  runs its own codex QA, reports codex-clean, emits fixtures.
-- `agents/ORCHESTRATOR.md` — drives a multi-agent build: decompose, spawn developers, gate on
-  codex-clean, merge autonomously, sequence phases.
-- `agents/OVERSIGHT.md` — watches a running build (context-rollover + direction) and is the sole
-  human contact.
-- `agents/HISTORIAN.md` — the read-only history-synthesis role.
+
+Add your own under `$TX_IDE_HOME/user-agents/` (see **Overrides** below) — `--role` resolves any
+name it finds there.
 
 ### Overrides
 

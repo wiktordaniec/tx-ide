@@ -76,7 +76,7 @@ above with the worker flags filled in:
 ```bash
 tx spawn <name> --tag <scope> --cwd <project-root> \
   --engine claude --model "opus[1m]" --effort 5 \
-  --role DEVELOPER,WORKFLOW-DEVELOPER --prompt "<task>"
+  --role DEVELOPER --prompt "<task>"
 ```
 
 - `--role` — the role(s) this worker plays. An unknown name fails the spawn; don't guess.
