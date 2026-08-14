@@ -1,4 +1,11 @@
 return {
+  -- LazyVim's always_show_bufferline=false hides the whole bufferline -- tab
+  -- indicators included -- when fewer than two listed buffers exist. Diffview
+  -- buffers are unlisted, so diff-heavy sessions lose all sign of their tabs.
+  {
+    "akinsho/bufferline.nvim",
+    opts = { options = { always_show_bufferline = true } },
+  },
   {
     "nvim-telescope/telescope.nvim",
     opts = {
