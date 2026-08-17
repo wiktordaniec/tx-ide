@@ -58,26 +58,28 @@ header() { printf '\n%s%s%s\n' "$B" "$*" "$X"; }
 
 usage() {
   cat >&2 <<EOF
-usage: claude.sh {install|uninstall|status} [--dry-run] [--settings PATH]
+usage: claude.sh {install|uninstall|status} [--dry-run] [--settings PATH] [--no-context-profile]
 
   install     register tx-ide's Claude hooks (coexistence: TX_IDE_HOME=~/.tx-ide-next)
   uninstall   reverse the registration exactly via the _tx_ide_managed marker
   status      report drift between the marker and settings.json
 
-  --dry-run        print every action, change nothing
-  --settings PATH  operate on PATH (a copy) — sandbox: skip the live tmux hook + mx-speaker stop
+  --dry-run              print every action, change nothing
+  --settings PATH        operate on PATH (a copy) — sandbox: skip the live tmux hook + mx-speaker stop
+  --no-context-profile   register hooks only; leave the context profile (below) untouched
 EOF
 }
 
 # ----- argument parsing --------------------------------------------------------------------
 
-OP=""; DRY_RUN=0; SETTINGS=""
+OP=""; DRY_RUN=0; SETTINGS=""; APPLY_PROFILE=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     install|uninstall|status) OP="$1"; shift ;;
     --dry-run)        DRY_RUN=1; shift ;;
     --settings)       SETTINGS="${2:?--settings needs a PATH}"; shift 2 ;;
     --settings=*)     SETTINGS="${1#*=}"; shift ;;
+    --no-context-profile) APPLY_PROFILE=0; shift ;;
     -h|--help)        usage; exit 0 ;;
     *) printf 'claude.sh: unknown argument: %s\n' "$1" >&2; usage; exit 2 ;;
   esac
@@ -139,6 +141,52 @@ remove_shim() {  # <path>
   if [[ -f "$path" ]]; then rm -f "$path"; ok "removed $path"; else info "$path (already absent)"; fi
 }
 
+# ----- the context profile (settings keys tx owns alongside the hooks) ----------------------
+# Session-start context that a tx worker never uses, measured on claude 2.1.232 by disabling one
+# key at a time and reading the first turn's cache_creation+cache_read from the transcript
+# (headless baseline 22,340 tok → 11,893):
+#
+#   disableWorkflows        6,068   Workflow: 0 invocations across 341 transcripts
+#   disableArtifact        ~2,400   COMMON.md routes deliverables through `tx artifact`
+#   skillOverrides          2,300   "user-invocable-only" keeps /name typable, hides the description
+#   includeGitInstructions  1,891   the built-in commit-workflow block; DEVELOPER.md carries ours
+#   permissions.deny        1,472   ReportFindings (0 uses) + ListAgents (tx uses `tx send-message`)
+#
+# Keys are dotted paths. Everything here is reversible: install records each key's prior value in
+# the marker under `context_profile_previous`, and uninstall restores it verbatim. `--no-context-
+# profile` skips the whole block, for a machine that wants tx's hooks but not tx's token opinions.
+#
+# Re-enable per session without touching this file — CLI --settings outranks the user layer:
+#   claude --settings '{"disableWorkflows": false}'
+# (`enableWorkflows: true` does NOT override, and neither does CLAUDE_CODE_DISABLE_WORKFLOWS=1 in
+# the environment — the disable has to live in a settings layer.)
+read -r -d '' CONTEXT_PROFILE <<'JSON' || true
+{
+  "disableWorkflows": true,
+  "disableArtifact": true,
+  "includeGitInstructions": false,
+  "skillOverrides": {
+    "artifact-design": "off",
+    "artifact-diagramming": "off",
+    "artifact-capabilities": "off",
+    "claude-in-chrome": "off",
+    "init": "off",
+    "fewer-permission-prompts": "off",
+    "code-review": "user-invocable-only",
+    "security-review": "user-invocable-only",
+    "simplify": "user-invocable-only",
+    "dataviz": "user-invocable-only",
+    "claude-api": "user-invocable-only",
+    "update-config": "user-invocable-only",
+    "keybindings-help": "user-invocable-only",
+    "schedule": "user-invocable-only",
+    "loop": "user-invocable-only",
+    "run": "user-invocable-only"
+  },
+  "permissions.deny": ["ReportFindings", "ListAgents"]
+}
+JSON
+
 # ----- settings.json surgery (match-by-marker, atomic, reversible) -------------------------
 
 run_settings_py() {  # <install|uninstall|status>
@@ -146,6 +194,7 @@ run_settings_py() {  # <install|uninstall|status>
   TX_START="$START_SHIM" TX_PRE="$PRE_SHIM" TX_WORK="$WORK_SHIM" TX_POST="$POST_SHIM" \
   TX_NOTIFY="$NOTIFY_SHIM" TX_END="$END_SHIM" \
   TX_TMUX_SESSION_CLOSED="$TMUX_SESSION_CLOSED" TX_STAMP="$STAMP" \
+  TX_PROFILE="$CONTEXT_PROFILE" TX_APPLY_PROFILE="$APPLY_PROFILE" \
   "$PY" - <<'PY'
 import json, os, sys, tempfile
 
@@ -154,6 +203,8 @@ path     = os.environ["TX_SETTINGS"]
 dry_run  = os.environ["TX_DRYRUN"] == "1"
 home     = os.environ["TX_HOME"]
 stamp    = os.environ["TX_STAMP"]
+profile  = json.loads(os.environ["TX_PROFILE"])
+apply_profile = os.environ["TX_APPLY_PROFILE"] == "1"
 G, Y, D, X = "\033[32m", "\033[33m", "\033[2m", "\033[0m"
 
 # settings.json is a symlink into the claude-server git repo — read + write the REALPATH so the
@@ -226,6 +277,60 @@ def strip(data, event, command):
     if not hooks:
         data.pop("hooks", None)
 
+# ----- the context profile (dotted-path keys, recorded for verbatim restore) -----------------
+
+ABSENT = object()
+
+def path_get(data, key):
+    node = data
+    for part in key.split("."):
+        if part not in node:
+            return ABSENT
+        node = node[part]
+    return node
+
+def path_set(data, key, value):
+    parts = key.split(".")
+    node = data
+    for part in parts[:-1]:
+        node = node.setdefault(part, {})
+    node[parts[-1]] = value
+
+def path_del(data, key):
+    parts = key.split(".")
+    node = data
+    for part in parts[:-1]:
+        node = node[part]
+    node.pop(parts[-1], None)
+
+def install_profile(data, existing):
+    """Apply each profile key, recording its prior value the FIRST time tx touches that key. A
+    re-install keeps the existing record — re-recording would capture tx's own values and turn
+    uninstall into a no-op. A key added to the profile later is recorded on the run that introduces it."""
+    previous = dict((existing or {}).get("context_profile_previous") or {})
+    plan = []
+    for key, wanted in profile.items():
+        current = path_get(data, key)
+        if key not in previous:
+            previous[key] = {"absent": True} if current is ABSENT else {"value": current}
+        if current == wanted:
+            plan.append((key, "already current"))
+            continue
+        path_set(data, key, wanted)
+        plan.append((key, "set" if current is not ABSENT else "add"))
+    return plan, previous
+
+def uninstall_profile(data, marker):
+    plan = []
+    for key, record in (marker.get("context_profile_previous") or {}).items():
+        if record.get("absent"):
+            path_del(data, key)
+            plan.append((key, "strip    (was absent before tx)"))
+        else:
+            path_set(data, key, record["value"])
+            plan.append((key, f"restore  → {json.dumps(record['value'])[:40]}"))
+    return plan
+
 def do_install(data):
     existing = data.get("_tx_ide_managed")
     prior_commands = (existing or {}).get("hook_commands", {})
@@ -257,11 +362,22 @@ def do_install(data):
     )
     previous = existing.get("previous") if existing_is_ours else existing
 
+    if apply_profile:
+        profile_plan, profile_previous = install_profile(data, existing)
+        plan.extend(profile_plan)
+    else:
+        # Carry an existing record untouched, so a --no-context-profile re-install never strands
+        # keys tx already owns: uninstall can still restore them.
+        profile_previous = (existing or {}).get("context_profile_previous")
+        plan.append(("context profile", "skipped (--no-context-profile)"))
+
     data["_tx_ide_managed"] = {
-        "version": 2,
+        "version": 3,
         "mode": "coexist",
         "home": home,
         "hook_commands": dict(EVENTS),
+        "context_profile": dict(profile) if apply_profile else (existing or {}).get("context_profile"),
+        "context_profile_previous": profile_previous,  # per-key prior value — uninstall restores verbatim
         "statusLine_command": (existing or {}).get("statusLine_command"),  # carried; untouched (C10=Flip)
         "tmux_session_closed": os.environ["TX_TMUX_SESSION_CLOSED"],
         "previous": previous,   # the exact prior marker (or null) — uninstall restores it verbatim
@@ -288,6 +404,7 @@ def do_uninstall(data):
         else:
             strip(data, event, command)           # install had ADDED it → remove it
             plan.append((event, f"strip    {command}"))
+    plan.extend(uninstall_profile(data, marker))
     if previous is not None:
         data["_tx_ide_managed"] = previous         # restore the prior marker verbatim
     else:
@@ -307,6 +424,13 @@ def do_status(data):
     sc = marker.get("tmux_session_closed")
     if sc:
         print(f"    {'session-closed':<18} {D}(tmux global) {sc}{X}")
+    owned = marker.get("context_profile")
+    if not owned:
+        print(f"    {'context profile':<18} {D}not managed{X}")
+        return
+    for key, wanted in owned.items():
+        flag = f"{G}in sync{X}" if path_get(data, key) == wanted else f"{Y}DRIFT — settings differ{X}"
+        print(f"    {key:<18} {flag}")
 
 data = load()
 data_before = json.loads(json.dumps(data))   # deep copy for the .bak (pre-edit snapshot)
