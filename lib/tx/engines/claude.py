@@ -25,6 +25,10 @@ TRANSCRIPT_SUFFIX = ".jsonl"
 BUNDLE_TRANSCRIPT_NAME = "transcript.jsonl"
 SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
 APPEND_SYSTEM_PROMPT_FLAG = "--append-system-prompt"
+# Claude in Chrome. Both flags are bare (already in _BARE_FLAGS), so whichever one a spawn bakes
+# is inherited verbatim by fork / handover / resume — the grant travels with the persona.
+CHROME_FLAG = "--chrome"
+NO_CHROME_FLAG = "--no-chrome"
 READ_ONLY_TOOLS = ("Edit", "Write", "NotebookEdit")
 READ_ONLY_ALLOWED_TOOLS = ("Bash",)
 READ_ONLY_SETTING_SOURCES = "user"
@@ -356,6 +360,7 @@ class ClaudeEngine(EngineAdapter):
         effort: int | None = None,
         initial_prompt: str | None = None,
         read_only: bool = False,
+        browser: bool = False,
         role_priming: str | None = None,
         env: MutableMapping[str, str] | None = None,
     ) -> list[str]:
@@ -365,6 +370,9 @@ class ClaudeEngine(EngineAdapter):
             command += ["--model", model]
         selected_effort = effort if effort is not None else DEFAULT_EFFORT
         command += ["--effort", EFFORT_LEVELS[selected_effort]]
+        # Baked either way, never left to the user default: the setting it would otherwise read
+        # (`claudeInChromeDefaultEnabled`) lives in ~/.claude.json, which Claude rewrites on exit.
+        command.append(CHROME_FLAG if browser else NO_CHROME_FLAG)
         if role_priming:
             # A persona value-flag, so _strip_identity carries it across chat ops.
             command += [APPEND_SYSTEM_PROMPT_FLAG, role_priming]

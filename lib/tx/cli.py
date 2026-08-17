@@ -198,6 +198,12 @@ class SpawnCommand(Command):
             action="store_true",
             help="run an engine-built agent in a tx worktree with repository edits blocked",
         )
+        parser.add_argument(
+            "--chrome",
+            action="store_true",
+            help="grant the engine's browser-automation tooling (off by default — on claude it "
+            "costs ~1,300 tokens of standing system prompt per session)",
+        )
         parser.add_argument("--env", action="append", type=_env_pair)
         args = parser.parse_args(argv)
         tags = _split_tags(args.tag)
@@ -211,6 +217,10 @@ class SpawnCommand(Command):
         if args.read_only and args.cmd is not None:
             parser.error(
                 "--read-only requires an engine-built launch; it cannot enforce --cmd"
+            )
+        if args.chrome and args.cmd is not None:
+            parser.error(
+                "--chrome requires an engine-built launch; put the engine's own flag in --cmd"
             )
         environment = _parse_env(args.env)
         try:
@@ -271,6 +281,7 @@ class SpawnCommand(Command):
                     effort=args.effort,
                     initial_prompt=args.prompt,
                     read_only=args.read_only,
+                    browser=args.chrome,
                     role_priming=load_role_priming(role_names) if role_names else None,
                     env=environment,
                 )

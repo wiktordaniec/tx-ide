@@ -404,6 +404,7 @@ class AntigravityEngine(EngineAdapter):
         effort: int | None = None,
         initial_prompt: str | None = None,
         read_only: bool = False,
+        browser: bool = False,   # no browser tooling on this engine — accepted, ignored
         role_priming: str | None = None,
         env: MutableMapping[str, str] | None = None,
     ) -> list[str]:

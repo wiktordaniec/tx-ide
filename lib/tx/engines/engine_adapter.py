@@ -58,6 +58,7 @@ class EngineAdapter(Protocol):
         effort: int | None = None,
         initial_prompt: str | None = None,
         read_only: bool = False,
+        browser: bool = False,
         role_priming: str | None = None,
         env: MutableMapping[str, str] | None = None,
     ) -> list[str]:
@@ -65,7 +66,13 @@ class EngineAdapter(Protocol):
         prompt) so chat ops inherit it — as a persona value-flag when the engine has one, else via a
         launch-env pointer the adapter ADDS to `env` (which is the session's launch environment,
         mutable for exactly that purpose; an engine consulting its own home must resolve it as the
-        child will)."""
+        child will).
+
+        `browser` grants the engine's browser-automation tooling. It defaults OFF because the
+        tooling is not free: on Claude it costs ~1,300 tokens of standing system prompt in every
+        session (the automation guidance + the MCP instructions block + the deferred tool names),
+        and a worker that never drives a browser pays it for nothing. An engine without browser
+        tooling ignores the flag."""
         ...
 
     def resume_command(
