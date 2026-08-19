@@ -234,10 +234,16 @@ The model mirrors how Claude Code itself installs: the **cloned repo is the sour
 
 - symlinks the `tx` CLI onto your `PATH` (`~/.local/bin`),
 - creates the `$TX_IDE_HOME` skeleton,
-- generates the C9-baked Claude hook shims (+ statusline) under `$TX_IDE_HOME`, and
-- registers those hooks in `~/.claude/settings.json` via the unified engine installer
-  `setup/engines/install.sh` (Claude by default; Codex is opt-in via `--engine codex`), behind a
-  self-describing marker so re-runs and uninstall are exact and your other hooks are left untouched.
+- generates the C9-baked hook shims (+ statusline) under `$TX_IDE_HOME`, and
+- registers those hooks with each engine — `~/.claude/settings.json`, `~/.codex/hooks.json`, … — via
+  the unified engine installer `setup/engines/install.sh`, behind a self-describing marker so re-runs
+  and uninstall are exact and your other hooks are left untouched.
+
+It wires **every engine tx can spawn whose CLI is on the machine** (`claude`, `codex`, `agy`); an
+engine you do not have is left alone. An engine tx spawns but never wires is the worse failure: chat
+ids are captured from hook payloads, so with no hooks a session's `ChatRef` stays pending forever and
+the conversation can never be resumed. `tx spawn` refuses an engine whose hooks are missing rather
+than launch a worker it could never get back.
 
 It also offers (per-machine, `[y/N]`) to **provision the bundled nvim config**: the repo ships a
 complete LazyVim setup under `nvim/` — tokyonight, diffview.nvim, gitsigns with inline-diff

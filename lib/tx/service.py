@@ -40,7 +40,7 @@ from .session import (
     State,
 )
 from .spawn import SpawnSpec
-from .storage import launch_dir
+from .storage import engine_capture_shim, launch_dir, tx_ide_home
 from .store import SessionStore
 from .tmux import MAX_COMMAND_BYTES, Tmux, format_envelope
 from .worktree import WorktreeError, WorktreeManager
@@ -152,6 +152,17 @@ class SessionService:
             raise ServiceError(
                 "worker spawn has no engine on its spec — pass --engine "
                 "(or an agent --cmd whose binary tx recognizes)"
+            )
+        # Refuse rather than spawn a worker whose engine has no hooks in THIS home: the chat id is
+        # captured from a hook payload and never minted (hooks §T4), so the session's `ChatRef` would
+        # stay pending forever — `tx resume` refuses a chat-less record, and the conversation is lost
+        # the moment the pane dies. Silent for a whole fleet until you need one back, so it is a
+        # launch-time error like the two below, not a warning.
+        if not engine_capture_shim(spec.engine).exists():
+            raise ServiceError(
+                f"{spec.engine.value} hooks are not installed in {tx_ide_home()} — the worker's chat "
+                f"id would never be captured and the session could never be resumed. Install them: "
+                f"setup/engines/install.sh install --engine {spec.engine.value}"
             )
         adapter = registry.get(spec.engine)
         # The worktree path is first known here — bind cwd-dependent engine commands to it
