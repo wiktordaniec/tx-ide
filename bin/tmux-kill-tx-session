@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# prefix+X: confirm-then-kill the tx session in the active pane, tmux-native style.
+# Mirrors the stock prefix+x / prefix+& UX (a `confirm-before` status-line prompt),
+# but the kill goes through `tx kill` — record marked EXITED + logged — never a raw
+# `kill-session` that would leave the store stale (COMMON.md).
+#
+# Target: the session attached INSIDE the pane when it hosts a nested `tmux attach`
+# (the same pane→client join the border label uses), else the outer session itself
+# (a direct foreground attach). A @tx_view session (Views, a home base) is refused —
+# from a view pane hosting nothing nested there is no tx session to kill.
+#
+# The prompt shows the store-owned DISPLAY name (a PROCESS is tmux-named by its id);
+# the kill targets the tmux name, which `tx kill` resolves either way.
+set -eu
+
+SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+TX="$SCRIPT_DIR/tx"
+
+pane_id="${1:-}"
+outer="${2:-}"
+[[ -z "$pane_id" || -z "$outer" ]] && exit 0
+
+# S6 join, in lockstep with bin/tmux-pane-session-name / lib/tx/tmux.py `Tmux._attachment_join`:
+# the pane's tty is the nested client's tty.
+pane_tty=$(tmux display-message -p -t "$pane_id" '#{pane_tty}' 2>/dev/null) || exit 0
+inner=$(tmux list-clients -F '#{client_tty} #{client_session}' 2>/dev/null |
+  awk -v t="$pane_tty" '$1==t {print $2; exit}')
+
+target="${inner:-$outer}"
+
+if [[ -n "$(tmux show-options -vqt "$target" @tx_view 2>/dev/null)" ]]; then
+  tmux display-message "tx: '$target' is a view home, not a tx session — nothing to kill here"
+  exit 0
+fi
+
+# Display name from the record (@tx_id → `_pane-info` line 1); the raw tmux name when untracked.
+name="$target"
+tx_id=$(tmux show-options -vqt "$target" @tx_id 2>/dev/null) || tx_id=""
+if [[ -n "$tx_id" ]]; then
+  IFS= read -r resolved < <("$TX" _pane-info "$tx_id" 2>/dev/null) || true
+  [[ -n "${resolved:-}" ]] && name="$resolved"
+fi
+
+tmux confirm-before -p "kill tx session \"$name\"? (y/n)" "run-shell \"$TX kill '$target'\""
