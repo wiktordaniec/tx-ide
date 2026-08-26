@@ -141,7 +141,7 @@ fi
 
 # === CLI symlinks ===
 printf '\n%sCLI symlinks%s\n' "$B" "$X"
-for tool in tx tx-assistant tmux-pane-session-name; do
+for tool in tx tx-assistant tmux-pane-session-name tmux-system-resources; do
   target="$LOCAL_BIN/$tool"
   if [[ -L "$target" ]] && [[ "$(readlink "$target")" == "$REPO/bin/$tool" ]]; then
     rm "$target"

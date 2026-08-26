@@ -5,7 +5,8 @@
 # The repo is the code source of truth (git pull updates in place); $TX_IDE_HOME holds only state.
 # Install:
 #   - deps (tmux, fzf, python3.14)
-#   - symlink the CLIs onto PATH at ~/.local/bin (tx, tx-assistant, tmux-pane-session-name)
+#   - symlink the CLIs onto PATH at ~/.local/bin (tx, tx-assistant, tmux-pane-session-name,
+#     tmux-system-resources)
 #   - create the $TX_IDE_HOME skeleton via `tx _init-home`, + the agents symlink
 #   - the ~/.tx-ide/tmux.conf shim + the ~/.tmux.conf source-file block
 #   - register engine hooks via setup/engines/install.sh (Claude by default; baked shims under $TX_IDE_HOME/hooks)
@@ -95,7 +96,8 @@ Home:  $TX_IDE_DIR
 I will:
   - check dependencies and brew-install tmux + fzf + python@3.14 if missing
       (also warn if claude / gh are not on PATH)
-  - symlink CLIs into ~/.local/bin/  (tx, tx-assistant, tmux-pane-session-name)
+  - symlink CLIs into ~/.local/bin/  (tx, tx-assistant, tmux-pane-session-name,
+      tmux-system-resources)
   - add ~/.local/bin to your shell PATH (zsh/bash; marker-tracked)
   - create the $TX_IDE_DIR skeleton (sessions/, history/, user-agents/, config)
       and symlink agents/ → repo (orchestration role files)
@@ -199,13 +201,15 @@ else
 fi
 
 # === 1: CLIs ===
-# Only the live entrypoints (install-flip §2.2): tx (the python shim), tx-assistant, and the
-# pane-border reader. No txn (coexistence alias only), no tx-mailbox / tmux-pane-for-session (gone).
+# Only the live entrypoints (install-flip §2.2): tx (the python shim), tx-assistant, the
+# pane-border reader, and the status sampler. No txn (coexistence alias only), no tx-mailbox /
+# tmux-pane-for-session (gone).
 header "CLIs into ~/.local/bin"
 mkdir -p "$LOCAL_BIN"
 link "$REPO/bin/tx" "$LOCAL_BIN/tx"
 link "$REPO/bin/tx-assistant" "$LOCAL_BIN/tx-assistant"
 link "$REPO/bin/tmux-pane-session-name" "$LOCAL_BIN/tmux-pane-session-name"
+link "$REPO/bin/tmux-system-resources" "$LOCAL_BIN/tmux-system-resources"
 
 # === 1b: ~/.local/bin on PATH ===
 # Add a marked block to the user's shell rc so `tx` is callable from a fresh shell. Idempotent.
