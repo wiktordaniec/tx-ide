@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Print compact aggregate CPU and memory use for tmux's one-second status refresh.
+# Linux: procfs plus Bash builtins keep the hot path to one process. CPU needs the
+# previous aggregate-jiffy sample; keep that beside tmux's socket when available.
+# Darwin has no procfs, so it samples top and vm_stat instead.
+set -u
+
+if [[ -r /proc/stat ]]; then
+  read -r _ user_ticks nice_ticks system_ticks idle_ticks input_output_wait_ticks \
+    interrupt_ticks software_interrupt_ticks steal_ticks _ < /proc/stat
+
+  total_ticks=$((
+    user_ticks + nice_ticks + system_ticks + idle_ticks + input_output_wait_ticks +
+      interrupt_ticks + software_interrupt_ticks + steal_ticks
+  ))
+  idle_total_ticks=$((idle_ticks + input_output_wait_ticks))
+  busy_ticks=$((total_ticks - idle_total_ticks))
+  cpu_percentage=$(((busy_ticks * 100 + total_ticks / 2) / total_ticks))
+
+  if [[ -n "${TMUX:-}" ]]; then
+    state_file="${TMUX%%,*}.system-resources"
+  else
+    runtime_directory="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+    state_file="$runtime_directory/tx-ide-system-resources-$UID"
+  fi
+
+  if read -r previous_total_ticks previous_idle_total_ticks 2>/dev/null < "$state_file"; then
+    elapsed_total_ticks=$((total_ticks - previous_total_ticks))
+    elapsed_idle_ticks=$((idle_total_ticks - previous_idle_total_ticks))
+    if ((elapsed_total_ticks > 0 && elapsed_idle_ticks >= 0)); then
+      elapsed_busy_ticks=$((elapsed_total_ticks - elapsed_idle_ticks))
+      cpu_percentage=$(((elapsed_busy_ticks * 100 + elapsed_total_ticks / 2) / elapsed_total_ticks))
+    fi
+  fi
+  printf '%s %s\n' "$total_ticks" "$idle_total_ticks" > "$state_file"
+
+  memory_total_kilobytes=0
+  memory_available_kilobytes=0
+  while read -r name value _; do
+    case "$name" in
+    MemTotal:) memory_total_kilobytes=$value ;;
+    MemAvailable:) memory_available_kilobytes=$value ;;
+    esac
+    if ((memory_total_kilobytes > 0 && memory_available_kilobytes > 0)); then
+      break
+    fi
+  done < /proc/meminfo
+
+  memory_used_kilobytes=$((memory_total_kilobytes - memory_available_kilobytes))
+  memory_percentage=$(((memory_used_kilobytes * 100 + memory_total_kilobytes / 2) / memory_total_kilobytes))
+else
+  # top's first sample already reflects recent activity on modern macOS, so no
+  # state file between refreshes is needed.
+  while IFS= read -r line; do
+    if [[ $line == 'CPU usage:'* ]]; then
+      idle_field=${line##*, }
+      idle_percentage=${idle_field%%[.%]*}
+      break
+    fi
+  done < <(top -l 1 -n 0 -s 0)
+  cpu_percentage=$((100 - idle_percentage))
+
+  # Match Activity Monitor's "memory used": app (active) + wired + compressed.
+  # vm_stat's header carries the page size, e.g. "(page size of 16384 bytes)".
+  page_size_bytes=0
+  memory_used_pages=0
+  while IFS= read -r line; do
+    value=${line##* }
+    value=${value%.}
+    case $line in
+    'Mach Virtual Memory Statistics:'*)
+      page_size_bytes=${line#*page size of }
+      page_size_bytes=${page_size_bytes%% *}
+      ;;
+    'Pages active:'*) memory_used_pages=$((memory_used_pages + value)) ;;
+    'Pages wired down:'*) memory_used_pages=$((memory_used_pages + value)) ;;
+    'Pages occupied by compressor:'*) memory_used_pages=$((memory_used_pages + value)) ;;
+    esac
+  done < <(vm_stat)
+
+  memory_total_bytes=$(sysctl -n hw.memsize)
+  memory_used_bytes=$((memory_used_pages * page_size_bytes))
+  memory_percentage=$(((memory_used_bytes * 100 + memory_total_bytes / 2) / memory_total_bytes))
+fi
+
+printf 'CPU #[bold]%d%%#[nobold]  MEM #[bold]%d%%#[nobold]' \
+  "$cpu_percentage" "$memory_percentage"
