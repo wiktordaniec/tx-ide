@@ -8,11 +8,6 @@
 # engine can ship its own setup/engines/<name>.sh without touching the core. install-flip.md §3/§4
 # is canonical for the mechanism.
 #
-# The marker lives in a SIDECAR file, $TX_IDE_HOME/claude-managed.json — NOT inside settings.json:
-# Claude ≥2.1.257 rejects (and skips ENTIRELY) a settings.json with hook-event keys outside the
-# "hooks" block, which the marker's hook_commands is. Reads fall back to the legacy in-settings
-# marker; install migrates it out.
-#
 #   install   — generate 6 C9-baked hook shims under $TX_IDE_HOME/hooks/claude/{start,pre,work,post,notify,end}.sh
 #               and surgically REPOINT settings.json's tx hook events at them (match-by-marker, so
 #               interleaved peon-ping / require-worktree / discord entries are preserved); install
