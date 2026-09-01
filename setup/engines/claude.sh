@@ -8,12 +8,10 @@
 # engine can ship its own setup/engines/<name>.sh without touching the core. install-flip.md §3/§4
 # is canonical for the mechanism.
 #
-# The marker lives in a SIDECAR file, $TX_IDE_HOME/claude-managed.json — NOT inside settings.json.
-# Claude Code ≥2.1.257 rejects a settings.json that carries hook-event-shaped keys anywhere outside
-# the "hooks" block (the marker's hook_commands is exactly that), and a rejected file is skipped
-# ENTIRELY, silently dropping model/permissions/context-profile keys. Legacy installs still have the
-# marker embedded as settings.json's `_tx_ide_managed`; every read falls back to that shape, install
-# migrates it out, and uninstall's verbatim `previous` restore keeps working for both.
+# The marker lives in a SIDECAR file, $TX_IDE_HOME/claude-managed.json — NOT inside settings.json:
+# Claude ≥2.1.257 rejects (and skips ENTIRELY) a settings.json with hook-event keys outside the
+# "hooks" block, which the marker's hook_commands is. Reads fall back to the legacy in-settings
+# marker; install migrates it out.
 #
 #   install   — generate 6 C9-baked hook shims under $TX_IDE_HOME/hooks/claude/{start,pre,work,post,notify,end}.sh
 #               and surgically REPOINT settings.json's tx hook events at them (match-by-marker, so
@@ -218,9 +216,8 @@ G, Y, D, X = "\033[32m", "\033[33m", "\033[2m", "\033[0m"
 # edit lands (atomically) in the dotfiles repo and is auditable via `git diff`.
 real = os.path.realpath(path)
 
-# The marker sidecar (see the header): read sidecar-first with a legacy in-settings fallback, write
-# only the sidecar. A sandbox run (--settings COPY) keeps its sidecar beside the copy so exercising
-# install/uninstall against a copy never touches the live marker.
+# The marker sidecar (see the header). A sandbox run keeps it beside the settings copy so the live
+# marker is never touched.
 if os.environ["TX_SANDBOX"] == "1":
     marker_path = f"{path}.tx-managed.json"
 else:
@@ -443,9 +440,6 @@ def do_uninstall(data):
             strip(data, event, command)           # install had ADDED it → remove it
             plan.append((event, f"strip    {command}"))
     plan.extend(uninstall_profile(data, marker))
-    # The pre-tx `previous` marker lived in settings.json (the sidecar postdates it) — restore it
-    # there verbatim; otherwise just clear any legacy in-settings marker. The sidecar itself is
-    # removed after the settings write (see the main flow).
     if previous is not None:
         data["_tx_ide_managed"] = previous
     else:
