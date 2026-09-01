@@ -16,6 +16,16 @@ model_full=$(echo "$input" | jq -r '.model.display_name // empty')
 # Shorten "Claude 3.5 Sonnet" → "3.5 Sonnet", "Claude Sonnet 4.6" → "Sonnet 4.6", etc.
 # Also strip any trailing parenthetical like " (1M context)".
 model=$(echo "$model_full" | sed 's/^Claude //; s/ ([^)]*)//')
+effort=$(echo "$input" | jq -r '.effort.level // empty')
+# Render effort as tx-ide's numeric tier — keep in sync with EFFORT_LEVELS in
+# lib/tx/engines/engine_adapter.py. Unknown names pass through unmapped.
+case "$effort" in
+  low) effort=1 ;;
+  medium) effort=2 ;;
+  high) effort=3 ;;
+  xhigh) effort=4 ;;
+  max) effort=5 ;;
+esac
 
 # Format tokens as "12.3K" or "1.2M"; returns empty for 0 or missing.
 format_tokens() {
@@ -96,6 +106,15 @@ line2=""
 
 if [ -n "$model" ]; then
   line2="${DIM}${model}${RESET}"
+fi
+
+if [ -n "$effort" ]; then
+  effort_fmt="${DIM}effort:\033[1m${effort}${RESET}"
+  if [ -n "$line2" ]; then
+    line2="${line2} ${effort_fmt}"
+  else
+    line2="$effort_fmt"
+  fi
 fi
 
 tok_fmt=$(format_tokens "$tokens")
