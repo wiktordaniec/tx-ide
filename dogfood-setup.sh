@@ -184,8 +184,15 @@ G, Y, X = "\033[32m", "\033[33m", "\033[0m"
 def line(good, msg): print(f"  {(G+chr(10003)) if good else (Y+chr(33))}{X} {msg}")
 with open(real) as fh:
     data = json.load(fh)
-marker = data.get("_tx_ide_managed") or {}
+# Marker sidecar first (see setup/engines/claude.sh), legacy in-settings marker as fallback.
+marker_path = os.path.join(home, "claude-managed.json")
+if os.path.exists(marker_path):
+    with open(marker_path) as fh:
+        marker = json.load(fh)
+else:
+    marker = data.get("_tx_ide_managed") or {}
 line(marker.get("mode") == "installed", f"marker mode = {marker.get('mode')!r} (expect installed)")
+line("_tx_ide_managed" not in data, "no legacy marker embedded in settings.json")
 hc = marker.get("hook_commands") or {}
 line(all(home in v for v in hc.values()) and hc, f"hooks under {home}/hooks")
 line("peon-ping" in json.dumps(data), "peon-ping still present in settings.json")

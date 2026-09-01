@@ -85,7 +85,7 @@ if [[ $KEEP_AGENT -eq 0 ]]; then
   printf '\n%sClaude statusLine (C10 reverse)%s\n' "$B" "$X"
   SETTINGS_MAIN="$CLAUDE_DIR/settings.json"
   if [[ -f "$SETTINGS_MAIN" ]]; then
-    SETTINGS_MAIN="$SETTINGS_MAIN" STAMP="$STAMP" python3.14 - <<'PY'
+    SETTINGS_MAIN="$SETTINGS_MAIN" STAMP="$STAMP" TX_HOME="$TX_IDE_DIR" python3.14 - <<'PY'
 import json, os, tempfile
 
 path  = os.environ["SETTINGS_MAIN"]
@@ -97,7 +97,13 @@ with open(real) as fh:
     data = json.load(fh)
 before = json.loads(json.dumps(data))
 
-marker = data.get("_tx_ide_managed")
+# Marker sidecar first (see setup/engines/claude.sh), legacy in-settings marker as fallback.
+marker_path = os.path.join(os.environ["TX_HOME"], "claude-managed.json")
+if os.path.exists(marker_path):
+    with open(marker_path) as fh:
+        marker = json.load(fh)
+else:
+    marker = data.get("_tx_ide_managed")
 status_command = (marker or {}).get("statusLine_command")
 existing = data.get("statusLine")
 removed = False

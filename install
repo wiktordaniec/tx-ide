@@ -359,12 +359,23 @@ if isinstance(existing, dict):
 else:
     data["statusLine"] = {"type": "command", "command": status_command}
 
-# Stamp the marker claude.sh just wrote: this is a real install (not coexistence), and record the
+# Stamp the marker sidecar claude.sh just wrote (the marker lives at $TX_IDE_HOME/claude-managed.json,
+# not in settings.json — see claude.sh): this is a real install (not coexistence), and record the
 # statusLine command so uninstall can find + remove exactly ours.
-marker = data.get("_tx_ide_managed")
-if isinstance(marker, dict):
-    marker["mode"] = mode
-    marker["statusLine_command"] = status_command
+marker_path = os.path.join(home, "claude-managed.json")
+with open(marker_path) as fh:
+    marker = json.load(fh)
+marker["mode"] = mode
+marker["statusLine_command"] = status_command
+fd, tmp = tempfile.mkstemp(dir=home, prefix=".tx-managed.", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(marker, indent=2) + "\n")
+    os.replace(tmp, marker_path)
+except BaseException:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    raise
 
 with open(f"{real}.bak.{stamp}", "w") as fh:
     json.dump(before, fh, indent=2); fh.write("\n")

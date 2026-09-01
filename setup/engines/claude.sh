@@ -8,6 +8,13 @@
 # engine can ship its own setup/engines/<name>.sh without touching the core. install-flip.md §3/§4
 # is canonical for the mechanism.
 #
+# The marker lives in a SIDECAR file, $TX_IDE_HOME/claude-managed.json — NOT inside settings.json.
+# Claude Code ≥2.1.257 rejects a settings.json that carries hook-event-shaped keys anywhere outside
+# the "hooks" block (the marker's hook_commands is exactly that), and a rejected file is skipped
+# ENTIRELY, silently dropping model/permissions/context-profile keys. Legacy installs still have the
+# marker embedded as settings.json's `_tx_ide_managed`; every read falls back to that shape, install
+# migrates it out, and uninstall's verbatim `previous` restore keeps working for both.
+#
 #   install   — generate 6 C9-baked hook shims under $TX_IDE_HOME/hooks/claude/{start,pre,work,post,notify,end}.sh
 #               and surgically REPOINT settings.json's tx hook events at them (match-by-marker, so
 #               interleaved peon-ping / require-worktree / discord entries are preserved); install
@@ -190,7 +197,7 @@ JSON
 # ----- settings.json surgery (match-by-marker, atomic, reversible) -------------------------
 
 run_settings_py() {  # <install|uninstall|status>
-  TX_OP="$1" TX_SETTINGS="$SETTINGS" TX_DRYRUN="$DRY_RUN" TX_HOME="$TX_HOME" \
+  TX_OP="$1" TX_SETTINGS="$SETTINGS" TX_DRYRUN="$DRY_RUN" TX_SANDBOX="$SANDBOX" TX_HOME="$TX_HOME" \
   TX_START="$START_SHIM" TX_PRE="$PRE_SHIM" TX_WORK="$WORK_SHIM" TX_POST="$POST_SHIM" \
   TX_NOTIFY="$NOTIFY_SHIM" TX_END="$END_SHIM" \
   TX_TMUX_SESSION_CLOSED="$TMUX_SESSION_CLOSED" TX_STAMP="$STAMP" \
@@ -210,6 +217,33 @@ G, Y, D, X = "\033[32m", "\033[33m", "\033[2m", "\033[0m"
 # settings.json is a symlink into the claude-server git repo — read + write the REALPATH so the
 # edit lands (atomically) in the dotfiles repo and is auditable via `git diff`.
 real = os.path.realpath(path)
+
+# The marker sidecar (see the header): read sidecar-first with a legacy in-settings fallback, write
+# only the sidecar. A sandbox run (--settings COPY) keeps its sidecar beside the copy so exercising
+# install/uninstall against a copy never touches the live marker.
+if os.environ["TX_SANDBOX"] == "1":
+    marker_path = f"{path}.tx-managed.json"
+else:
+    marker_path = os.path.join(home, "claude-managed.json")
+
+def load_marker(data):
+    if os.path.exists(marker_path):
+        with open(marker_path) as fh:
+            return json.load(fh)
+    return data.get("_tx_ide_managed")
+
+def write_marker(marker):
+    directory = os.path.dirname(marker_path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".tx-managed.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(marker, indent=2) + "\n")
+        os.replace(tmp, marker_path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 # Event → the shim command tx owns for it. The state hooks cover the full Claude set (collapsed to
 # WORKING / WAITING / IDLE in hooks.py); Stop / StopFailure / PermissionRequest share post.sh (C6).
@@ -332,7 +366,7 @@ def uninstall_profile(data, marker):
     return plan
 
 def do_install(data):
-    existing = data.get("_tx_ide_managed")
+    existing = load_marker(data)
     prior_commands = (existing or {}).get("hook_commands", {})
     plan = []
     for event, new_command in EVENTS.items():
@@ -371,7 +405,11 @@ def do_install(data):
         profile_previous = (existing or {}).get("context_profile_previous")
         plan.append(("context profile", "skipped (--no-context-profile)"))
 
-    data["_tx_ide_managed"] = {
+    if "_tx_ide_managed" in data:   # legacy in-settings marker → absorbed above, migrate it out
+        del data["_tx_ide_managed"]
+        plan.append(("marker", "migrated out of settings.json → sidecar"))
+
+    marker = {
         "version": 3,
         "mode": "coexist",
         "home": home,
@@ -382,10 +420,10 @@ def do_install(data):
         "tmux_session_closed": os.environ["TX_TMUX_SESSION_CLOSED"],
         "previous": previous,   # the exact prior marker (or null) — uninstall restores it verbatim
     }
-    return plan
+    return plan, marker
 
 def do_uninstall(data):
-    marker = data.get("_tx_ide_managed")
+    marker = load_marker(data)
     if not marker:
         return None
     current = marker.get("hook_commands", {})
@@ -405,18 +443,26 @@ def do_uninstall(data):
             strip(data, event, command)           # install had ADDED it → remove it
             plan.append((event, f"strip    {command}"))
     plan.extend(uninstall_profile(data, marker))
+    # The pre-tx `previous` marker lived in settings.json (the sidecar postdates it) — restore it
+    # there verbatim; otherwise just clear any legacy in-settings marker. The sidecar itself is
+    # removed after the settings write (see the main flow).
     if previous is not None:
-        data["_tx_ide_managed"] = previous         # restore the prior marker verbatim
+        data["_tx_ide_managed"] = previous
     else:
-        del data["_tx_ide_managed"]
+        data.pop("_tx_ide_managed", None)
     return plan
 
 def do_status(data):
-    marker = data.get("_tx_ide_managed")
+    marker = load_marker(data)
     if not marker:
         print(f"  {Y}!{X} no _tx_ide_managed marker — Claude integration not installed")
         return
     print(f"  marker: version={marker.get('version')}  mode={marker.get('mode')}  home={marker.get('home')}")
+    if os.path.exists(marker_path):
+        print(f"    {'location':<18} {D}{marker_path}{X}")
+    else:
+        print(f"    {'location':<18} {Y}LEGACY — embedded in settings.json (Claude ≥2.1.257 rejects "
+              f"the whole file; re-run install to migrate){X}")
     for event, command in marker.get("hook_commands", {}).items():
         flag = f"{G}in sync{X}" if entries_for(data, event, command) else f"{Y}DRIFT — not in settings{X}"
         print(f"    {event:<18} {flag}")
@@ -439,7 +485,10 @@ if op == "status":
     do_status(data)
     raise SystemExit(0)
 
-plan = do_install(data) if op == "install" else do_uninstall(data)
+if op == "install":
+    plan, new_marker = do_install(data)
+else:
+    plan = do_uninstall(data)
 if plan is None:
     print(f"  {Y}!{X} no _tx_ide_managed marker — settings.json left alone")
     raise SystemExit(0)
@@ -447,12 +496,18 @@ if plan is None:
 for event, action in plan:
     print(f"  {G}→{X} {event:<18} {action}")
 if dry_run:
-    print(f"  {D}(dry-run — {os.path.basename(real)} unchanged){X}")
+    print(f"  {D}(dry-run — {os.path.basename(real)} and the marker sidecar unchanged){X}")
 else:
     write(data)
     print(f"  {G}✓{X} {os.path.basename(real)} written  {D}({real}){X}")
     if os.path.exists(f"{real}.bak.{stamp}"):
         print(f"  {D}backup: {real}.bak.{stamp}{X}")
+    if op == "install":
+        write_marker(new_marker)
+        print(f"  {G}✓{X} marker sidecar written  {D}({marker_path}){X}")
+    elif os.path.exists(marker_path):
+        os.remove(marker_path)
+        print(f"  {G}✓{X} marker sidecar removed  {D}({marker_path}){X}")
 PY
 }
 
