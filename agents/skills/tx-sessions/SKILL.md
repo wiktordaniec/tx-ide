@@ -35,12 +35,16 @@ To delegate work — coding, scoping, planning, research — the standard recipe
 
 ```bash
 tx spawn <name> --tag <scope> --cwd <project-root> \
-  --engine claude --model "opus[1m]" --effort 5 \
+  --engine claude --model <model> --effort {1,2,3,4,5} \
   --role DEVELOPER --prompt "<task>"
 ```
 
 - `--role` is what injects the shared conventions into the worker's system prompt — without it
   the worker sees none of them. Roles live in `~/.tx-ide/agents/`; `DEVELOPER` is the usual one.
+- `--model` and `--effort` are placeholders, not recommendations. Omit either one and the engine
+  picks it up from its own configuration (for claude, the `model` in `settings.json`) or from
+  `tx spawn`'s default — which is what you want unless the operator named a tier. Pass them only
+  when the operator asked for a specific model or effort.
 - `--prompt` must be short and single-line — long or special-char-laden prompts crash tmux input.
 - `--read-only` for an investigation that must not write; promote it later with
   `tx fork <investigation> <implementation>`, which is writable.
