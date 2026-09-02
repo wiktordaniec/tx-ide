@@ -7,14 +7,20 @@
 #   install.sh {install|uninstall|status} [--dry-run] [--engine NAME]... \
 #              [--claude-settings PATH] [--codex-settings PATH]
 #
-# With no --engine, drives the DEFAULT engine set (claude only) — Codex is opt-in (design §4.3), so a
-# bare tx-ide install never writes the user's ~/.codex. Repeat --engine to add engines:
+# With no --engine, drives every engine tx can spawn whose CLI is ON THIS MACHINE (see the default
+# engine set below). An engine tx spawns but never wires is worse than one it does not support at
+# all: with no hooks nothing captures the chat id, so the session's conversation can never be
+# resumed — the hole Codex sat in while it was opt-in. An absent CLI is still left alone, so a
+# machine without codex never grows a ~/.codex. Repeat --engine to force a specific set:
 #   install.sh install --engine claude --engine codex
 # --claude-settings / --codex-settings forward to that engine's --settings (sandbox testing against a
 # settings.json / config.toml COPY); --dry-run forwards to every engine.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -P "$SCRIPT_DIR/../.." && pwd)"
+LIB_DIR="$REPO_ROOT/lib"
+PY="${TX_PYTHON:-python3.14}"
 
 B=$'\e[1m'; D=$'\e[2m'; X=$'\e[0m'
 header() { printf '\n%s%s%s\n' "$B" "$*" "$X"; }
@@ -24,9 +30,10 @@ usage() {
 usage: install.sh {install|uninstall|status} [--dry-run] [--engine NAME]...
                   [--claude-settings PATH] [--codex-settings PATH]
 
-  drives setup/engines/<engine>.sh for each selected engine (default: claude).
+  drives setup/engines/<engine>.sh for each selected engine.
 
   --engine NAME         add an engine (claude, codex, antigravity); repeatable
+                        (default: every engine whose CLI is on this machine)
   --dry-run             forward --dry-run to every engine
   --claude-settings P   forward to claude.sh --settings P (sandbox)
   --codex-settings P    forward to codex.sh  --settings P (sandbox)
@@ -49,8 +56,36 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$OP" ]] || { usage; exit 2; }
-# Default engine set: claude only (Codex is opt-in — design §4.3).
-[[ ${#ENGINES[@]} -gt 0 ]] || ENGINES=(claude)
+
+# The default engine set, when no --engine was passed. Both the engine list and each engine's binary
+# come from the adapter registry (`registry.get(engine).binary`) — the same source of truth
+# `tx spawn` resolves an engine through, so an adapter plus its setup/engines/<name>.sh remains all a
+# new engine needs. Read at top level (not in a subshell) so an unreadable registry is fatal rather
+# than a silent empty set; an engine with no setup script is skipped, not fatal.
+if [[ ${#ENGINES[@]} -eq 0 ]]; then
+  REGISTRY="$(PYTHONPATH="$LIB_DIR" "$PY" -c '
+from tx import spawn  # noqa: F401 - side-effect import: every adapter self-registers
+from tx.engines import registry
+
+for engine in sorted(registry.registered(), key=lambda engine: engine.value):
+    print(engine.value, registry.get(engine).binary)
+')" || {
+    printf 'install.sh: could not read the engine registry with %s — pass --engine NAME\n' "$PY" >&2
+    exit 2
+  }
+  while read -r engine binary; do
+    [[ -x "$SCRIPT_DIR/$engine.sh" ]] || continue
+    # install wires only the engines whose CLI is actually here (an absent one is left alone, so a
+    # codex-less machine grows no ~/.codex). uninstall / status cover every engine, so hooks written
+    # while an engine WAS installed are still reported and still reversed after the CLI is gone.
+    if [[ "$OP" == "install" ]] && ! command -v "$binary" >/dev/null 2>&1; then
+      continue
+    fi
+    ENGINES+=("$engine")
+  done <<< "$REGISTRY"
+  [[ ${#ENGINES[@]} -gt 0 ]] \
+    || { printf 'install.sh: no engine CLI found on PATH — nothing to %s\n' "$OP" >&2; exit 0; }
+fi
 
 run_engine() {  # <engine>
   local engine="$1" script="$SCRIPT_DIR/$engine.sh"

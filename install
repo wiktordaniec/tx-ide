@@ -9,7 +9,7 @@
 #     tmux-system-resources)
 #   - create the $TX_IDE_HOME skeleton via `tx _init-home`, + the agents symlink
 #   - the ~/.tx-ide/tmux.conf shim + the ~/.tmux.conf source-file block
-#   - register engine hooks via setup/engines/install.sh (Claude by default; baked shims under $TX_IDE_HOME/hooks)
+#   - register engine hooks via setup/engines/install.sh (every engine CLI you have; baked shims under $TX_IDE_HOME/hooks)
 #   - C10: move the statusline under $TX_IDE_HOME and point settings.json at it (marker mode=installed)
 set -u
 
@@ -105,10 +105,11 @@ I will:
   - install the tx-ide default ~/.tmux.conf if you have none; if you
       already have one, add a source-file block (or, with a [y/N]
       confirm, replace it with the default) — backup either way
-  - register engine hooks via setup/engines/install.sh (Claude by default —
-      Codex is opt-in: setup/engines/install.sh install --engine codex)
-      (Claude's hook events → baked shims under $TX_IDE_DIR/hooks/claude, the
-       global tmux session-closed hook, all tracked by a _tx_ide_managed marker)
+  - register engine hooks via setup/engines/install.sh, for every engine tx
+      can spawn whose CLI is on this machine (claude / codex / agy) — an engine
+      you do not have is left alone, ~/.codex included
+      (each engine's hook events → baked shims under $TX_IDE_DIR/hooks/<engine>,
+       the global tmux session-closed hook, all tracked by a _tx_ide_managed marker)
   - move the statusline under $TX_IDE_DIR and point settings.json at it
   - optionally ([y/N] confirm) symlink ~/.config/nvim to the tx-ide default
       nvim config (existing config backed up, never deleted; flip later with
@@ -315,11 +316,13 @@ fi
 
 # === 5: Engine hooks (settings.json) ===
 # The unified installer drives the per-engine integration setup/engines/<engine>.sh (engine-
-# abstraction design §4.6). By default it drives Claude only (Codex is opt-in via --engine codex, so
-# a bare install never touches ~/.codex): claude.sh owns the settings.json hook registration behind
-# the _tx_ide_managed marker — it generates the C9-baked shims under $TX_IDE_HOME/hooks/claude,
-# surgically sets the tx hook events (match-by-marker, so peon-ping / require-worktree / discord are
-# preserved), installs the global tmux session-closed → reconcile hook, and stops any mx-speaker.
+# abstraction design §4.6). It drives every engine tx can spawn whose CLI is on this machine — an
+# engine wired nowhere still gets spawned, and with no hooks its chats are never captured and never
+# resumable; an engine you do not have is untouched, so a codex-less box grows no ~/.codex. claude.sh
+# owns the settings.json hook registration behind the _tx_ide_managed marker — it generates the
+# C9-baked shims under $TX_IDE_HOME/hooks/claude, surgically sets the tx hook events (match-by-marker,
+# so peon-ping / require-worktree / discord are preserved), installs the global tmux session-closed →
+# reconcile hook, and stops any mx-speaker.
 header "Engine hooks (setup/engines/install.sh)"
 "$REPO/setup/engines/install.sh" install
 

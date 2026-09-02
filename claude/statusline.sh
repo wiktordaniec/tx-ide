@@ -16,6 +16,16 @@ model_full=$(echo "$input" | jq -r '.model.display_name // empty')
 # Shorten "Claude 3.5 Sonnet" → "3.5 Sonnet", "Claude Sonnet 4.6" → "Sonnet 4.6", etc.
 # Also strip any trailing parenthetical like " (1M context)".
 model=$(echo "$model_full" | sed 's/^Claude //; s/ ([^)]*)//')
+effort=$(echo "$input" | jq -r '.effort.level // empty')
+# Render effort as tx-ide's numeric tier — keep in sync with EFFORT_LEVELS in
+# lib/tx/engines/engine_adapter.py. Unknown names pass through unmapped.
+case "$effort" in
+  low) effort=1 ;;
+  medium) effort=2 ;;
+  high) effort=3 ;;
+  xhigh) effort=4 ;;
+  max) effort=5 ;;
+esac
 
 # Format tokens as "12.3K" or "1.2M"; returns empty for 0 or missing.
 format_tokens() {
@@ -98,6 +108,15 @@ if [ -n "$model" ]; then
   line2="${DIM}${model}${RESET}"
 fi
 
+if [ -n "$effort" ]; then
+  effort_fmt="${DIM}effort:\033[1m${effort}${RESET}"
+  if [ -n "$line2" ]; then
+    line2="${line2} ${effort_fmt}"
+  else
+    line2="$effort_fmt"
+  fi
+fi
+
 tok_fmt=$(format_tokens "$tokens")
 if [ -n "$tok_fmt" ]; then
   if [ -n "$line2" ]; then
@@ -107,17 +126,16 @@ if [ -n "$tok_fmt" ]; then
   fi
 fi
 
-rl_5h_fmt=$(format_rate_limit "5h" "$rl_5h")
+# Only 7d is displayed — 5h never gets near its limit. The 5h numbers are still
+# extracted above because push_anthropic_usage forwards them to the viewer.
 rl_7d_fmt=$(format_rate_limit "7d" "$rl_7d" "$rl_7d_resets_at")
-for rl_fmt in "$rl_5h_fmt" "$rl_7d_fmt"; do
-  if [ -n "$rl_fmt" ]; then
-    if [ -n "$line2" ]; then
-      line2="${line2} ${rl_fmt}"
-    else
-      line2="$rl_fmt"
-    fi
+if [ -n "$rl_7d_fmt" ]; then
+  if [ -n "$line2" ]; then
+    line2="${line2} ${rl_7d_fmt}"
+  else
+    line2="$rl_7d_fmt"
   fi
-done
+fi
 
 # Always two lines when both are present.
 if [ -n "$line1" ] && [ -n "$line2" ]; then
