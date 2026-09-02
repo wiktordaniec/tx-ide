@@ -1,54 +1,50 @@
 ---
 name: tx-code-tours
-description: Use when the user asks for a tour of the code — annotate your reasoning as nvim marks on the code itself. Never offer one unprompted.
+description: Use when the user asks for a tour or walkthrough of code. Investigate the code, then annotate an operator's live nvim with session-local vim.diagnostic notes and ordered quickfix navigation. Never offer a tour unprompted.
 ---
 
-# Code tours
+# Code tours with nvim diagnostics
 
-A tour shows your reasoning **on the code** rather than in chat: the places you looked, in the
-order you thought about them, each annotated with what you concluded there.
+Show reasoning on the code using the bundled `scripts/apply_tour.py` runtime. Do not inline the runtime or use the JSON/`:TourApply` workflow.
 
-Write a JSON manifest — the directory does not exist until you make it:
+## Build the tour
 
-```bash
-mkdir -p /tmp/claude-tour
-```
+Investigate first. Order stops pedagogically—entry point, dispatch, edge cases, callers/tests—not by filename. Explain why each location matters rather than restating its code.
 
-```json
-{
-  "cwd": "/abs/path/to/worktree",
-  "marks": [
-    { "file": "src/foo.py", "line": 42, "mark": "A", "head": "[A] race surface",
-      "body": ["Three tasks are awaited together.", "The scheduler picks the winner."] },
-    { "file": "src/bar.py", "line": 8, "mark": "B", "head": "[B] who calls it",
-      "body": ["Both retry paths land here."] }
-  ]
+Write a Lua data file under a scratch directory. Use absolute paths, 1-based lines, labels of about five words prefixed `N/M`, plain-text bodies, and severity `WARN`, `INFO`, or `HINT`:
+
+```lua
+return {
+  {
+    file = "/absolute/path/to/source.ts",
+    line = 42,
+    label = "1/3 entry point",
+    message = [[This boundary chooses the route tree.
+
+Its result controls every downstream match.]],
+    severity = "INFO",
+  },
 }
 ```
 
-- `cwd` — absolute; every `file` is relative to it.
-- `line` — **1-based**.
-- `mark` — an uppercase letter, set as a global mark, so the user jumps with `'A`, `'B`. **Start at
-  `A`**: applying the tour jumps there. Put the letter in `head` too, so the jump key is visible.
-- `head` — one short line, rendered above the code in warning colour.
-- `body` — plain-text lines rendered under it. No markdown; it is not parsed.
+## Apply the tour
 
-Then apply it yourself — don't make the user press anything. Spawn an nvim companion if they have
-none (`tx spawn-nvim <name> --tag <tag> --cwd <repo>`), resolve its socket, and send `:TourApply`:
+Use an existing nvim companion. If none exists, read the `tx-sessions` skill and create one through `tx`. Never create or mutate sessions with raw tmux.
+
+Resolve the companion's live tx record UUID, then inspect its pane read-only to find the nvim socket:
 
 ```bash
-pane_pid=$(tmux list-panes -st <tmux-session-id> -F '#{pane_pid}' | head -1)
-nvim_pid=$(pgrep -P "$pane_pid" | head -1)
-socket=$(lsof -U -a -p "$nvim_pid" | awk '{print $NF}' | grep nvim | head -1)
-nvim --server "$socket" --remote-send ':TourApply /tmp/claude-tour/<name>.json<CR>'
+pane_process_id=$(tmux list-panes -st <tx-record-uuid> -F '#{pane_pid}' | head -1)
+nvim_process_id=$(pgrep -P "$pane_process_id" | head -1)
+socket_path=$(lsof -U -a -p "$nvim_process_id" | awk '{print $NF}' | grep nvim | head -1)
 ```
 
-`<tmux-session-id>` is the companion's record uuid, not its display name. `:TourClear` removes the
-tour. Tell the user which marks to jump to; the tour opens on `A`.
+Run the bundled helper with the socket and stop-data file:
 
-Stops in unopened files are annotated when the user reaches them, so mark anywhere in the repo. The
-tour lives in that nvim session only and dies with it.
+```bash
+python3 <skill-directory>/scripts/apply_tour.py "$socket_path" /tmp/code-tour/stops.lua
+```
 
-Order the stops the way you actually reasoned — where you started, what that forced you to check
-next — and put your conclusion in each note, not a description of the code. A stop that restates
-the line it sits on is wasted; say why it mattered to you.
+Apply it yourself. It opens at stop 1. Tell the operator: `]n` / `[n` navigate, `<leader>cn` opens the note. `<leader>cN` restarts, `<leader>cl` lists stops, and `:TourClear` clears the tour.
+
+Keep all effects session-local. Never write repository files through RPC or globally reconfigure LSP diagnostics. Tours disappear on nvim restart.
