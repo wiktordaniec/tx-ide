@@ -208,12 +208,58 @@ local function create_panel(title, filetype, options)
 end
 
 local active_layout
+local active_question_input
+local last_question
 
 -- <leader>aC : bank a question about this spot to send with the others later.
 vim.keymap.set({ "n", "x" }, "<leader>aC", function()
+  if active_question_input and active_question_input:valid() then
+    active_question_input:focus()
+    vim.cmd("startinsert!")
+    return
+  end
   local question_context = context()
-  vim.ui.input({ prompt = ("Queue question (%d so far): "):format(#queue) }, function(question)
-    -- Neither branch clears the queue. vim.ui.input passes nil on Esc and "" on an
+  local question_input_width = 70
+  local source_window = vim.api.nvim_get_current_win()
+  local source_cursor = vim.api.nvim_win_get_cursor(source_window)
+  local source_window_position = vim.fn.win_screenpos(source_window)
+  local cursor_position = vim.fn.screenpos(source_window, source_cursor[1], source_cursor[2] + 1)
+  local source_line = vim.api.nvim_get_current_line()
+  local text_byte_column = source_line:find("%S") or 1
+  local text_position = vim.fn.screenpos(source_window, source_cursor[1], text_byte_column)
+  local question_input_row = cursor_position.row - source_window_position[1]
+  local question_input_column = text_position.col - source_window_position[2]
+  local function question_input_height(window)
+    local wrapped_lines = math.ceil(vim.fn.strdisplaywidth(window:text()) / question_input_width)
+    return math.min(math.max(wrapped_lines, 1), 6)
+  end
+  local question_input
+  question_input = Snacks.input({
+    prompt = ("Question %d"):format(#queue + 1),
+    default = last_question,
+    icon = "?",
+    icon_pos = "title",
+    expand = true,
+    win = {
+      relative = "win",
+      win = source_window,
+      width = question_input_width,
+      max_width = question_input_width,
+      height = question_input_height,
+      max_height = 6,
+      row = function(window)
+        return question_input_row - question_input_height(window) - 3
+      end,
+      col = question_input_column,
+      footer = { { " " .. question_context.display_file .. " ", "Comment" } },
+      footer_pos = "center",
+      wo = { wrap = true, linebreak = true },
+    },
+  }, function(question)
+    if active_question_input == question_input then
+      active_question_input = nil
+    end
+    -- Neither branch clears the queue. Snacks.input passes nil on Esc and "" on an
     -- empty submit, and an earlier version read those as "empty means clear",
     -- which silently wiped a queue the operator had spent minutes building.
     if question == nil then
@@ -223,10 +269,12 @@ vim.keymap.set({ "n", "x" }, "<leader>aC", function()
     if question == "" then
       return
     end
+    last_question = question
     queue[#queue + 1] = { question = question, context = question_context }
     mark_queued(question_context.buffer, question_context.line, #queue)
     vim.notify(("queued %d question%s"):format(#queue, #queue == 1 and "" or "s"))
   end)
+  active_question_input = question_input
 end, { desc = "Queue a question for the tx target" })
 
 -- <leader>ac : review a subset of queued questions and send them to one live chat.
@@ -266,7 +314,7 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
   })
 
   local view_namespace = vim.api.nvim_create_namespace("tx_ask_view")
-  local help_text = " Tab change item · Space select · Enter send · q close"
+  local help_text = " Tab change item · Space select · d delete · Enter send · q close"
 
   local function question_title()
     local selected_count = 0
@@ -561,6 +609,28 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
     vim.api.nvim_win_set_cursor(question_window.win, { (question_index - 1) * 3 + 1, 0 })
     render_preview()
   end
+  local function delete_question()
+    local remaining_questions = {}
+    local remaining_selections = {}
+    for position, item in ipairs(queue) do
+      if position ~= question_index then
+        remaining_questions[#remaining_questions + 1] = item
+        remaining_selections[#remaining_questions] = selected_questions[position]
+      end
+    end
+    replace_queue(remaining_questions)
+    selected_questions = remaining_selections
+    if #queue == 0 then
+      layout:close()
+      vim.notify("deleted last queued question")
+      return
+    end
+    question_index = math.min(question_index, #queue)
+    render_questions()
+    render_preview()
+    vim.api.nvim_win_set_cursor(question_window.win, { (question_index - 1) * 3 + 1, 0 })
+    vim.notify(("deleted question; %d remaining"):format(#queue))
+  end
   for _, window in ipairs({ question_window, preview_window }) do
     vim.keymap.set("n", "<Tab>", function()
       move_question(1)
@@ -575,6 +645,11 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
       buffer = window.buf,
       nowait = true,
       desc = "Previous question",
+    })
+    vim.keymap.set("n", "d", delete_question, {
+      buffer = window.buf,
+      nowait = true,
+      desc = "Delete question",
     })
   end
   vim.keymap.set("n", "j", function()
