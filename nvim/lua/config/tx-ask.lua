@@ -276,7 +276,7 @@ vim.keymap.set({ "n", "x" }, "<leader>aC", function()
     if question == "" then
       return
     end
-    last_question = question
+    last_question = nil
     queue[#queue + 1] = { question = question, context = question_context }
     mark_queued(question_context.buffer, question_context.line, #queue)
     vim.notify(("queued %d question%s"):format(#queue, #queue == 1 and "" or "s"))
