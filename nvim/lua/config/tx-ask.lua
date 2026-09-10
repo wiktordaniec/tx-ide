@@ -170,6 +170,19 @@ local function wrap_question(question, width)
   return lines
 end
 
+local function truncate_text(text, width)
+  if vim.fn.strdisplaywidth(text) <= width then
+    return text
+  end
+  local character_count = math.max(vim.fn.strchars(text) - 1, 0)
+  local truncated = vim.fn.strcharpart(text, 0, character_count)
+  while character_count > 0 and vim.fn.strdisplaywidth(truncated) > width - 1 do
+    character_count = character_count - 1
+    truncated = vim.fn.strcharpart(text, 0, character_count)
+  end
+  return truncated .. "…"
+end
+
 local function create_panel(title, filetype, options)
   options = options or {}
   return Snacks.win({
@@ -180,12 +193,12 @@ local function create_panel(title, filetype, options)
     footer_pos = options.footer_pos,
     border = options.border or "rounded",
     focusable = options.focusable,
-    bo = {
+    bo = vim.tbl_extend("force", {
       buftype = "nofile",
       bufhidden = "wipe",
       swapfile = false,
       filetype = filetype,
-    },
+    }, options.buffer_options or {}),
     wo = vim.tbl_extend("force", {
       cursorline = true,
       wrap = false,
@@ -242,9 +255,32 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
       chat_index = position
     end
   end
+  local chat_query = ""
+  local filtered_chat_positions = {}
+  for position = 1, #target_list do
+    filtered_chat_positions[position] = position
+  end
+  local chat_matcher = require("snacks.picker.core.matcher").new({
+    fuzzy = true,
+    smartcase = false,
+  })
 
   local view_namespace = vim.api.nvim_create_namespace("tx_ask_view")
   local help_text = " Tab change item · Space select · Enter send · q close"
+
+  local function question_title()
+    local selected_count = 0
+    for position = 1, #queue do
+      if selected_questions[position] then
+        selected_count = selected_count + 1
+      end
+    end
+    return (" [1] Questions %d/%d "):format(selected_count, #queue)
+  end
+
+  local function chat_title()
+    return (" [2] Chats %d/%d "):format(chat_index, #target_list)
+  end
 
   local function send_questions(target, selected_items)
     local questions = {}
@@ -267,10 +303,13 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
     end)
   end
 
-  local question_window = create_panel(" [1] Questions ", "markdown", {
-    window_options = { wrap = true, linebreak = true },
+  local question_window = create_panel(question_title(), "markdown")
+  local chat_filter_window = create_panel("", "regex", {
+    border = "none",
+    buffer_options = { buftype = "prompt" },
+    window_options = { cursorline = false, winhighlight = "Normal:SnacksPickerInput" },
   })
-  local chat_window = create_panel(" [2] Chats ", "markdown")
+  local chat_window = create_panel("", "markdown", { border = "none" })
   local preview_window = create_panel(" [3] Preview ", "", {
     footer = { { " " .. queue[1].context.display_file .. " ", "Comment" } },
     footer_pos = "center",
@@ -281,12 +320,21 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
     focusable = false,
     window_options = { cursorline = false, wrap = true, linebreak = true },
   })
+  local chat_layout = {
+    box = "vertical",
+    height = 1 / 3,
+    border = "rounded",
+    title = chat_title(),
+    { win = "chat_filter", height = 1 },
+    { win = "chats" },
+  }
 
   local layout
   layout = Snacks.layout.new({
     show = false,
     wins = {
       questions = question_window,
+      chat_filter = chat_filter_window,
       chats = chat_window,
       preview = preview_window,
       help = help_window,
@@ -302,7 +350,7 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
           box = "vertical",
           width = 0.34,
           { win = "questions" },
-          { win = "chats", height = 6 },
+          chat_layout,
         },
         { win = "preview" },
       },
@@ -321,6 +369,7 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
   })
   active_layout = layout
   layout:show()
+  local chat_box_window = layout.box_wins[chat_layout.id]
 
   local function set_lines(window, lines)
     vim.bo[window.buf].modifiable = true
@@ -328,10 +377,18 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
     vim.bo[window.buf].modifiable = false
   end
 
+  local function set_title(window, title)
+    window.opts.title = title
+    vim.api.nvim_win_set_config(window.win, { title = title })
+  end
+
   local function render_questions()
+    set_title(question_window, question_title())
     local lines = {}
+    local available_width = math.max(vim.api.nvim_win_get_width(question_window.win) - 5, 10)
     for position, item in ipairs(queue) do
-      lines[#lines + 1] = (" %s  %s"):format(selected_questions[position] and "●" or "○", item.question)
+      local question = truncate_text(item.question, available_width)
+      lines[#lines + 1] = (" %s  %s"):format(selected_questions[position] and "●" or "○", question)
       lines[#lines + 1] = "      " .. item.context.display_file
       lines[#lines + 1] = ""
     end
@@ -350,14 +407,63 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
     end
   end
 
-  local function render_chats()
-    local lines = {}
+  local function filter_chats()
+    filtered_chat_positions = {}
+    chat_matcher:init(chat_query)
+    local matches = {}
+    local selected_chat_is_visible = false
     for position, target in ipairs(target_list) do
-      lines[position] = (" %s %s"):format(position == chat_index and "➜" or " ", target.name)
+      local searchable_text = target.name .. " " .. table.concat(target.tags, " ")
+      local score = chat_matcher:match({ text = searchable_text, idx = position, score = 0 })
+      if score > 0 then
+        matches[#matches + 1] = { position = position, score = score }
+        if position == chat_index then
+          selected_chat_is_visible = true
+        end
+      end
+    end
+    table.sort(matches, function(left, right)
+      if left.score == right.score then
+        return left.position < right.position
+      end
+      return left.score > right.score
+    end)
+    for _, match in ipairs(matches) do
+      filtered_chat_positions[#filtered_chat_positions + 1] = match.position
+    end
+    if not selected_chat_is_visible then
+      chat_index = filtered_chat_positions[1] or 0
+    end
+  end
+
+  local function render_chats()
+    set_title(chat_box_window, chat_title())
+    local lines = {}
+    local selected_line
+    for line, target_position in ipairs(filtered_chat_positions) do
+      local target = target_list[target_position]
+      lines[line] = (" %s %s"):format(target_position == chat_index and "➜" or " ", target.name)
+      if target_position == chat_index then
+        selected_line = line
+      end
     end
     set_lines(chat_window, lines)
+
     vim.api.nvim_buf_clear_namespace(chat_window.buf, view_namespace, 0, -1)
-    vim.api.nvim_buf_add_highlight(chat_window.buf, view_namespace, "DiagnosticInfo", chat_index - 1, 1, -1)
+    if selected_line then
+      vim.api.nvim_buf_add_highlight(chat_window.buf, view_namespace, "DiagnosticInfo", selected_line - 1, 1, -1)
+    end
+    if vim.api.nvim_get_current_win() == chat_window.win then
+      vim.api.nvim_win_set_cursor(chat_window.win, { selected_line or 1, 0 })
+    end
+  end
+
+  local function refresh_chat_filter()
+    local input = vim.api.nvim_buf_get_lines(chat_filter_window.buf, 0, 1, false)[1]
+    local prompt = vim.fn.prompt_getprompt(chat_filter_window.buf)
+    chat_query = input:sub(#prompt + 1)
+    filter_chats()
+    render_chats()
   end
 
   local function render_preview()
@@ -371,10 +477,13 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
       source_lines = { "Source is no longer available." }
     end
 
+    preview_window.opts.footer = { { " " .. item.context.display_file .. " ", "Comment" } }
+    preview_window:update()
+
     vim.bo[preview_window.buf].modifiable = true
-    vim.bo[preview_window.buf].filetype = vim.filetype.match({ filename = item.context.file }) or ""
     vim.api.nvim_buf_set_lines(preview_window.buf, 0, -1, false, source_lines)
     vim.bo[preview_window.buf].modifiable = false
+    vim.bo[preview_window.buf].filetype = vim.filetype.match({ filename = item.context.file }) or ""
     vim.api.nvim_buf_clear_namespace(preview_window.buf, view_namespace, 0, -1)
 
     local available_width = math.max(vim.api.nvim_win_get_width(preview_window.win) - 6, 20)
@@ -393,30 +502,53 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
       line_hl_group = "CursorLine",
       priority = 200,
     })
-    preview_window.opts.footer = { { " " .. item.context.display_file .. " ", "Comment" } }
-    preview_window:update()
     vim.api.nvim_win_set_cursor(preview_window.win, { preview_line, 0 })
     vim.api.nvim_win_call(preview_window.win, function()
       vim.cmd("normal! zt")
     end)
   end
 
-  local panel_windows = { question_window, chat_window, preview_window }
+  vim.fn.prompt_setprompt(chat_filter_window.buf, " Find: ")
+  vim.api.nvim_create_autocmd({ "TextChangedI", "TextChanged" }, {
+    buffer = chat_filter_window.buf,
+    callback = refresh_chat_filter,
+  })
+
+  local function focus_chat()
+    chat_filter_window:focus()
+    vim.api.nvim_win_set_cursor(chat_filter_window.win, { 1, #chat_query })
+    vim.cmd("startinsert!")
+  end
+
+  local function focus_questions()
+    if vim.api.nvim_get_current_buf() == chat_filter_window.buf then
+      refresh_chat_filter()
+    end
+    vim.cmd("stopinsert")
+    question_window:focus()
+  end
+
+  local function focus_preview()
+    if vim.api.nvim_get_current_buf() == chat_filter_window.buf then
+      refresh_chat_filter()
+    end
+    vim.cmd("stopinsert")
+    preview_window:focus()
+  end
+
+  local panel_windows = { question_window, chat_filter_window, chat_window, preview_window }
   local function map_all(keys, callback, description)
     for _, window in ipairs(panel_windows) do
       vim.keymap.set("n", keys, callback, { buffer = window.buf, nowait = true, desc = description })
     end
   end
 
-  map_all("1", function()
-    question_window:focus()
-  end, "Questions panel")
-  map_all("2", function()
-    chat_window:focus()
-  end, "Chats panel")
-  map_all("3", function()
-    preview_window:focus()
-  end, "Preview panel")
+  map_all("1", focus_questions, "Questions panel")
+  map_all("2", focus_chat, "Chats panel")
+  map_all("3", focus_preview, "Preview panel")
+  vim.keymap.set("i", "1", focus_questions, { buffer = chat_filter_window.buf, desc = "Questions panel" })
+  vim.keymap.set("i", "2", focus_chat, { buffer = chat_filter_window.buf, desc = "Chats panel" })
+  vim.keymap.set("i", "3", focus_preview, { buffer = chat_filter_window.buf, desc = "Preview panel" })
   map_all("q", function()
     layout:close()
   end, "Close question review")
@@ -458,32 +590,52 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
   end, { buffer = question_window.buf, nowait = true, desc = "Toggle question" })
 
   local function move_chat(direction)
-    chat_index = (chat_index - 1 + direction) % #target_list + 1
+    if vim.api.nvim_get_current_buf() == chat_filter_window.buf then
+      refresh_chat_filter()
+    end
+    if #filtered_chat_positions == 0 then
+      return
+    end
+    local filtered_index = 1
+    for position, target_position in ipairs(filtered_chat_positions) do
+      if target_position == chat_index then
+        filtered_index = position
+      end
+    end
+    filtered_index = (filtered_index - 1 + direction) % #filtered_chat_positions + 1
+    chat_index = filtered_chat_positions[filtered_index]
     render_chats()
-    vim.api.nvim_win_set_cursor(chat_window.win, { chat_index, 0 })
   end
-  vim.keymap.set("n", "<Tab>", function()
+  for _, window in ipairs({ chat_filter_window, chat_window }) do
+    vim.keymap.set("n", "<Tab>", function()
+      move_chat(1)
+    end, { buffer = window.buf, nowait = true, desc = "Next chat" })
+    vim.keymap.set("n", "<S-Tab>", function()
+      move_chat(-1)
+    end, { buffer = window.buf, nowait = true, desc = "Previous chat" })
+    vim.keymap.set("n", "j", function()
+      move_chat(1)
+    end, { buffer = window.buf, nowait = true })
+    vim.keymap.set("n", "k", function()
+      move_chat(-1)
+    end, { buffer = window.buf, nowait = true })
+    for _, key in ipairs({ "i", "/" }) do
+      vim.keymap.set("n", key, function()
+        focus_chat()
+      end, { buffer = window.buf, nowait = true, desc = "Filter chats" })
+    end
+  end
+  vim.keymap.set("i", "<Tab>", function()
     move_chat(1)
-  end, {
-    buffer = chat_window.buf,
-    nowait = true,
-    desc = "Next chat",
-  })
-  vim.keymap.set("n", "<S-Tab>", function()
+  end, { buffer = chat_filter_window.buf, nowait = true, desc = "Next chat" })
+  vim.keymap.set("i", "<S-Tab>", function()
     move_chat(-1)
-  end, {
-    buffer = chat_window.buf,
-    nowait = true,
-    desc = "Previous chat",
-  })
-  vim.keymap.set("n", "j", function()
-    move_chat(1)
-  end, { buffer = chat_window.buf, nowait = true })
-  vim.keymap.set("n", "k", function()
-    move_chat(-1)
-  end, { buffer = chat_window.buf, nowait = true })
+  end, { buffer = chat_filter_window.buf, nowait = true, desc = "Previous chat" })
 
   local function send_selected_questions()
+    if vim.api.nvim_get_current_buf() == chat_filter_window.buf then
+      refresh_chat_filter()
+    end
     local selected_items = {}
     for position, item in ipairs(queue) do
       if selected_questions[position] then
@@ -496,6 +648,9 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
     end
     if #selected_items == 0 then
       return vim.notify("select at least one question", vim.log.levels.WARN)
+    end
+    if chat_index == 0 then
+      return vim.notify("no chats match the filter", vim.log.levels.WARN)
     end
 
     local target = target_list[chat_index].name
@@ -510,6 +665,11 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
   })
   vim.keymap.set("n", "<CR>", send_selected_questions, {
     buffer = chat_window.buf,
+    nowait = true,
+    desc = "Send selected questions",
+  })
+  vim.keymap.set({ "n", "i" }, "<CR>", send_selected_questions, {
+    buffer = chat_filter_window.buf,
     nowait = true,
     desc = "Send selected questions",
   })
