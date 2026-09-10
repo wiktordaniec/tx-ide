@@ -657,7 +657,21 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
       nowait = true,
       desc = "Next question",
     })
+    vim.keymap.set("n", "<Down>", function()
+      move_question(1)
+    end, {
+      buffer = window.buf,
+      nowait = true,
+      desc = "Next question",
+    })
     vim.keymap.set("n", "<S-Tab>", function()
+      move_question(-1)
+    end, {
+      buffer = window.buf,
+      nowait = true,
+      desc = "Previous question",
+    })
+    vim.keymap.set("n", "<Up>", function()
       move_question(-1)
     end, {
       buffer = window.buf,
@@ -703,7 +717,13 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
     vim.keymap.set("n", "<Tab>", function()
       move_chat(1)
     end, { buffer = window.buf, nowait = true, desc = "Next chat" })
+    vim.keymap.set("n", "<Down>", function()
+      move_chat(1)
+    end, { buffer = window.buf, nowait = true, desc = "Next chat" })
     vim.keymap.set("n", "<S-Tab>", function()
+      move_chat(-1)
+    end, { buffer = window.buf, nowait = true, desc = "Previous chat" })
+    vim.keymap.set("n", "<Up>", function()
       move_chat(-1)
     end, { buffer = window.buf, nowait = true, desc = "Previous chat" })
     vim.keymap.set("n", "j", function()
@@ -721,7 +741,13 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
   vim.keymap.set("i", "<Tab>", function()
     move_chat(1)
   end, { buffer = chat_filter_window.buf, nowait = true, desc = "Next chat" })
+  vim.keymap.set("i", "<Down>", function()
+    move_chat(1)
+  end, { buffer = chat_filter_window.buf, nowait = true, desc = "Next chat" })
   vim.keymap.set("i", "<S-Tab>", function()
+    move_chat(-1)
+  end, { buffer = chat_filter_window.buf, nowait = true, desc = "Previous chat" })
+  vim.keymap.set("i", "<Up>", function()
     move_chat(-1)
   end, { buffer = chat_filter_window.buf, nowait = true, desc = "Previous chat" })
 
