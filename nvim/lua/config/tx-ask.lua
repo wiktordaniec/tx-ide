@@ -16,9 +16,9 @@
 -- hosting view. The argv form of vim.system runs no shell, so a question
 -- containing quotes or $ reaches the target verbatim.
 --
--- Session discovery is a tmux sweep joined to the durable records by @tx_id only
--- because tx has no `sessions --json` verb yet; that read collapses to one call
--- when it lands.
+-- Session discovery reads every @tx_id in one tmux sweep, then joins those IDs
+-- to the durable records. The join can move fully into tx when it gains a JSON
+-- sessions command.
 
 local HOME = vim.env.HOME
 local function read_record(id)
@@ -33,17 +33,16 @@ end
 
 -- live tmux sessions -> durable records, keyed by @tx_id
 local function live_records()
-  local out = {}
-  for _, s in ipairs(vim.fn.systemlist("tmux list-sessions -F '#S'")) do
-    local id = (vim.fn.systemlist("tmux show-option -t " .. s .. " -qv @tx_id")[1] or "")
+  local records = {}
+  for _, id in ipairs(vim.fn.systemlist("tmux list-sessions -F '#{@tx_id}'")) do
     if id ~= "" then
-      local rec = read_record(id)
-      if rec then
-        out[#out + 1] = rec
+      local record = read_record(id)
+      if record then
+        records[#records + 1] = record
       end
     end
   end
-  return out
+  return records
 end
 
 local function me()
