@@ -254,6 +254,13 @@ vim.keymap.set({ "n", "x" }, "<leader>aC", function()
       footer = { { " " .. question_context.display_file .. " ", "Comment" } },
       footer_pos = "center",
       wo = { wrap = true, linebreak = true },
+      on_close = function(window)
+        local draft = vim.trim(window:text())
+        last_question = draft ~= "" and draft or nil
+        if active_question_input == window then
+          active_question_input = nil
+        end
+      end,
     },
   }, function(question)
     if active_question_input == question_input then
@@ -501,8 +508,19 @@ vim.keymap.set({ "n", "x" }, "<leader>ac", function()
     if selected_line then
       vim.api.nvim_buf_add_highlight(chat_window.buf, view_namespace, "DiagnosticInfo", selected_line - 1, 1, -1)
     end
-    if vim.api.nvim_get_current_win() == chat_window.win then
-      vim.api.nvim_win_set_cursor(chat_window.win, { selected_line or 1, 0 })
+    if selected_line then
+      local view = vim.api.nvim_win_call(chat_window.win, vim.fn.winsaveview)
+      local height = vim.api.nvim_win_get_height(chat_window.win)
+      if selected_line < view.topline then
+        view.topline = selected_line
+      elseif selected_line > view.topline + height - 1 then
+        view.topline = selected_line - height + 1
+      end
+      view.lnum = selected_line
+      view.col = 0
+      vim.api.nvim_win_call(chat_window.win, function()
+        vim.fn.winrestview(view)
+      end)
     end
   end
 
