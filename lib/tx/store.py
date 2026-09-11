@@ -88,6 +88,9 @@ class SessionStore:
         for path in sorted(self.directory.glob("*.json")):
             try:
                 sessions.append(self._read(path))
+            except FileNotFoundError:
+                # `tx rm` can remove a record after glob while a session-closed hook scans it.
+                continue
             except (UnsupportedRecordError, json.JSONDecodeError, KeyError, ValueError) as error:
                 print(f"tx: skipping unreadable record {path.name}: {error}", file=sys.stderr)
         return sessions
