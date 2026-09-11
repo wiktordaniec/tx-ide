@@ -41,4 +41,6 @@ if [[ -n "$tx_id" ]]; then
   [[ -n "${resolved:-}" ]] && name="$resolved"
 fi
 
-tmux confirm-before -p "kill tx session \"$name\"? (y/n)" "run-shell \"$TX kill '$target'\""
+# Silence successful kills, keep errors visible, and treat `n` as cancellation.
+tmux confirm-before -p "kill tx session \"$name\"? (y/n)" \
+  "run-shell \"$TX kill '$target' 2>&1 >/dev/null\"" || true
