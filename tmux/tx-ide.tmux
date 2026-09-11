@@ -3,7 +3,7 @@
 # which is sourced from the user's ~/.tmux.conf by install.sh.
 #
 # Reads @tx-ide-* options to decide which view features to enable:
-#   @tx-ide-popups          on|off   prefix+t (tx), prefix+/ (tx-assistant), prefix+X (tx kill)
+#   @tx-ide-popups          on|off   prefix+t (tx), prefix+e (edit), prefix+/ (assistant), prefix+X (kill)
 #   @tx-ide-pane-borders    on|off   pane-border-format integration + colors
 #   @tx-ide-agent-scroll    on|off   C-u/C-d → PageUp/PageDown in agent panes
 #   @tx-ide-nav-keys        on|off   C-h/j/k/l seamless nav: nvim splits ↔ panes ↔ nested sessions
@@ -27,6 +27,8 @@ FOCUS_POKE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tx-graph-focu
 NAV="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tmux-nav"
 # Repo-relative confirm-then-kill the prefix+X bind runs on the active pane's tx session.
 KILL="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tmux-kill-tx-session"
+# Repo-relative editor for the focused session's name and tags.
+EDIT="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../bin/tmux-edit-tx-session"
 
 option() {
   tmux show-option -gv "$1" 2>/dev/null || printf '%s' "$2"
@@ -68,6 +70,7 @@ EOF
   # stays honest). The helper resolves the nested-vs-outer target and display name.
   cat >>"$CONF" <<EOF
 bind X run-shell "$KILL '#{pane_id}' '#{session_name}'"
+bind e run-shell -b "$EDIT '#{pane_id}' '#{client_name}'"
 EOF
 fi
 

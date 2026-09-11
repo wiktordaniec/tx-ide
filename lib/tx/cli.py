@@ -51,6 +51,7 @@ from .render import (
 from .roles import RoleError, load_role_priming
 from .skills import SKILLS_ENV, resolve_role_skills
 from .service import ServiceError, SessionService
+from .session_editor import edit_session
 from .session import (
     SCHEMA_VERSION,
     ChatRef,
@@ -1390,7 +1391,7 @@ class AttachCommand(Command):
             # Cursor move re-renders the focus header, clears the arm file, unbinds the confirm keys.
             f'--bind=focus:transform-header({focus_cmd})+execute-silent(: >"$TX_ARM_FILE")'
             f"+unbind(y,n)",
-            # Ctrl-T: edit tags in a popup (readline pre-fill), then reload to show the new chips.
+            # Ctrl-T: edit tags in a popup (prefilled query editor), then reload to show the new chips.
             # The popup command carries a baked $TX_IDE_HOME (see `edit_tag`) — `display-popup` does
             # not inherit fzf's environment, so without it the retag hits the default home.
             f'--bind=ctrl-t:execute(tmux display-popup -E -h 5 -w 60% "{edit_tag}")+{reload}',
@@ -1529,27 +1530,54 @@ class AttachCommand(Command):
 
 
 def _prompt_with_default(prompt: str, default: str) -> str | None:
-    """Read a line with `default` pre-inserted and editable (the old `_edit-tag` readline hook —
-    macOS bash 3.2 lacked `read -i`). Returns the line, or None on cancel (Ctrl-C / Ctrl-D)."""
-    import readline
+    """Use fzf's query editor for prefilled text; libedit's readline hooks ignore defaults."""
+    result = subprocess.run(
+        [
+            "fzf", "--disabled", "--query", default, "--prompt", prompt,
+            "--header", "Enter: accept field. Esc / Ctrl-C: cancel.",
+            "--reverse", "--no-info", "--no-separator",
+            "--bind", "enter:accept-or-print-query",
+        ],
+        input="", stdout=subprocess.PIPE, text=True,
+    )
+    return result.stdout.removesuffix("\n") if result.returncode == 0 else None
 
-    def preinsert() -> None:
-        readline.insert_text(default)
-        readline.redisplay()
 
-    readline.set_pre_input_hook(preinsert)
-    try:
-        return input(prompt)
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return None
-    finally:
-        readline.set_pre_input_hook(None)
+class EditSessionCommand(Command):
+    name = "_edit-session"
+    summary = "Internal: edit the focused pane's tx session name and tags."
+
+    def run(self, argv: list[str]) -> int:
+        parser = self._parser()
+        parser.add_argument("pane")
+        args = parser.parse_args(argv)
+        # Capture the firing pane in the binding; the popup's own pane/client is not the target.
+        target = self.service.tmux.inner_for_pane(args.pane) or self.service.tmux.display_message(
+            "#{session_name}", target=args.pane
+        )
+        if target is None or self.service.tmux.is_view(target):
+            raise ServiceError("no tx session in this pane (view homes cannot be edited)")
+        session = self.service.get(target)
+        if session is None:
+            raise ServiceError("the session in this pane is not tx-managed")
+
+        edited = edit_session(session.name, ",".join(session.tags))
+        if edited is None:
+            return 0
+        name, edited_tags = edited
+
+        # Collect both fields before writing so cancellation leaves both untouched.
+        # Keep the stable id: the display name changes after the first write.
+        self.service.rename(session.id, name)
+        tags = _split_tags(edited_tags)
+        if tags != session.tags:
+            self.service.tag(session.id, tags)
+        return 0
 
 
 class EditTagCommand(Command):
     name = "_edit-tag"
-    summary = "Internal: readline tag editor for the picker's Ctrl-T popup."
+    summary = "Internal: prefilled tag editor for the picker's Ctrl-T popup."
 
     def run(self, argv: list[str]) -> int:
         """Invoked from the Ctrl-T `tmux display-popup`. Pre-fills the current tags, lets the user
@@ -1959,6 +1987,7 @@ PUBLIC_COMMANDS: list[type[Command]] = [
 ]
 HIDDEN_COMMANDS: list[type[Command]] = [
     ListCommand,
+    EditSessionCommand,
     EditTagCommand,
     FocusEnvelopeCommand,
     PaneInfoCommand,
