@@ -69,6 +69,14 @@ tagged the same `auth-review` so the two surface together. Set tags at spawn (`-
 non-interactively with `tx tag`, or in the picker with `Ctrl-T`. The ROLE column is searchable, so
 filtering by `llm` / `nvim` still works.
 
+To edit the session you are looking at, press **`prefix+e`** (`Ctrl-A`, then `e` with the
+default prefix). The popup opens just below the focused pane's top, with its **name** and **tags**
+prefilled, including when it is nested in a
+Views pane. Both fields stay visible: Up/Down switches fields, Enter saves both, and Esc or Ctrl-C
+cancels both changes.
+Tags are comma-separated; clearing the tags field removes all tags. A view home with no nested
+tx session cannot be edited. Errors stay visible until Escape closes the popup.
+
 ### Groups
 
 A **group** clusters sessions *and artifacts* by effort — the unit the sessions-graph and the

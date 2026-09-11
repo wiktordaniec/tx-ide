@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# prefix+e: edit the tx session visible in the firing pane, on the firing client.
+set -eu
+
+SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+. "$SCRIPT_DIR/../shared/palette.sh"
+pane_id="$1"
+client_name="$2"
+pane_width=$(tmux display-message -p -t "$pane_id" '#{pane_width}')
+popup_width=$((pane_width - 4))
+((popup_width > 80)) && popup_width=80
+((popup_width < 44)) && popup_width=44
+
+# run-shell expands pane/client formats before the popup starts. display-popup's
+# shell-command does not expand them, so pass the captured pane as a literal argument.
+printf -v edit_command '%q _edit-session %q' "$SCRIPT_DIR/tx" "$pane_id"
+exec tmux display-popup -c "$client_name" -t "$pane_id" -EE -w "$popup_width" -h 10 \
+  -x '#{e|+:#{popup_pane_left},#{e|/:#{e|-:#{pane_width},#{popup_width}},2}}' \
+  -y '#{e|+:#{popup_pane_top},1}' -b rounded \
+  -s "fg=$FG_HEX,bg=$BG_HEX" -S "fg=$ACCENT_HEX,bg=$BG_HEX" \
+  -T ' Edit session ' "$edit_command"
