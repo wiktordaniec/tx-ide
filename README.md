@@ -253,6 +253,15 @@ ids are captured from hook payloads, so with no hooks a session's `ChatRef` stay
 the conversation can never be resumed. `tx spawn` refuses an engine whose hooks are missing rather
 than launch a worker it could never get back.
 
+For Codex's official standalone install, tx also moves routine updates out of the interactive TUI:
+each managed launch suppresses Codex's startup update prompt and schedules a background check.
+Successful checks are limited to once daily; failures retry after an hour. The official installer
+switches its versioned `current` symlink atomically, so live sessions keep their loaded binary and
+future sessions get the update. Download/install failures are recorded under
+`$TX_IDE_HOME/codex-update/`; a failed validation restores the prior release. npm and Homebrew Codex
+installs are not changed. Inspect the last result with
+`setup/engines/install.sh status --engine codex`.
+
 It also offers (per-machine, `[y/N]`) to **provision the bundled nvim config**: the repo ships a
 complete LazyVim setup under `nvim/` — tokyonight, diffview.nvim, gitsigns with inline-diff
 keymaps, and keymap-usage telemetry (`keylog.jsonl`) — i.e. everything `tx spawn-nvim --diff`

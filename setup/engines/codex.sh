@@ -99,6 +99,7 @@ remove_shim() {  # <path>
 run_codex_py() {  # <install|uninstall|status>
   TX_OP="$1" TX_DRYRUN="$DRY_RUN" TX_STAMP="$STAMP" \
   TX_HOOKS_JSON="$HOOKS_JSON" TX_CONFIG_TOML="$CONFIG_TOML" \
+  TX_UPDATE_STATE="$TX_HOME/codex-update/status.json" \
   TX_START="$START_SHIM" TX_PRE="$PRE_SHIM" TX_WORK="$WORK_SHIM" TX_POST="$POST_SHIM" \
   "$PY" - <<'PY'
 import json, os, re, tempfile
@@ -108,6 +109,7 @@ dry_run     = os.environ["TX_DRYRUN"] == "1"
 stamp       = os.environ["TX_STAMP"]
 hooks_json  = os.environ["TX_HOOKS_JSON"]
 config_toml = os.environ["TX_CONFIG_TOML"]
+update_state = os.environ["TX_UPDATE_STATE"]
 G, Y, D, X = "\033[32m", "\033[33m", "\033[2m", "\033[0m"
 
 # Codex event → the tx-hook shim that handles it (design §3). The working family fans into one shim,
@@ -271,6 +273,19 @@ def status():
     print(f"  config.toml [tui] block: {flag}  {D}{config_toml}{X}")
     note = f"  {Y}(config has a [hooks.state] table — not written by us){X}" if "[hooks.state]" in content else ""
     print(f"  [hooks.state] trust:     {D}none — bypass-first (verification §4){X}{note}")
+
+    state = load_json(update_state)
+    if state is None:
+        flag = f"{D}not checked yet{X}"
+    else:
+        outcome = state.get("status", "unknown")
+        version = state.get("active_version") or state.get("previous_version") or "unknown"
+        color = G if outcome in ("current", "updated") else Y
+        flag = f"{color}{outcome}{X} (active {version})"
+    print(f"  automatic updates:       {flag}  {D}{update_state}{X}")
+    if state is not None and state.get("status") == "failed":
+        print(f"  update failure:          {Y}{state.get('message', 'unknown')}{X}")
+        print(f"  failed-update behavior:  {D}{state.get('rollback', 'unknown')}{X}")
 
 
 if op == "install":

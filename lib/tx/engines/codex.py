@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import os
 import shlex
+import sys
 import tomllib
 from collections.abc import Iterator, Mapping, MutableMapping
 from pathlib import Path
 
 from ..session import Engine, State
 from ..skills import link_skills
-from . import codex_rollout
+from ..storage import tx_ide_home
+from . import codex_rollout, codex_update
 from .engine_adapter import DEFAULT_EFFORT, EFFORT_LEVELS, EngineAdapter, StateSource
 from .registry import registry
 
@@ -333,10 +335,24 @@ class CodexEngine(EngineAdapter):
     def prepare_workspace(
         self, command: str, cwd: str, env: Mapping[str, str]
     ) -> str:
-        """Codex argv is cwd-independent; the workspace half of a launch is the skill grant —
-        symlinks into `.agents/skills/`, codex's per-worktree discovery dir."""
+        """Grant skills and move standalone updates outside the interactive session lifecycle."""
         link_skills(cwd, env, SKILLS_DIR)
-        return command
+        tokens = shlex.split(command)
+        if not tokens or any(_is_shell_control(token) for token in tokens):
+            return command
+        installation = codex_update.standalone_installation(
+            tokens[0], env, codex_home(env)
+        )
+        if installation is None:
+            return command
+        if not codex_update.schedule_update(
+            installation, env, tx_ide_home() / "codex-update"
+        ):
+            print(
+                "tx: could not schedule the Codex update check; launching the current version",
+                file=sys.stderr,
+            )
+        return shlex.join(codex_update.disable_startup_update_check(tokens))
 
     def is_read_only_command(self, command: str) -> bool:
         tokens = shlex.split(command)
