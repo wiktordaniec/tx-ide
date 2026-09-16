@@ -286,6 +286,7 @@ def status():
     if state is not None and state.get("status") == "failed":
         print(f"  update failure:          {Y}{state.get('message', 'unknown')}{X}")
         print(f"  failed-update behavior:  {D}{state.get('rollback', 'unknown')}{X}")
+        print(f"  update log:              {D}{os.path.dirname(update_state)}/update.log{X}")
 
 
 if op == "install":

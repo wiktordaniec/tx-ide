@@ -25,8 +25,7 @@ from pathlib import Path
 
 
 INSTALLER_URL = "https://chatgpt.com/codex/install.sh"
-SUCCESS_INTERVAL_SECONDS = 4 * 60 * 60
-FAILURE_INTERVAL_SECONDS = 60 * 60
+CHECK_INTERVAL_SECONDS = 4 * 60 * 60
 DOWNLOAD_TIMEOUT_SECONDS = 45
 INSTALL_TIMEOUT_SECONDS = 10 * 60
 UPDATE_CHECK_CONFIGURATION = "check_for_update_on_startup=false"
@@ -217,12 +216,7 @@ def _attempt_due(state: dict, current_time: float) -> bool:
     completed_at = state.get("completed_at")
     if not isinstance(completed_at, (int, float)):
         return True
-    interval = (
-        SUCCESS_INTERVAL_SECONDS
-        if state.get("status") in ("current", "updated")
-        else FAILURE_INTERVAL_SECONDS
-    )
-    return current_time - completed_at >= interval
+    return current_time - completed_at >= CHECK_INTERVAL_SECONDS
 
 
 def _record_failure(
