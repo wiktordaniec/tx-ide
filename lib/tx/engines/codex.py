@@ -340,16 +340,18 @@ class CodexEngine(EngineAdapter):
         tokens = shlex.split(command)
         if not tokens or any(_is_shell_control(token) for token in tokens):
             return command
-        installation = codex_update.standalone_installation(
+        executable = codex_update.standalone_executable(
             tokens[0], env, codex_home(env)
         )
-        if installation is None:
+        if executable is None:
             return command
-        if not codex_update.schedule_update(
-            installation, env, tx_ide_home() / "codex-update"
-        ):
+        try:
+            codex_update.schedule_update(
+                executable, codex_home(env), env, tx_ide_home() / "codex-update"
+            )
+        except OSError as error:
             print(
-                "tx: could not schedule the Codex update check; launching the current version",
+                f"tx: could not schedule the Codex update check: {error}; launching the current version",
                 file=sys.stderr,
             )
         return shlex.join(codex_update.disable_startup_update_check(tokens))

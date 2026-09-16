@@ -257,9 +257,10 @@ For Codex's official standalone install, tx also moves routine updates out of th
 each managed launch suppresses Codex's startup update prompt and schedules a background check.
 Checks are limited to once every four hours, whether they succeed or fail. The official installer
 switches its versioned `current` symlink atomically, so live sessions keep their loaded binary and
-future sessions get the update. Download/install failures and their logs are recorded under
-`$TX_IDE_HOME/codex-update/`; a failed validation restores the prior release. npm and Homebrew Codex
-installs are not changed. Inspect the last result with
+future sessions get the update. The installer verifies each release before switching. Output and
+failures from the latest attempt are kept in `$TX_IDE_HOME/codex-update/update.log`; failures wait
+for the same four-hour interval. npm, Homebrew, and pinned-release Codex installs are not changed.
+Inspect the last result with
 `setup/engines/install.sh status --engine codex`.
 
 It also offers (per-machine, `[y/N]`) to **provision the bundled nvim config**: the repo ships a
