@@ -124,16 +124,19 @@ Cases where the spec's Then disagreed with the reference; the tests assert the c
   sorts by `activity_at` (llm `last_activity`, else `created_at`) desc; with `w1.last_activity =
   now−90` and `sh1.created_at = now−3h` the feed is `w1` then `sh1`. Asserted the code order (the
   spec's own timestamps contradict its row order).
-- **T-CLI-21 (pane gone)** — spec: empty stdout. Code: `focus_attrs` only returns None when the
-  `display-message` expansion is empty; tmux (3.4) expands a missing `-t %999` target to empty
-  fields with exit 0, so the envelope is printed with every value empty except `pane-id`. Asserted
-  that shape, exit 0.
-- **T-CLI-21 (`@remote-session` pane)** — spec: "pane with `@remote-session host`". Code:
-  `Tmux.show_option` reads `show-options -vqt <pane>` WITHOUT `-p`, i.e. the pane's SESSION scope;
-  a pane-scoped option (which is what `tx attach --host` writes with `set-option -p`) is invisible
-  to `focus-envelope`. The test sets the option at session scope on `Views` (the only scope the
-  reference observes) and asserts `inner-remote='1' inner-session-name='host'` + no inner-kind join.
-  Port should decide which scope is right (probably `-p`); flagged, not pinned.
+- **T-CLI-21 (pane gone)** — Q37 PARITY, tmux-version dependent: `focus_attrs` only returns None
+  when the `display-message` expansion is empty; tmux 3.4 expands a missing `-t %999` target to
+  empty fields with exit 0, so the reference prints an envelope with every value empty except
+  `pane-id`. Asserted only the contract: exit 0, no trailing newline, no `session-kind` / `inner-*`
+  (a port may print nothing).
+- **T-CLI-21 (`@remote-session` pane)** — Q30 FIX, D17 pair. Code: `Tmux.show_option` reads
+  `show-options -vqt <pane>` WITHOUT `-p`, i.e. the pane's SESSION scope, so the pane-scoped stamp
+  `tx attach --host` writes (`set-option -p`) is invisible to `focus-envelope`.
+  `test_t_cli_21_fixed_remote_pane_scope` (`@expected_failure_on_python`) sets it at pane scope and
+  expects `inner-remote='1' inner-session-name='host' session-kind='view'/>`;
+  `test_t_cli_21_parity_remote_session_scope` (`@python_reference_only`) pins the mirror image —
+  pane scope → plain nested join, session scope on `Views` → the remote shape. A Q30-fixed port
+  reads pane scope only (rev 5).
 - **T-CLI-21 (window/pane indices)** and **T-CLI-09/10/19 (`main[1]`)** — hold only when the private
   server runs without the operator's `~/.tmux.conf` (this host sets `base-index 1` /
   `pane-base-index 1`, which leaked into `window-index` / `[pane]`). The kit's `TmuxServer` now
@@ -149,11 +152,54 @@ Cases where the spec's Then disagreed with the reference; the tests assert the c
 - **T-CLI-06** — `#{pane_start_command}` comes back double-quoted by tmux; the test strips the
   quotes before splitting. On this host the wrapped command fits under `MAX_COMMAND_BYTES`, so no
   `launch/<id>.sh` is written (the test handles both surfaces).
-- **T-CLI-07** — spec spawns `ed` three times; live names must be unique, so the test uses `ed`,
-  `ed2`, `ed3`.
+- **T-CLI-07** — spec spawns `ed` three times; live names must be unique, and `ed`/`ed2`/`ed3` are
+  hex-only (Q27: `tx show <name>` prefix-matches against the three live uuid sessions), so the test
+  uses `nv`, `nv2`, `nv3`.
 
 ### Kit notes
 
 - The config-free server boot and the `TMUX_PANE` pinning this file relied on now live in
   `txkit.py` (see the section-wide findings above); `test_cli.py` uses the kit's `tx_inside`.
-- No `ssh` recorder among the fakes; `test_t_cli_27_attach_host_runs_ssh` writes its own.
+- No `ssh` recorder among the fakes; `test_t_cli_27_attach_host_runs_ssh` hand-writes its own
+  script into `fakes.bin_dir` (it needs the in-script `tmux show-options -p` probe, not the
+  standard argv recorder).
+
+## Review pass (review artifact cf8fcba0, 2026-09-23)
+
+Applied on `feat/port-tests-fix-04`; every row of the review's §2 table, by class.
+
+- **WRONG T-CLI-21** — the session-scope `@remote-session` leg left the main envelope method and
+  became the `python_reference_only` twin of a new `expected_failure_on_python` pane-scope FIX leg
+  (Q30, D17 pair — see the CLI entry above). Pane-gone narrowed to Q37's contract.
+- **WEAK T-ART-02** — `test_t_art_02_parity_show_named_v1_record` (unmarked: exit 1, stdout
+  empty, the version message on stderr) now runs on the reference; the marked twin adds no
+  `Traceback`. The reference's message sits on the last line of the leaked traceback.
+- **WEAK T-ART-21** — leg (d) kills `plain` first, so `s9` is the only session on the server and an
+  implementation that skipped the `$TMUX` gate would report `s9`, not `user`.
+- **WEAK T-ART-27** — added the untagged in-tmux invoker leg (`s2`, no tags, `tx_inside`): tags
+  `["artifact"]`, `artifact-open` actor `s2` (an open is a read: it is logged, never a history touch).
+- **WEAK T-SYNC-07** — the `ftp` error is asserted as a whole stderr line, not a substring.
+- **WEAK T-SYNC-10** — the vacuous push uses `--s3 mybucket/pre` and pins the `s3://mybucket/pre`
+  label (the `bucket/prefix` form was never pinned before).
+- **WEAK T-CLI-07** — role `nvim` and the `nvim +'set background=dark | …'` prefix are asserted for
+  all three spawns; names are `nv`/`nv2`/`nv3` (Q27 flake rule).
+- **WEAK T-CLI-08** — the first spawn-view pins `SHELL=/bin/bash` explicitly; a new `V3` leg with
+  `SHELL` unset asserts `pane_start_command == zsh` (the fake `zsh`) and no record.
+- **WEAK T-CLI-25** — "Views untouched" compares `session_id session_created pane_id pane_pid`
+  before and after the re-run; a `$TMUX`-set leg (a real client attached to `raw`, `tx start` via
+  `tx_inside`) asserts `switch-client`: the client lands on `Views`, stderr empty (no
+  `open terminal failed`), no new log line.
+- **SPEC T-MSG-03** — the rev-4 Then printed `'bob'` for leg (b); the code echoes the target it was
+  handed (`service.py::_deliver`), so (b) prints `'nobody'`. `test_t_msg_03_errors` already
+  asserted the code; spec corrected in rev 5. No test change.
+- **FRAGILE T-ART-24** — the truncated-title edge uses `created_at = now-600` → `10m` (a 60 s
+  bucket) instead of `now-30` → `30s` (a 1 s bucket).
+- **FRAGILE T-CLI-02** — Q21 is version-gated: below tmux 3.6 the tolerant spawn is asserted
+  exactly; on the floor the behaviour is unverified on this host, so either the tolerant spawn or
+  the exact error-boundary shape (`tx spawn: tmux new-session … failed: …`, nothing created) is
+  accepted — whichever the reference does, the port must match.
+- **Cross-cutting** — `art/25` golden is captured from `result.out`, not the hand-written literal;
+  `test_role.py` "no tmux session created" asserts `list-sessions` rc 0 (was vacuous on a dead
+  server); `test_cli.py` cites `NOTES-04.md` (there is no `NOTES-04-cli.md`).
+- **Not done (kit, `txkit.py` is off-limits here)** — `GitFixture.git` isolation from the real
+  `~/.gitconfig`; a tmux-wrapper argv log for T-MSG-04's `send-keys -l --`.
