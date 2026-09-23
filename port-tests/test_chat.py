@@ -655,7 +655,11 @@ class TestChat(TxCase):
         ]
         outputs = [racer.communicate(timeout=60) for racer in racers]
         self.assertEqual([racer.returncode for racer in racers], [0, 0], outputs)
-        self.assertEqual(len(self._named("w1-handover")), 1)
+        workers = self._named("w1-handover")
+        self.assertEqual(len(workers), 1)
+        # The pane's fake claude starts asynchronously after the finisher exits: wait for THAT
+        # worker's dump, then count — exactly one fake ran.
+        self.fakes.wait_dump("claude", workers[0]["id"])
         self.assertEqual(len(self.fakes.dumps("claude")), 1)
         result = self.tx(["_chat-op-finish", op_id])
         self.assertEqual(result.code, 0, result.err)
