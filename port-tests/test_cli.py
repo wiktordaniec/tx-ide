@@ -789,30 +789,6 @@ class TestCli(TxCase):
             f"pane-index='0' pane-title='R' pane-cmd='sleep' pane-path='{path}'/>",
         )
 
-    def test_t_cli_21_pane_gone(self):
-        # Q37 PARITY (tmux-version dependent): only exit 0, no trailing newline and the ABSENCE of
-        # the record-join attrs are the contract. tmux 3.4 expands `display-message -p -t %999`
-        # with empty fields (exit 0) so the reference prints an all-empty envelope; a port may
-        # print nothing (see NOTES-04.md).
-        self.tmux.new_session("raw", "sleep 1000")
-        result = self.tx(["focus-envelope", "%999"])
-        self.assertEqual(result.code, 0, result.err)
-        self.assertFalse(result.raw_out.endswith("\n"), result.raw_out)
-        self.assertNotIn("session-kind", result.out)
-        self.assertNotIn("inner-", result.out)
-
-    # ----- T-CLI-23 ---------------------------------------------------------------------------
-
-    def test_t_cli_23_selfcheck(self):
-        result = self.tx(["selfcheck"])
-        self.assertEqual((result.code, result.err), (0, ""))
-        self.assertEqual(result.out, f"S1a self-check PASSED ✓\n  home={self.home.path}  schema v6  records now=0\n")
-        self.assertEqual(self._record_files(), [])
-        lines = self.log_lines()
-        self.assertEqual(len(lines), 1)
-        self.assertEqual(lines[0]["type"], "selfcheck")
-        self.assertRegex(lines[0]["msg"], r"^created s1a-selfcheck \([0-9a-f-]{36}\)$")
-
     def _remote_fixture(self) -> tuple[str, str, str]:
         """The T-CLI-21 topology (`Views` pane nest-attached to process `i1`); returns the nested
         pane's id, its realpath and the envelope's pure-tmux prefix up to `pane-path`."""
@@ -882,6 +858,30 @@ class TestCli(TxCase):
             result.lines,
             [
                 "  migrated old.json → v6",
+    def test_t_cli_21_pane_gone(self):
+        # Q37 PARITY (tmux-version dependent): only exit 0, no trailing newline and the ABSENCE of
+        # the record-join attrs are the contract. tmux 3.4 expands `display-message -p -t %999`
+        # with empty fields (exit 0) so the reference prints an all-empty envelope; a port may
+        # print nothing (see NOTES-04.md).
+        self.tmux.new_session("raw", "sleep 1000")
+        result = self.tx(["focus-envelope", "%999"])
+        self.assertEqual(result.code, 0, result.err)
+        self.assertFalse(result.raw_out.endswith("\n"), result.raw_out)
+        self.assertNotIn("session-kind", result.out)
+        self.assertNotIn("inner-", result.out)
+
+    # ----- T-CLI-23 ---------------------------------------------------------------------------
+
+    def test_t_cli_23_selfcheck(self):
+        result = self.tx(["selfcheck"])
+        self.assertEqual((result.code, result.err), (0, ""))
+        self.assertEqual(result.out, f"S1a self-check PASSED ✓\n  home={self.home.path}  schema v6  records now=0\n")
+        self.assertEqual(self._record_files(), [])
+        lines = self.log_lines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["type"], "selfcheck")
+        self.assertRegex(lines[0]["msg"], r"^created s1a-selfcheck \([0-9a-f-]{36}\)$")
+
                 "  skipped  cur.json (already v6)",
                 "migrated 1 record(s) to v6; retired 0 view record(s); left 1 untouched.",
                 "  migrated art.json → artifact v2",
