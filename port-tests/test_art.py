@@ -653,6 +653,10 @@ class TestArt(TxCase):
         self.assertEqual(creator(self.tx_inside("s9", ["artifact", "create", source], env={"TX_SESSION_ID": "s1"})), "s1")
         self.assertEqual(creator(self.tx_inside("s9", ["artifact", "create", source])), "s9")
         self.assertEqual(creator(self.tx_inside("plain", ["artifact", "create", source])), "user")
+        # (d) outside tmux with the server still running: `s9` is now the ONLY session, so an
+        # implementation that consulted tmux without the `$TMUX` gate would report `s9`.
+        self.tmux.kill_session("plain")
+        self.assertEqual(self.tmux.sessions(), ["s9"])
         self.assertEqual(creator(self.tx(["artifact", "create", source])), "user")
 
     # ----- T-ART-22 / 23: id resolution, modify outputs --------------------------------------
