@@ -224,12 +224,21 @@ class TestArt(TxCase):
             [V1_SKIP.format(name="nover.json", version="None"), V1_SKIP.format(name="old.json", version=1)],
         )
 
-    @expected_failure_on_python
-    def test_t_art_02_fixed_show_named_v1_record(self):
+    def _show_named_v1_record(self):
         (self.home.artifacts_dir / "old.json").write_text('{"artifact_schema_version": 1, "id": "old", "foo": 1}')
         result = self.tx(["artifact", "show", "old"])
         self.assertEqual((result.code, result.out), (1, ""))
-        self.assertIn("artifact_schema_version=1 is unsupported", result.err)
+        self.assertIn("record artifact_schema_version=1 is unsupported (expected 2)", result.err)
+        return result
+
+    def test_t_art_02_parity_show_named_v1_record(self):
+        # Both implementations: exit 1, stdout empty, the version message on stderr (the reference
+        # carries it inside a leaked traceback — Q26).
+        self._show_named_v1_record()
+
+    @expected_failure_on_python
+    def test_t_art_02_fixed_show_named_v1_record(self):
+        result = self._show_named_v1_record()
         self.assertNotIn("Traceback", result.err)
 
     def test_t_art_03_exact_key_set_enforcement(self):
