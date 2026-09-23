@@ -10,7 +10,48 @@ import json
 import os
 import re
 
-from txkit import HOME_DIRS, TxCase
+import subprocess
+import tempfile
+from pathlib import Path
+
+from txkit import HOME_DIRS, TMUX_SOCKET_ENV, KitSafetyError, TxCase, run_tx
+
+
+class TestSmokeSafety(TxCase):
+    def test_tmux_wrapper_is_passthrough_without_socket_env(self):
+        self.tmux.new_session("probe", "sleep 30")
+        wrapper = str(self.tmux.bin_dir / "tmux")
+        # Drop the test process's own tmux client vars: `$TMUX` would otherwise pick its socket.
+        base_env = {
+            key: value for key, value in os.environ.items() if key not in (TMUX_SOCKET_ENV, "TMUX", "TMUX_PANE")
+        }
+        # With the env var: the wrapper reaches the private server.
+        with_socket = subprocess.run(
+            [wrapper, "has-session", "-t", "=probe"], env={**base_env, TMUX_SOCKET_ENV: self.tmux.socket}
+        )
+        self.assertEqual(with_socket.returncode, 0)
+        # Without it: plain tmux, aimed (via TMUX_TMPDIR) at a place with no server at all.
+        with tempfile.TemporaryDirectory() as empty_tmpdir:
+            without_socket = subprocess.run(
+                [wrapper, "has-session", "-t", "=probe"],
+                env={**base_env, "TMUX_TMPDIR": empty_tmpdir},
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(without_socket.returncode, 0)
+        # tmux tried the DEFAULT socket under the empty TMUX_TMPDIR — no -L was injected.
+        self.assertIn(f"{empty_tmpdir}/tmux-", without_socket.stderr)
+        self.assertIn("/default", without_socket.stderr)
+
+    def test_run_tx_refuses_real_home_or_missing_socket(self):
+        real_home = str(Path.home() / ".tx-ide")
+        with self.assertRaises(KitSafetyError):
+            self.tx(["help"], env={"TX_IDE_HOME": real_home})
+        with self.assertRaises(KitSafetyError):
+            self.tx(["help"], env={"TX_IDE_HOME": None})
+        with self.assertRaises(KitSafetyError):
+            run_tx(["help"], home=self.home, tmux=None, fakes=self.fakes)
+        self.assertFalse(self.home.log_path.exists())
 
 
 class TestSmokeCli(TxCase):

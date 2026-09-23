@@ -25,6 +25,21 @@ Every test runs on a private tmux server behind a `tmux` wrapper first on PATH, 
 live server is never touched. Each test gets a fresh temp root; teardown kills the server and
 removes the tree.
 
+## Safety
+
+Two hard guards keep `tx` away from the operator's real `~/.tx-ide` and live tmux server (added
+after a leaked kit PATH let a reconcile against an empty private server exit every live record):
+
+1. **The PATH `tmux` wrapper injects `-L` only when `TXKIT_TMUX_SOCKET` is set.** `scrubbed_env`
+   sets it to the test's private socket; in any other shell the wrapper execs the real tmux
+   untouched, so a leaked PATH is harmless.
+2. **`run_tx` / `scrubbed_env` raise `KitSafetyError`** unless the final `TX_IDE_HOME` (after
+   `env=` overrides) is under the kit's temp root and `TXKIT_TMUX_SOCKET` is set. `$TX_BIN` is never
+   executed against `~/.tx-ide`; passing `tmux=None` to `run_tx` is refused.
+
+Never call `$TX_BIN` yourself from a test or subagent with the kit's PATH but a real home. Go
+through `self.tx(...)`.
+
 ## Layout
 
 ```
