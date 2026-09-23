@@ -398,8 +398,11 @@ class TmuxServer:
         args.append(cmd)
         self.run(*args, check=True, env=client_env)
         if tx_id is not None:
-            # `=name`: exact match — a bare target prefix-matches another uuid-named session (Q27).
-            self.run("set-option", "-t", f"={name}", "@tx_id", tx_id, check=True)
+            # Exact match: a bare target prefix-matches another uuid-named session (Q27). tmux 3.4
+            # parses set-option's -t as a window target, where `=name` alone is "no such session";
+            # `=name:` (session:window form) is accepted and verified exact (it refuses `=abc:` when
+            # only `abc-…` exists).
+            self.run("set-option", "-t", f"={name}:", "@tx_id", tx_id, check=True)
 
     def kill_session(self, name: str) -> None:
         self.run("kill-session", "-t", f"={name}")
