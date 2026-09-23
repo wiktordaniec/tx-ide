@@ -202,6 +202,20 @@ class TestEditor(TxCase):
         self.assertEqual(self.wait_rc(marker), 0)
         self.assertEqual(json.loads(self.tx(["show", record["id"]]).out)["name"], "q")
 
+    def test_t_editor_03_home_then_end_moves_the_cursor_to_the_end(self):
+        # `End` is only meaningful after the cursor has LEFT the end: Home, End, X → `abcX`
+        pane, record = self.nested_pane("abc", "t")
+        marker = self.open_form(pane)
+        self.keys("Ed", "Home", "=Y")
+        self.wait_row("Ed", 1, "  › Name:   Yabc")
+        self.keys("Ed", "BSpace", "End", "=X")
+        self.wait_row("Ed", 1, "  › Name:   abcX")
+        self.keys("Ed", "Enter")
+        self.assertEqual(self.wait_rc(marker), 0)
+        self.assertEqual(json.loads(self.tx(["show", record["id"]]).out)["name"], "abcX")
+        tail = self.log_tail()[0]
+        self.assertEqual((tail["type"], tail["msg"]), ("rename", "abc → abcX"))
+
     def test_t_editor_03_tab_edits_tags_only(self):
         pane, record = self.nested_pane("abc", "t")
         before = len(self.log_lines())
