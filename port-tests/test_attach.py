@@ -20,7 +20,7 @@ import shlex
 import subprocess
 import time
 
-from txkit import REAL_TMUX, TX_BIN, PtyProcess, TxCase
+from txkit import REAL_TMUX, TX_BIN, PtyProcess, Result, TxCase
 
 # lib/tx/palette.py literals (shared/palette.sh) as they appear in the fzf binds.
 BOLD = "\x1b[1m"
@@ -70,17 +70,10 @@ def unquote_start_command(value: str) -> str:
 class TestAttach(TxCase):
     # ----- helpers -------------------------------------------------------------------------
 
-    def attach_detached(self, argv: list[str], extra: dict[str, str | None] | None = None) -> subprocess.CompletedProcess:
-        """`tx attach …` with no controlling tty (`setsid -w`), so the picker sizes from `$COLUMNS`."""
-        return subprocess.run(
-            ["setsid", "-w", TX_BIN, "attach", *argv],
-            env=self.env(extra),
-            capture_output=True,
-            text=True,
-            input="",
-            cwd=self.root,
-            timeout=60,
-        )
+    def attach_detached(self, argv: list[str], extra: dict[str, str | None] | None = None) -> Result:
+        """`tx attach …` with no controlling tty (the kit's `tx_detached`: `setsid -w`, skipped
+        where `setsid` is absent), so the picker sizes from `$COLUMNS`."""
+        return self.tx_detached(["attach", *argv], env=extra)
 
     def assert_hermetic_server(self) -> None:
         """The server's global env must be the temp home's before anything runs inside it."""
@@ -127,7 +120,7 @@ class TestAttach(TxCase):
         self.spawn_process(EIGHTEEN)
         self.fakes.configure("fzf", exit_code=130)
         result = self.attach_detached(["-f", "q"], {"COLUMNS": "118"})
-        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+        self.assertEqual((result.code, result.out, result.err), (0, "", ""))
         dump = self.fakes.dumps("fzf")[0]
         argv = dump["argv"][1:]
         namew = 18
@@ -169,7 +162,7 @@ class TestAttach(TxCase):
         self.spawn_process("w")
         self.fakes.configure("fzf", exit_code=130)
         result = self.attach_detached([], {"COLUMNS": "118"})
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.code, 0, result.err)
         dump = self.fakes.dumps("fzf")[0]
         argv = dump["argv"][1:]
         header = header_columns(12)
@@ -260,7 +253,7 @@ class TestAttach(TxCase):
         long_record = self.spawn_process(LONG_NAME)
         self.fakes.configure("fzf", exit_code=130)
         result = self.attach_detached([], {"COLUMNS": "118"})
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.code, 0, result.err)
         dump = self.fakes.dumps("fzf")[0]
         self.assertEqual(dump["env"]["NAMEW"], "28")
         feed = self.tx(["_list"], env={"NAMEW": "28"}).raw_out
@@ -402,11 +395,12 @@ class TestAttach(TxCase):
         record = self.spawn_process("U2")
         client = self.attach_client("Views")
         pane = self.tmux.pane_id("Views")
-        self.assertEqual(self.tmux.display(pane, "#{pane_current_command}"), "bash")
+        self.wait_until(lambda: self.tmux.display(pane, "#{pane_current_command}") == "bash")
         old_pid = self.tmux.display(pane, "#{pane_pid}")
         self.fakes.configure("fzf", sequence=[{"stdout": picker_row("U2", record["id"]), "exit_code": 0}, {"exit_code": 130}])
         popup = self.popup(client, "tx attach")
-        self.wait_until(lambda: self.tmux.display(pane, "#{pane_current_command}") == "tmux")
+        # "within ~1 s": the respawned wrapper execs tmux at once; 3 s leaves headroom for a loaded host
+        self.wait_until(lambda: self.tmux.display(pane, "#{pane_current_command}") == "tmux", timeout=3)
         self.assertEqual(popup.wait(timeout=10), 0)
         self.assertEqual(
             unquote_start_command(self.tmux.display(pane, "#{pane_start_command}")),
@@ -462,6 +456,28 @@ class TestAttach(TxCase):
         self.assertEqual(self.tmux.display(pane, "#{pane_start_command}"), start_command)
         self.assertIsNone(self.client_on(self.tmux.pane_tty(pane)))
 
+    def test_t_attach_07_nested_tmux_pane_falls_through_to_switch_client(self):
+        # the view pane already hosts a nested `tmux attach` (of an untracked session), so its
+        # `pane_current_command` is `tmux` — not a shell → no respawn, switch-client instead
+        self.spawn_view("Views")
+        record = self.spawn_process("U2")
+        self.tmux.new_session("plain", "sleep 300")
+        pane = self.tmux.pane_id("Views")
+        self.nest(pane, "plain")
+        self.wait_until(lambda: self.tmux.display(pane, "#{pane_current_command}") == "tmux")
+        client = self.attach_client("Views")
+        start_command = self.tmux.display(pane, "#{pane_start_command}")
+        pane_pid = self.tmux.display(pane, "#{pane_pid}")
+        self.fakes.configure("fzf", sequence=[{"stdout": picker_row("U2", record["id"]), "exit_code": 0}, {"exit_code": 130}])
+        popup = self.popup(client, "tx attach")
+        self.wait_until(lambda: self.client_on(client.tty)["client_session"] == record["id"])
+        self.assertEqual(popup.wait(timeout=10), 0)
+        self.assertEqual(self.tmux.display(pane, "#{pane_start_command}"), start_command)
+        self.assertEqual(self.tmux.display(pane, "#{pane_pid}"), pane_pid)
+        self.assertEqual(self.client_on(self.tmux.pane_tty(pane))["client_session"], "plain")
+        self.assertEqual(json.loads(self.tx(["show", "U2"]).out)["attached_to"], [])
+        self.assertEqual(len(self.fakes.dumps("fzf")), 1)
+
     def test_t_attach_07_tmux_unset_falls_through_to_foreground_attach(self):
         self.spawn_view("Views")
         record = self.spawn_process("U2")
@@ -506,8 +522,8 @@ class TestAttach(TxCase):
     def test_t_attach_08_tmux_set_without_client_swallows_switch_failure(self):
         record = self.spawn_process("U2")
         self.fakes.configure("fzf", sequence=[{"stdout": picker_row("U2", record["id"]), "exit_code": 0}, {"exit_code": 130}])
-        result = self.attach_detached([], {"TMUX": f"/tmp/tmux-{os.getuid()}/{self.tmux.socket},1,0"})
-        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
+        result = self.attach_detached([], {"TMUX": f"{self.tmux.socket_path},1,0"})
+        self.assertEqual((result.code, result.out, result.err), (0, "", ""))
         self.assertEqual(len(self.fakes.dumps("fzf")), 1)
         self.assertEqual(self.tmux.clients(), [])
 
@@ -522,11 +538,10 @@ class TestAttach(TxCase):
         self.spawn_view("Views")
         self.spawn_view("Alt")
         record = self.spawn_process("U2")
-        self.tmux.run("new-window", "-t", "Views:1", check=True)
-        nested_pane = self.tmux.pane_id("Views:1")
+        nested_pane = self.tmux.new_window("Views:1")  # kit panes: non-login bash keeps the kit PATH (D15)
         self.nest(nested_pane, record["id"])
         self.nest(self.tmux.pane_id("Alt:0"), record["id"])
-        self.tmux.run("new-window", "-t", "Views:2", check=True)
+        self.tmux.new_window("Views:2")
         self.tmux.run("select-window", "-t", "Views:2", check=True)
         self.assertEqual(self.tmux.display("Views", "#{window_index}"), "2")
         client = self.attach_client("Views")
@@ -544,24 +559,35 @@ class TestAttach(TxCase):
 
     def test_t_attach_09_jump_from_the_target_itself_moves_nothing(self):
         client, record, nested_pane = self.jump_fixture()
-        nested_client = self.client_on(self.tmux.pane_tty(nested_pane))
-        # a keystroke inside the nested client (forwarded to U2's pane) makes it the newest client
-        self.tmux.send_keys(nested_pane, "Space")
-        clients_before = self.tmux.clients()
-        popup = self.popup(nested_client["client_tty"], "tx attach --jump")
+        nested_tty = self.tmux.pane_tty(nested_pane)
+        # Keystrokes inside the nested client (forwarded to U2's pane) make it the most recently
+        # active client (Q43). `client_activity` has 1 s resolution, so keep typing until the nested
+        # client's activity second is strictly past the outer client's (which attached last).
+        outer_activity = int(self.client_on(client.tty)["client_activity"])
+
+        def nested_is_newest() -> bool:
+            self.tmux.send_keys(nested_pane, "Space")
+            return int(self.client_on(nested_tty)["client_activity"]) > outer_activity
+
+        self.wait_until(nested_is_newest, interval=0.3)
+        clients_before = sorted((row["client_tty"], row["client_session"]) for row in self.tmux.clients())
+        popup = self.popup(nested_tty, "tx attach --jump")
         self.assertEqual(popup.wait(timeout=10), 0)
         self.assertEqual(len(self.fakes.dumps("fzf")), 1)
         self.assertEqual(self.tmux.display("Views", "#{window_index}"), "2")
-        self.assertEqual(self.tmux.clients(), clients_before)
+        self.assertEqual(self.tmux.display("Alt", "#{window_index}.#{pane_index}"), "0.0")
+        self.assertEqual(sorted((row["client_tty"], row["client_session"]) for row in self.tmux.clients()), clients_before)
 
     def test_t_attach_09_jump_falls_back_to_nest_attach_then_switch(self):
         # hosted only in Alt → not current → nest-attach into the popup's shell pane
         self.spawn_view("Views")
         self.spawn_view("Alt")
         record = self.spawn_process("U2")
-        self.nest(self.tmux.pane_id("Alt:0"), record["id"])
+        alt_pane = self.tmux.pane_id("Alt:0")
+        self.nest(alt_pane, record["id"])
         client = self.attach_client("Views")  # newest client — see jump_fixture
         pane = self.tmux.pane_id("Views")
+        old_pid = self.tmux.display(pane, "#{pane_pid}")
         self.fakes.configure("fzf", sequence=[{"stdout": picker_row("U2", record["id"]), "exit_code": 0}, {"exit_code": 130}])
         popup = self.popup(client, "tx attach --jump")
         self.wait_until(lambda: self.tmux.display(pane, "#{pane_current_command}") == "tmux")
@@ -570,7 +596,23 @@ class TestAttach(TxCase):
             unquote_start_command(self.tmux.display(pane, "#{pane_start_command}")),
             f"bash -c 'set -m; TMUX= tmux attach -t {record['id']}; exec ${{SHELL:-zsh}}'",
         )
+        self.assertNotEqual(self.tmux.display(pane, "#{pane_pid}"), old_pid)
+        # the T-ATTACH-07 checks: a client on the pane's tty viewing U2; LOCATION / attached_to
+        # list Alt (sorted first) then Views, both windows settled to `tmux` under automatic-rename
+        nested = self.wait_until(lambda: self.client_on(self.tmux.pane_tty(pane)))
+        self.assertEqual(nested["client_session"], record["id"])
+        self.tmux.wait_for_window_name(alt_pane, "tmux")
+        self.tmux.wait_for_window_name(pane, "tmux")
+        self.assertIn("  U2                       alive    tmux[0] +1", self.tx(["ls"]).out)
+        self.assertEqual(
+            json.loads(self.tx(["show", "U2"]).out)["attached_to"],
+            [
+                {"host": "Alt", "window_index": "0", "window_name": "tmux", "pane_id": alt_pane, "pane_index": "0"},
+                {"host": "Views", "window_index": "0", "window_name": "tmux", "pane_id": pane, "pane_index": "0"},
+            ],
+        )
         self.assertEqual(self.client_on(client.tty)["client_session"], "Views")
+        self.assertEqual(len(self.fakes.dumps("fzf")), 1)
         # a non-shell popup pane → switch-client instead
         self.spawn_view("Nv", cmd="nvim")
         nv_client = self.attach_client("Nv")
