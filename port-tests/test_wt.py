@@ -183,17 +183,25 @@ class TestWt(WorkerFixtureCase):
 
     @expected_failure_on_python
     def test_t_wt_02_fixed_empty_and_dot_names_refused(self):
-        """Q25 FIX: `""`, `.`, `..` are refused (the reference derives `-2`, `.-2`, `..-2`)."""
+        """Q25 FIX: `""`, `.`, `..` are refused. Every leg is a WORKER spawn (`--engine claude`,
+        spec rev 5): only the worker path reaches `next_name`, where the reference derives `-2`,
+        `.-2`, `..-2`. The refusal is a `tx spawn: …` error naming the rejected name (the exact
+        wording is the port's); nothing is persisted."""
         checkout = self.checkout("My Repo!", parent=self.root / "x")
         main = os.path.realpath(checkout.path)
-        for name, extra in (("", ()), (".", ("--engine", "claude")), ("..", ("--engine", "claude"))):
+        for name in ("", ".", ".."):
             with self.subTest(name=name):
-                result = self.tx(["spawn", name, "--tag", "t", *extra, "--cwd", str(checkout.path)])
-                self.assertNotEqual(result.code, 0)
+                result = self.spawn_worker(name, checkout.path)
+                self.assertEqual(result.code, 1, result.err)
+                self.assertEqual(result.out, "")
+                self.assertTrue(result.err.startswith("tx spawn: "), result.err)
                 self.assertIn(f"'{name}'", result.err)
+                self.assertEqual(result.err.count("\n"), 1)
                 self.assertEqual(list(self.home.sessions_dir.iterdir()), [])
                 self.assertEqual(realpaths(checkout.worktrees()), [main])
+                self.assertEqual(list(self.home.worktrees_dir.glob("*/*")), [])
                 self.assertEqual(self.tmux.sessions(), [])
+                self.assertEqual(self.log_lines(), [])
 
     # ----- T-WT-03 existing path skipped ---------------------------------------------------
 
