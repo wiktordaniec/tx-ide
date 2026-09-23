@@ -1,0 +1,9 @@
+  skipped  bad.json (JSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 2 (char 1))
+  skipped  badstate.json (ValueError: 'bogus' is not a valid State)
+  skipped  cur.json (already v6)
+  skipped  list.json (AttributeError: 'list' object has no attribute 'get')
+  skipped  nokey.json (KeyError: 'cmd')
+  skipped  nov.json (not an upgradable record (schema_version=None))
+  skipped  old.json (not an upgradable record (schema_version=2))
+migrated 0 record(s) to v6; retired 0 view record(s); left 7 untouched.
+migrated 0 artifact record(s) to v2; left 0 untouched.
