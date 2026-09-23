@@ -527,9 +527,11 @@ class TestSpawn(TxCase):
         shell = self._show("s")
         self.assertEqual((shell["cmd"], shell["role"], shell["cwd"], shell["tags"]), ("/bin/bash", "shell", workdir, ["a", "b"]))
 
-        result = self.tx(["spawn", "c", "--tag", "t", "--cwd", repo, "--cmd", "codex --foo"])
+        # Non-hex names throughout: with several uuid-named sessions live, a bare hex display name
+        # (`c`, `e1`) can prefix-match ANOTHER session's uuid on the reference (Q27; ~6 % per pair).
+        result = self.tx(["spawn", "cw", "--tag", "t", "--cwd", repo, "--cmd", "codex --foo"])
         self.assertEqual(result.code, 0, result.err)
-        worker = self._show("c")
+        worker = self._show("cw")
         self.assertEqual((worker["engine"], worker["role"], worker["cmd"]), ("codex", "llm", "codex --foo"))
         self.assertTrue(worker["cwd"].startswith(str(self.home.worktrees_dir)), worker["cwd"])
         dump = self.fakes.wait_dump("codex", worker["id"])
@@ -542,12 +544,12 @@ class TestSpawn(TxCase):
 
         other = str(self._workdir("other"))
         executor = self.spawn_process("X", cmd="bash", cwd=workdir)
-        result = self.run_in_pane(executor["id"], f"tx spawn e1 --tag t --cwd {other} --cmd 'sleep 30'")
+        result = self.run_in_pane(executor["id"], f"tx spawn ex1 --tag t --cwd {other} --cmd 'sleep 30'")
         self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(self._show("e1")["cwd"], other)
-        result = self.run_in_pane(executor["id"], "tx spawn e2 --tag t --cmd 'sleep 30'")
+        self.assertEqual(self._show("ex1")["cwd"], other)
+        result = self.run_in_pane(executor["id"], "tx spawn ex2 --tag t --cmd 'sleep 30'")
         self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(self._show("e2")["cwd"], workdir)
+        self.assertEqual(self._show("ex2")["cwd"], workdir)
 
         result = self.tx(["spawn", "m", "--tag", "t", "--cwd", repo, "--cmd", "mytool"])
         self.assertEqual(result.code, 0, result.err)
