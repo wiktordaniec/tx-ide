@@ -283,6 +283,16 @@ class TmuxServer:
         )
         wrapper.chmod(0o755)
 
+    def start(self) -> None:
+        """Boot the private server config-free and keep it alive with no sessions (`exit-empty
+        off`), so every later call — raw or via `tx` — joins a server whose global environment is
+        `env`. Call it AFTER `env` is set: the booting process's environment becomes the server's
+        global environment (inherited by every pane, popup and hook). A throwaway session carries
+        the boot because `start-server` does not honour `-f` on tmux 3.4."""
+        self.run("new-session", "-d", "-s", "__boot", "sleep 5", check=True)
+        self.run("set-option", "-g", "exit-empty", "off", check=True)
+        self.run("kill-session", "-t", "__boot", check=True)
+
     def run(
         self, *args: str, check: bool = False, env: dict[str, str] | None = None
     ) -> subprocess.CompletedProcess:
@@ -1075,6 +1085,51 @@ def run_tx_detached(
     )
 
 
+def run_tx_inside(
+    tmux: TmuxServer,
+    target: str,
+    argv: list[str],
+    *,
+    home: TxHome,
+    fakes: FakeBins | None = None,
+    env: dict[str, str | None] | None = None,
+    cwd: str | Path | None = None,
+    scratch: Path,
+) -> Result:
+    """Run `TX_BIN argv` INSIDE tmux session `target` via `run-shell -t` — synchronous, and the job
+    inherits `$TMUX` from the server (the "harness types the command into s1" recipe of T-MSG-02 /
+    T-ART-21 / T-CLI-12). `TMUX_PANE` is pinned to `target`'s active pane explicitly: on tmux 3.4
+    `run-shell -t` hands the job the server's stale global `TMUX_PANE`, and `#S` would otherwise
+    resolve to whichever session tmux deems current. The environment is rebuilt from `scrubbed_env`
+    under `env -i`; stdout/stderr/exit land in `scratch` (`run-shell` would otherwise paint stdout
+    into a pane)."""
+    scratch.mkdir(parents=True, exist_ok=True)
+    pane_id = tmux.display(target, "#{pane_id}")
+    out_path, err_path, code_path = (scratch / name for name in ("out", "err", "code"))
+    for path in (out_path, err_path, code_path):
+        path.unlink(missing_ok=True)
+    assignments = " ".join(
+        f"{key}={shlex.quote(value)}" for key, value in scrubbed_env(home, tmux, fakes, env).items()
+    )
+    command = (
+        f"cd {shlex.quote(str(cwd if cwd is not None else home.root))} && "
+        f'env -i TMUX="$TMUX" TMUX_PANE={shlex.quote(pane_id)} {assignments} '
+        f"{shlex.quote(TX_BIN)} {shlex.join(argv)} "
+        f">{shlex.quote(str(out_path))} 2>{shlex.quote(str(err_path))}; "
+        f"echo $? >{shlex.quote(str(code_path))}"
+    )
+    tmux.run("run-shell", "-t", target, command, check=True)
+    raw_out = out_path.read_text()
+    raw_err = err_path.read_text()
+    return Result(
+        code=int(code_path.read_text().strip()),
+        out=strip_ansi(raw_out),
+        err=strip_ansi(raw_err),
+        raw_out=raw_out,
+        raw_err=raw_err,
+    )
+
+
 def log_lines(home: TxHome) -> list[dict]:
     """Parsed `log.jsonl` (empty when absent)."""
     if not home.log_path.exists():
@@ -1192,9 +1247,10 @@ class TxCase(unittest.TestCase):
         self.fakes = FakeBins(self.root)
         self.home = TxHome(self.root, **self.home_options)
         self.records = Records(self.home)
-        # Every direct tmux call carries the hermetic env, so the server's global environment is the
-        # temp home's whichever call (raw or via tx) starts it — see TmuxServer.
+        # Every direct tmux call carries the hermetic env, and the server is booted here, after the
+        # env exists, so its global environment is the temp home's — see TmuxServer.start.
         self.tmux.env = self.env()
+        self.tmux.start()
         self._git: GitFixture | None = None
 
     @property
@@ -1290,6 +1346,27 @@ class TxCase(unittest.TestCase):
         """The environment `self.tx` runs under — for a crafted live session whose pane must see
         the fakes (`self.tmux.new_session(..., client_env=self.tx_env())`) or a hand-run child."""
         return scrubbed_env(self.home, self.tmux, self.fakes, extra)
+
+    def tx_inside(
+        self,
+        target: str,
+        argv: list[str],
+        *,
+        env: dict[str, str | None] | None = None,
+        cwd: str | Path | None = None,
+    ) -> Result:
+        """`self.tx(argv)` but run inside the private server's session `target` (see
+        `run_tx_inside`): `$TMUX` is set and `#S` == `target`."""
+        return run_tx_inside(
+            self.tmux,
+            target,
+            argv,
+            home=self.home,
+            fakes=self.fakes,
+            env=env,
+            cwd=cwd,
+            scratch=self.root / "inside",
+        )
 
     def log_lines(self) -> list[dict]:
         return log_lines(self.home)

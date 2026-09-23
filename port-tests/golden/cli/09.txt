@@ -1,0 +1,3 @@
+PROCESSES
+  sh1                      alive    —                         —     
+  w1                       working  main[1]                   1m     [a] [b]

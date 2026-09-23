@@ -1,0 +1,3 @@
+ARTIFACTS
+  aaaaaaaa    2r     1m  Plan                         [alice] [user]
+  bbbbbbbb    1r     2h  notes.md                     [gone-id-]

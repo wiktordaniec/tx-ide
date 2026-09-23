@@ -1,0 +1,10 @@
+Plan  (aaaaaaaa-0000-4000-8000-000000000001)
+  filename:   plan.md
+  created:    5m ago
+  updated:    1m ago
+  group:      derived: feat-x
+  revisions:  2
+  working:    dirty — un-snapshotted edits (close with `tx artifact modify`)
+  history:
+    rev 0      5m ago  alice               
+    rev 1      1m ago  user                  tweak
