@@ -37,16 +37,9 @@ class TestRecon(TxCase):
         self.assertEqual(lines[0], "PROCESSES")
         return lines[1:]
 
-    def live_bash(self, session_id: str) -> None:
-        self.tmux.new_session(session_id, "bash", tx_id=session_id)
-
-    def pane_commands(self) -> dict[str, str]:
-        out = self.tmux.run("list-sessions", "-F", "#{@tx_id}\t#{pane_current_command}").stdout
-        return dict(line.split("\t") for line in out.splitlines() if line)
-
     def wait_pane_commands(self, expected: dict[str, str]) -> None:
         self.wait_until(
-            lambda: all(self.pane_commands().get(key) == value for key, value in expected.items())
+            lambda: all(self.tmux.pane_commands().get(key) == value for key, value in expected.items())
         )
 
     # ----- T-RECON-01 --------------------------------------------------------------------------
@@ -124,7 +117,7 @@ class TestRecon(TxCase):
         self.records.llm(id="e", name="e", state="exited", ended_at=1.0)
         self.records.llm(id="a", name="a", state="archived", ended_at=1.0)
         self.records.llm(id="i", name="i", state="idle")
-        self.live_bash("i")
+        self.live("i", "bash")
         before = self.snapshot("e", "a", "i")
         self.assertFalse(self.home.log_path.exists())
         for _ in range(2):
@@ -145,7 +138,7 @@ class TestRecon(TxCase):
     def test_t_recon_04_stuck_working_demotion(self):
         now = time.time()
         self.records.llm(id="w", name="stuck", state="working", turn_started_at=now - 1200, ended_at=None)
-        self.live_bash("w")
+        self.live("w", "bash")
         self.wait_pane_commands({"w": "bash"})
         fixture = self.fixture_lines("w", ("attached_to", "turn_started_at"))
         result = self.tx(["ls"])
@@ -164,7 +157,7 @@ class TestRecon(TxCase):
     def test_t_recon_04_young_turn_is_not_demoted(self):
         now = time.time()
         self.records.llm(id="w", name="stuck", state="working", turn_started_at=now - 60, ended_at=None)
-        self.live_bash("w")
+        self.live("w", "bash")
         self.wait_pane_commands({"w": "bash"})
         before = self.snapshot("w")
         result = self.tx(["ls"])
@@ -223,7 +216,7 @@ class TestRecon(TxCase):
         self.records.llm(id="b", name="b", state="waiting", turn_started_at=now - 9999)
         self.records.other(id="c", name="c", role="shell", state="working")
         for session_id in ("a", "b", "c"):
-            self.live_bash(session_id)
+            self.live(session_id, "bash")
         self.wait_pane_commands({"a": "bash", "b": "bash", "c": "bash"})
         before = self.snapshot("a", "b", "c")
         result = self.tx(["ls"])
@@ -241,7 +234,7 @@ class TestRecon(TxCase):
             self.home.write_config(config)
         now = time.time()
         self.records.llm(id=session_id, name=name, state="working", turn_started_at=now - age)
-        self.live_bash(session_id)
+        self.live(session_id, "bash")
         self.wait_pane_commands({session_id: "bash"})
 
     def test_t_recon_07_threshold_from_config(self):
@@ -300,8 +293,8 @@ class TestRecon(TxCase):
         self.records.llm(id="s", name="s", state="working", turn_started_at=now - 1200)
         self.records.llm(id="v", name="v", state="idle")
         self.records.llm(id="x", name="x", state="exited", ended_at=1.0)
-        self.live_bash("o")
-        self.live_bash("s")
+        self.live("o", "bash")
+        self.live("s", "bash")
         self.wait_pane_commands({"o": "bash", "s": "bash"})
         before = self.snapshot("o", "x")
         self.assertFalse(self.home.log_path.exists())
