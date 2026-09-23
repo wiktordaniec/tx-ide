@@ -784,9 +784,10 @@ class TestArt(TxCase):
         empty = self.tx(["artifact", "ls"])
         self.assertEqual((empty.code, empty.out), (0, "ARTIFACTS\n  (none)\n"))
         title = "T" * 40
-        self.records.artifact(id="cccccccc-0000-4000-8000-000000000003", title=title, created_at=time.time() - 30)
+        # `now-600` renders `10m` (the `m` bucket is stable for 60 s; `30s` would flip at 1 s).
+        self.records.artifact(id="cccccccc-0000-4000-8000-000000000003", title=title, created_at=time.time() - 600)
         result = self.tx(["artifact", "ls"])
-        self.assertEqual(result.lines[1], f"  cccccccc    1r    30s  {'T' * 27}… [s1]")
+        self.assertEqual(result.lines[1], f"  cccccccc    1r    10m  {'T' * 27}… [s1]")
 
     def test_t_art_25_show_shape(self):
         now = time.time()
