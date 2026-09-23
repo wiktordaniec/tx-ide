@@ -332,6 +332,26 @@ class TestTmux(TxCase):
 
     # ----- T-TMUX-08 display-message with / without a target -----------------------------------
 
+    @expected_failure_on_python
+    def test_t_tmux_07_fixed_short_hex_name_never_prefix_matches(self):
+        """FIX (decided 2026-09-23): `show_option` targets `=name`, so a hex display name can no
+        longer prefix-match another uuid-named session. Reference: `show-options -vqt b @tx_id`
+        prefix-matches the single live session whose uuid starts with `b`, and `tx show b` /
+        `_tmux-name b` / `kill b` act on THAT record instead of the record named `b`."""
+        stranger = "b0000000-0000-4000-8000-000000000001"
+        self.records.other(id=stranger, name="stranger")
+        self.tmux.new_session(stranger, "sleep 300", tx_id=stranger)
+        wanted = "c0000000-0000-4000-8000-000000000002"
+        self.records.other(id=wanted, name="b")
+        self.tmux.new_session(wanted, "sleep 300", tx_id=wanted)
+        self.assertEqual(json.loads(self.tx(["show", "b"]).out)["id"], wanted)
+        self.assertEqual(self.tx(["_tmux-name", "b"]).out, f"{wanted}\n")
+        killed = self.tx(["kill", "b"])
+        self.assertEqual((killed.code, killed.out), (0, "Killed 'b'\n"), killed.err)
+        self.assertFalse(self.tmux.has_session(wanted))
+        self.assertTrue(self.tmux.has_session(stranger))
+        self.assertEqual(self.records.load(stranger)["state"], "alive")
+
     def test_t_tmux_08_display_message_targeted_and_untargeted(self):
         pane = self._view("Views")
         self.tmux.run("rename-window", "-t", "Views:0", "win", check=True)
