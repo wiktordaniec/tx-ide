@@ -84,8 +84,13 @@ wrapper then the fakes first. `env` overrides (a `None` value unsets). `out`/`er
 Also: `self.log_lines()`, `self.log_tail(n)`, `self.wait_until(predicate, timeout)`,
 `self.assert_golden(name, actual)`, `self.env(extra)` (the scrubbed env, for hand-run helpers and pty
 clients), `self.spawn_process(name, cmd=, tag=, cwd=, extra=)` / `self.spawn_view(name, cwd=, cmd=)`
-(spawn, assert exit 0, return the record / nothing). The module-level `run_tx(...)`, `log_lines(home)`,
-`wait_until(...)`, etc. exist for tests that compose fixtures by hand.
+(spawn, assert exit 0, return the record / nothing), `self.live(id, cmd="sleep 1000")` (the "live
+record" recipe: a session named by the id with `@tx_id` set), `self.tx_detached(argv, env=...)`
+(`setsid -w`, no controlling tty — `tx attach` then sizes from `$COLUMNS`; skips without `setsid`),
+`self.records.patch(id, key=value, gone=...)` (rewrite a stored record; `...` deletes a key), and
+`self.tmux.pane_commands()` (`@tx_id → #{pane_current_command}`). The module-level `run_tx(...)`,
+`run_tx_detached(...)`, `log_lines(home)`, `wait_until(...)`, etc. exist for tests that compose
+fixtures by hand.
 
 ### Inside tmux and on a pty
 

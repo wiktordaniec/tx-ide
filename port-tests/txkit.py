@@ -404,6 +404,16 @@ class TmuxServer:
         self.type_line(pane_id, f"TMUX= tmux attach -t {shlex.quote(session)}")
         wait_until(lambda: any(row["client_tty"] == tty and row["client_session"] == session for row in self.clients()),
                    timeout, what=f"{session} nested in {pane_id}")
+    def pane_commands(self) -> dict[str, str]:
+        """`@tx_id` → `#{pane_current_command}` for every session carrying an `@tx_id` (the
+        RECON agent-command probes; poll with `wait_until` — tmux reads the name lazily)."""
+        out = self.run("list-sessions", "-F", "#{@tx_id}\t#{pane_current_command}").stdout
+        pairs = {}
+        for line in out.splitlines():
+            tx_id, _, command = line.partition("\t")
+            if tx_id:
+                pairs[tx_id] = command
+        return pairs
 
     def close(self) -> None:
         """Kill the private server and drop its socket file (tmux leaves it behind)."""
@@ -737,6 +747,17 @@ class Records:
         path.write_text(json.dumps(record, indent=2))
         return path
 
+    def patch(self, session_id: str, **changes) -> Path:
+        """Rewrite a stored record with `changes` applied — for values the builders default (e.g.
+        a null `created_at`) or keys they always emit. A `...` (Ellipsis) value deletes the key."""
+        record = self.load(session_id)
+        for key, value in changes.items():
+            if value is ...:
+                del record[key]
+            else:
+                record[key] = value
+        return self.write(record)
+
     def chat_ref(
         self,
         *,
@@ -1015,6 +1036,37 @@ def run_tx(
     )
 
 
+def run_tx_detached(
+    argv: list[str],
+    *,
+    home: TxHome,
+    tmux: TmuxServer | None = None,
+    fakes: FakeBins | None = None,
+    env: dict[str, str | None] | None = None,
+    timeout: float = 60.0,
+) -> Result:
+    """`run_tx` with no controlling tty (`setsid -w`, stdin `/dev/null`) — for verbs that size
+    themselves from `/dev/tty` (`tx attach`) so the width falls back to `$COLUMNS` (pass it in
+    `env`). Raises `unittest.SkipTest` where `setsid` is unavailable (macOS)."""
+    if shutil.which("setsid") is None:
+        raise unittest.SkipTest("setsid not on PATH")
+    completed = subprocess.run(
+        ["setsid", "-w", TX_BIN, *argv],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        env=scrubbed_env(home, tmux, fakes, env),
+        timeout=timeout,
+    )
+    return Result(
+        code=completed.returncode,
+        out=strip_ansi(completed.stdout),
+        err=strip_ansi(completed.stderr),
+        raw_out=completed.stdout,
+        raw_err=completed.stderr,
+    )
+
+
 def log_lines(home: TxHome) -> list[dict]:
     """Parsed `log.jsonl` (empty when absent)."""
     if not home.log_path.exists():
@@ -1214,6 +1266,16 @@ class TxCase(unittest.TestCase):
             argv += ["--cmd", cmd]
         result = self.tx(argv)
         self.assertEqual(result.code, 0, result.err)
+    def tx_detached(
+        self, argv: list[str], *, env: dict[str, str | None] | None = None
+    ) -> Result:
+        """`run_tx_detached` over the standard fixtures (no controlling tty; `$COLUMNS` wins)."""
+        return run_tx_detached(argv, home=self.home, tmux=self.tmux, fakes=self.fakes, env=env)
+
+    def live(self, session_id: str, cmd: str = "sleep 1000") -> None:
+        """Make a crafted record "live": a private-server session named by its id with `@tx_id`
+        set (the RECON/RENDER recipe). `cmd` is the pane command (`sleep` is not an agent)."""
+        self.tmux.new_session(session_id, cmd, tx_id=session_id)
 
     def log_lines(self) -> list[dict]:
         return log_lines(self.home)

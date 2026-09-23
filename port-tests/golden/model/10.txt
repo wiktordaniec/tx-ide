@@ -1,0 +1,26 @@
+{
+  "schema_version": 6,
+  "id": "22222222-aaaa-4bbb-8ccc-000000000002",
+  "name": "ed",
+  "role": "nvim",
+  "state": "exited",
+  "cwd": "/repo",
+  "cmd": "",
+  "tags": [],
+  "group": null,
+  "env": {},
+  "parent": null,
+  "pid": null,
+  "attached_to": [
+    {
+      "host": "Views",
+      "window_index": "1",
+      "window_name": "work",
+      "pane_id": "%41",
+      "pane_index": "1"
+    }
+  ],
+  "created_at": 950.0,
+  "ended_at": 960.0,
+  "artifact_id": null
+}

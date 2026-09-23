@@ -1,0 +1,5 @@
+tx: skipping unreadable record c.json: record schema_version=5 is unsupported (expected 6); tx-ide does not back-migrate older records on load (§9) — run `tx migrate` to upgrade older records
+tx: skipping unreadable record i.json: record schema_version=None is unsupported (expected 6); tx-ide does not back-migrate older records on load (§9) — run `tx migrate` to upgrade older records
+tx: skipping unreadable record j.json: record schema_version='6' is unsupported (expected 6); tx-ide does not back-migrate older records on load (§9) — run `tx migrate` to upgrade older records
+tx: skipping unreadable record k.json: record schema_version=None is unsupported (expected 6); tx-ide does not back-migrate older records on load (§9) — run `tx migrate` to upgrade older records
+tx show: no record for 'nosuch'
