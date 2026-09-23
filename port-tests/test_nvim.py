@@ -11,15 +11,18 @@ client) — see `inside()`.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
 
 from txkit import (
     REPO,
+    Result,
     TxCase,
     expected_failure_on_python,
     requires_bin,
@@ -27,7 +30,8 @@ from txkit import (
 )
 
 NVIM_BASE_COMMAND = "nvim +'set background=dark | colorscheme tokyonight-moon'"
-TMUX_NAV = REPO / "bin" / "tmux-nav"
+# `tmux-nav` is driven through the kit's copy of the `TX_HELPERS_DIR` helper (`self.helper`), never
+# `<REPO>/bin/tmux-nav` (H9 / D16). The tour script is the skill's, not a port entry point.
 APPLY_TOUR = REPO / "agents" / "skills" / "tx-code-tours" / "scripts" / "apply_tour.py"
 TOUR_MAPPINGS = ("]n", "[n", "<leader>cn", "<leader>cN", "<leader>cl")
 DIAGNOSTIC_COUNT = 'luaeval("#vim.diagnostic.get(nil,{namespace=vim.api.nvim_create_namespace(\'tx_code_tour\')})")'
@@ -78,10 +82,20 @@ class TestNvim(TxCase):
         self.assertEqual(result.err, "")
         self.assertTrue(result.out.startswith("usage: tx spawn-nvim "), result.out)
         usage = result.out.split("\n\n")[0]
-        for flag in ("--tag TAG", "[--group GROUP]", "[--cwd CWD]", "[--diff [DIFF]]", "[--open OPEN]", "[--env ENV]"):
+        for flag in ("[--group GROUP]", "[--cwd CWD]", "[--diff [DIFF]]", "[--open OPEN]", "[--env ENV]"):
             self.assertIn(flag, usage)
+        # required: `--tag TAG` stands outside the optional brackets
+        self.assertRegex(usage, r"(?<!\[)--tag TAG(?!\])")
         self.assertRegex(usage, r"\bname$")
         self.assertIn("positional arguments:\n  name\n", result.out)
+
+    def test_t_nvim_01_env_is_repeatable(self):
+        name = self.non_hex_name("e")
+        self.spawn_nvim(name, "--tag", "s", "--env", "A=1", "--env", "B=2")
+        record = self.show(name)
+        self.assertEqual(record["env"], {"A": "1", "B": "2"})
+        dump = self.fakes.wait_dump("nvim", record["id"])
+        self.assertEqual((dump["env"]["A"], dump["env"]["B"]), ("1", "2"))
 
     def test_t_nvim_01_argument_errors(self):
         for argv, message in (
@@ -122,27 +136,38 @@ class TestNvim(TxCase):
         self.assertEqual(dump["env"]["TX_SESSION_ID"], session_id)
         self.assertEqual(dump["env"]["COLORTERM"], "truecolor")
         self.assertEqual(record["pid"], int(self.tmux.display(session_id, "#{pane_pid}")))
+        self.assert_spawn_logged("ed", str(directory))
+
+    def assert_spawn_logged(self, name: str, cwd: str) -> None:
+        """H8: the newest log line is this spawn's."""
+        tail = self.log_tail()[0]
+        self.assertEqual((tail["type"], tail["msg"]), ("spawn", f"{name} [nvim] {cwd}"))
 
     # ----- T-NVIM-03 -----------------------------------------------------------------------
 
     def test_t_nvim_03_diff_default_main_and_explicit_base(self):
-        result = self.spawn_nvim("d", "--tag", "s", "--diff")
-        record = self.show("d")
+        # Non-hex names: three uuid sessions end up live and `tx show <name>` prefix-matches (Q27).
+        default_base, explicit_base, no_diff = (self.non_hex_name("d") for _ in range(3))
+        result = self.spawn_nvim(default_base, "--tag", "s", "--diff")
+        record = self.show(default_base)
         self.assertEqual(record["cmd"], NVIM_BASE_COMMAND + " +'DiffviewOpen main'")
         self.assertEqual(self.fakes.wait_dump("nvim", record["id"])["argv"][1:], ["+set background=dark | colorscheme tokyonight-moon", "+DiffviewOpen main"])
-        self.assertEqual(result.out, f"Spawned nvim 'd' (cwd={record['cwd']}, tag=s, diff=main)\n")
+        self.assertEqual(result.out, f"Spawned nvim '{default_base}' (cwd={record['cwd']}, tag=s, diff=main)\n")
+        self.assert_spawn_logged(default_base, record["cwd"])
 
-        result = self.spawn_nvim("d2", "--tag", "s", "--diff", "abc123")
-        record = self.show("d2")
+        result = self.spawn_nvim(explicit_base, "--tag", "s", "--diff", "abc123")
+        record = self.show(explicit_base)
         self.assertEqual(record["cmd"], NVIM_BASE_COMMAND + " +'DiffviewOpen abc123'")
         self.assertEqual(self.fakes.wait_dump("nvim", record["id"])["argv"][-1], "+DiffviewOpen abc123")
-        self.assertEqual(result.out, f"Spawned nvim 'd2' (cwd={record['cwd']}, tag=s, diff=abc123)\n")
+        self.assertEqual(result.out, f"Spawned nvim '{explicit_base}' (cwd={record['cwd']}, tag=s, diff=abc123)\n")
+        self.assert_spawn_logged(explicit_base, record["cwd"])
 
-        result = self.spawn_nvim("d3", "--tag", "s")
-        record = self.show("d3")
+        result = self.spawn_nvim(no_diff, "--tag", "s")
+        record = self.show(no_diff)
         self.assertEqual(record["cmd"], NVIM_BASE_COMMAND)
         self.assertNotIn("DiffviewOpen", " ".join(self.fakes.wait_dump("nvim", record["id"])["argv"]))
-        self.assertEqual(result.out, f"Spawned nvim 'd3' (cwd={record['cwd']}, tag=s)\n")
+        self.assertEqual(result.out, f"Spawned nvim '{no_diff}' (cwd={record['cwd']}, tag=s)\n")
+        self.assert_spawn_logged(no_diff, record["cwd"])
 
     # ----- T-NVIM-04 -----------------------------------------------------------------------
 
@@ -155,15 +180,20 @@ class TestNvim(TxCase):
         self.assertEqual(record["cmd"], f"{NVIM_BASE_COMMAND} +'DiffviewOpen main' '{plan}'")
         self.assertEqual(self.fakes.wait_dump("nvim", record["id"])["argv"][-1], str(plan))
         self.assertEqual(result.out, f"Spawned nvim 'v' (cwd={record['cwd']}, tag=s, diff=main, open={plan})\n")
+        self.assert_spawn_logged("v", record["cwd"])
 
     # ----- T-NVIM-05 -----------------------------------------------------------------------
+    # The companion's name is non-hex: a worker's uuid session is live beside it, and `tx show <name>`
+    # prefix-matches a bare hex name (Q27) — a wrong-record hit would pass silently (same `parent`,
+    # same cwd).
 
     def test_t_nvim_05_record_shape_inside_a_session(self):
         worker = self.spawn_worker()
+        editor = self.non_hex_name("ed")
         directory = self.root / "d"
         directory.mkdir()
         before = self.sessions_files()
-        self.spawn_nvim("ed", "--tag", "a,b", "--group", "g1", "--env", "A=1", "--cwd", str(directory), env=self.inside(worker["id"]))
+        self.spawn_nvim(editor, "--tag", "a,b", "--group", "g1", "--env", "A=1", "--cwd", str(directory), env=self.inside(worker["id"]))
         (new_file,) = self.sessions_files() - before
         record = json.loads((self.home.sessions_dir / new_file).read_text())
         self.assertEqual(new_file, f"{record['id']}.json")
@@ -174,7 +204,7 @@ class TestNvim(TxCase):
             {
                 "schema_version": 6,
                 "id": record["id"],
-                "name": "ed",
+                "name": editor,
                 "role": "nvim",
                 "state": "alive",
                 "cwd": str(directory),
@@ -190,33 +220,37 @@ class TestNvim(TxCase):
                 "artifact_id": None,
             },
         )
-        tail = self.log_tail()[0]
-        self.assertEqual((tail["type"], tail["msg"]), ("spawn", f"ed [nvim] {directory}"))
+        self.assert_spawn_logged(editor, str(directory))
 
     def test_t_nvim_05_parent_null_without_tmux(self):
         self.spawn_worker()
-        self.spawn_nvim("ed", "--tag", "a", "--cwd", str(self.root))
-        self.assertIsNone(self.show("ed")["parent"])
+        editor = self.non_hex_name("ed")
+        self.spawn_nvim(editor, "--tag", "a", "--cwd", str(self.root))
+        self.assertIsNone(self.show(editor)["parent"])
 
     def test_t_nvim_05_default_cwd_is_calling_pane_path(self):
         worker = self.spawn_worker()
-        self.spawn_nvim("ed", "--tag", "a", env=self.inside(worker["id"]))
-        self.assertEqual(self.show("ed")["cwd"], self.tmux.display(worker["id"], "#{pane_current_path}"))
-        self.assertEqual(self.show("ed")["cwd"], worker["cwd"])
+        editor = self.non_hex_name("ed")
+        self.spawn_nvim(editor, "--tag", "a", env=self.inside(worker["id"]))
+        self.assertEqual(self.show(editor)["cwd"], self.tmux.display(worker["id"], "#{pane_current_path}"))
+        self.assertEqual(self.show(editor)["cwd"], worker["cwd"])
 
     def test_t_nvim_05_default_cwd_is_own_cwd_in_plain_terminal(self):
         # No live sessions at all, so there is no pane path to take: the process cwd wins.
         directory = self.root / "here"
         directory.mkdir()
-        result = self.tx(["spawn-nvim", "ed", "--tag", "a"], cwd=directory)
+        editor = self.non_hex_name("ed")
+        result = self.tx(["spawn-nvim", editor, "--tag", "a"], cwd=directory)
         self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(self.show("ed")["cwd"], str(directory))
-        self.assertIsNone(self.show("ed")["parent"])
+        self.assertEqual(self.show(editor)["cwd"], str(directory))
+        self.assertIsNone(self.show(editor)["parent"])
 
     # ----- T-NVIM-06 -----------------------------------------------------------------------
 
     def test_t_nvim_06_role_inferred_nvim_from_bare_spawn(self):
-        for name, command in (("e", "nvim README.md"), ("e2", str(self.fakes.bin_dir / "nvim"))):
+        # Non-hex names (Q27): the second `tx show` runs while the first uuid session is live.
+        first, second = (self.non_hex_name("e") for _ in range(2))
+        for name, command in ((first, "nvim README.md"), (second, str(self.fakes.bin_dir / "nvim"))):
             with self.subTest(command=command):
                 result = self.tx(["spawn", name, "--tag", "s", "--cmd", command])
                 self.assertEqual(result.code, 0, result.err)
@@ -232,7 +266,7 @@ class TestNvim(TxCase):
                 self.assertEqual((tail["type"], tail["msg"]), ("spawn", f"{name} [nvim] {self.root}"))
         listing = self.tx(["ls"]).out
         self.assertTrue(listing.startswith("PROCESSES\n"))
-        self.assertRegex(listing, r"\n  e +alive ")
+        self.assertRegex(listing, rf"\n  {first} +alive ")
 
     def test_t_nvim_06_role_other_and_shell_from_basename(self):
         # The command must outlive the spawn: a vanishing pane takes the tmux session (and the
@@ -242,11 +276,13 @@ class TestNvim(TxCase):
         result = self.tx(["spawn", "q", "--tag", "s", "--cmd", "nvim-qt"])
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(self.show("q")["role"], "other")
-        self.assertEqual(self.log_tail()[0]["msg"], f"q [other] {self.root}")
+        tail = self.log_tail()[0]
+        self.assertEqual((tail["type"], tail["msg"]), ("spawn", f"q [other] {self.root}"))
         result = self.tx(["spawn", "z", "--tag", "s", "--cmd", "zsh"])
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(self.show("z")["role"], "shell")
-        self.assertEqual(self.log_tail()[0]["msg"], f"z [shell] {self.root}")
+        tail = self.log_tail()[0]
+        self.assertEqual((tail["type"], tail["msg"]), ("spawn", f"z [shell] {self.root}"))
 
     # ----- T-NVIM-07 -----------------------------------------------------------------------
 
@@ -309,9 +345,11 @@ class TestNvim(TxCase):
         result = self.tx(["artifact", "open", "0123abcd", "--tag", "x,y"], env=self.inside(worker["id"]))
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(self.show("art-0123abcd")["tags"], ["x", "y"])
+        log_length = len(self.log_lines())
         result = self.tx(["artifact", "open", "0123abcd", "--tag", ""], env=self.inside(worker["id"]))
         self.assertEqual(result.code, 2)
         self.assertTrue(result.err.endswith("tx artifact open: error: --tag requires at least one value\n"), result.err)
+        self.assertEqual(len(self.log_lines()), log_length)
 
     def test_t_nvim_08_untagged_invoker_or_no_tmux_gets_artifact_tag(self):
         self.records.artifact(id=self.ARTIFACT_ID)
@@ -342,6 +380,7 @@ class TestNvim(TxCase):
         self.records.artifact(id=self.ARTIFACT_ID)
         self.records.artifact(id="0123abce-0000-4000-8000-000000000002")
         files = self.sessions_files()
+        log_length = len(self.log_lines())
         result = self.tx(["artifact", "open", "0123abc"], env=self.inside(worker["id"]))
         self.assertEqual(result.code, 1)
         self.assertEqual(result.err, "tx artifact: artifact id prefix '0123abc' is ambiguous (2 matches) — use more characters\n")
@@ -349,6 +388,7 @@ class TestNvim(TxCase):
         self.assertEqual(result.code, 1)
         self.assertEqual(result.err, "tx artifact: artifact 'zzz' not found\n")
         self.assertEqual(self.sessions_files(), files)
+        self.assertEqual(len(self.log_lines()), log_length)
 
     # ----- T-NVIM-09 -----------------------------------------------------------------------
 
@@ -383,14 +423,24 @@ class TestNvim(TxCase):
             self.assertIsInstance(row["name"], str)
             self.assertIsInstance(row["tags"], list)
         self.assertEqual({row["id"]: row["role"] for row in rows}, {worker["id"]: "llm", nvim["id"]: "nvim"})
-        listed = self.tx(["ls"]).out
-        for row in rows:
-            self.assertIn(f"\n  {row['name']} ", listed)
-        # Read from $TX_IDE_HOME only: a record planted under $HOME/.tx-ide is not consulted.
+        # the same set as `tx ls` — both directions
+        self.assertEqual(self.listed_names(), {row["name"] for row in rows})
+        # Read from $TX_IDE_HOME only: a record planted under $HOME/.tx-ide is not consulted — even
+        # when it has a live session carrying its `@tx_id`, so a port reading the wrong home cannot
+        # hide behind a liveness filter.
+        ghost = "ffffffff-0000-4000-8000-000000000000"
         foreign = self.home.user_home / ".tx-ide" / "sessions"
         foreign.mkdir(parents=True)
-        (foreign / "ffffffff-0000-4000-8000-000000000000.json").write_text(json.dumps({**self.records.load(worker["id"]), "id": "ffffffff-0000-4000-8000-000000000000", "name": "ghost"}))
+        (foreign / f"{ghost}.json").write_text(json.dumps({**self.records.load(worker["id"]), "id": ghost, "name": "ghost"}))
+        self.tmux.new_session(ghost, "sleep 300", tx_id=ghost)
         self.assertEqual({row["name"] for row in json.loads(self.tx(["ls", "--json"]).out)}, {"L1", "N1"})
+        self.assertEqual(self.listed_names(), {"L1", "N1"})
+
+    def listed_names(self) -> set[str]:
+        """The names `tx ls` lists (rows are `  <name padded> <state> …` under `PROCESSES`)."""
+        listing = self.tx(["ls"]).out
+        self.assertTrue(listing.startswith("PROCESSES\n"), listing)
+        return {line[2:].split()[0] for line in listing.splitlines()[1:] if line.startswith("  ")}
 
     @expected_failure_on_python
     def test_t_nvim_09_fixed_ls_json_empty(self):
@@ -411,19 +461,25 @@ class TestNvim(TxCase):
         self.fakes.wait_dump("claude", record["id"])
         return record
 
-    def delivered(self, target_id: str, count: int = 2) -> list[dict]:
-        return self.wait_until(lambda: (lambda chunks: chunks if len(chunks) >= count else None)(self.fakes.stdin_log("claude", target_id)))
+    def delivered(self, target_id: str, expected: str) -> list[dict]:
+        """The fake's stdin chunks once their concatenation is exactly `expected`. An envelope can
+        arrive split across reads, so a chunk count is not a completion signal."""
+
+        def complete() -> list[dict] | None:
+            chunks = self.fakes.stdin_log("claude", target_id)
+            return chunks if "".join(chunk["data"] for chunk in chunks) == expected else None
+
+        return self.wait_until(complete)
 
     def assert_envelope_delivered(self, target: dict, sender: str) -> None:
         envelope = f'<from-user session="{sender}">{self.BODY}</from-user>'
         self.assertIn(envelope, self.tmux.capture(target["id"]))
-        chunks = self.delivered(target["id"])
-        text = "".join(chunk["data"] for chunk in chunks)
-        self.assertEqual(text, envelope + "\r")
+        chunks = self.delivered(target["id"], envelope + "\r")
         enter = chunks[-1]
         self.assertEqual(enter["data"], "\r")
         last_envelope_chunk = chunks[-2]
-        self.assertGreaterEqual(enter["at"] - last_envelope_chunk["at"], 0.3)
+        # `_deliver` sleeps 0.3 s between the text and the Enter; 50 ms of read-scheduling slack
+        self.assertGreaterEqual(enter["at"] - last_envelope_chunk["at"], 0.25)
 
     def test_t_nvim_10_argv_form_and_envelope(self):
         target = self.message_target()
@@ -437,14 +493,20 @@ class TestNvim(TxCase):
 
     def test_t_nvim_10_requires_tx_session_id(self):
         target = self.message_target()
+        # Inside a VIEW's pane (`#S` == view1) with no TX_SESSION_ID: the view's name must never
+        # become the sender — the verb refuses rather than falling back to `#S`.
+        result = self.tx(["spawn-view", "view1", "--cmd", "sleep 300"])
+        self.assertEqual(result.code, 0, result.err)
         log_length = len(self.log_lines())
-        result = self.tx(["send-user-message", "L1", self.BODY], env={"TX_SESSION_ID": None})
+        result = self.tx(["send-user-message", "L1", self.BODY], env={**self.inside("view1", tx_session_id=False), "TX_SESSION_ID": None})
         self.assertEqual(result.code, 1)
         self.assertEqual(result.out, "")
         self.assertEqual(result.err, "tx send-user-message: send-user-message must run inside a tx session ($TX_SESSION_ID is unset)\n")
         time.sleep(0.5)
         self.assertEqual(self.fakes.stdin_log("claude", target["id"]), [])
-        self.assertNotIn("from-user", self.tmux.capture(target["id"]))
+        captured = self.tmux.capture(target["id"])
+        self.assertNotIn("from-user", captured)
+        self.assertNotIn("view1", captured)
         self.assertEqual(len(self.log_lines()), log_length)
 
     def test_t_nvim_10_raw_id_without_record_is_the_sender(self):
@@ -458,12 +520,14 @@ class TestNvim(TxCase):
     def test_t_nvim_10_unknown_or_dead_target(self):
         origin = self.records.other(name="ed-diff", role="nvim")
         self.records.other(name="gone", role="shell", state="alive")
+        log_length = len(self.log_lines())
         for target in ("L1", "gone"):
             with self.subTest(target=target):
                 result = self.tx(["send-user-message", target, self.BODY], env={"TX_SESSION_ID": origin})
                 self.assertEqual(result.code, 1)
                 self.assertEqual(result.out, "")
                 self.assertEqual(result.err, f"tx send-user-message: target session '{target}' does not exist\n")
+                self.assertEqual(len(self.log_lines()), log_length)
 
     def test_t_nvim_10_target_by_id_and_by_tx_id_name(self):
         target = self.message_target()
@@ -472,10 +536,8 @@ class TestNvim(TxCase):
             with self.subTest(token=token):
                 result = self.tx(["send-user-message", token, self.BODY], env={"TX_SESSION_ID": origin})
                 self.assertEqual(result.code, 0, result.err)
-        chunks = self.delivered(target["id"], count=4)
-        text = "".join(chunk["data"] for chunk in chunks)
         envelope = f'<from-user session="ed-diff">{self.BODY}</from-user>\r'
-        self.assertEqual(text, envelope * 2)
+        self.delivered(target["id"], envelope * 2)
 
     def test_t_nvim_10_live_record_wins_over_exited_namesake(self):
         target = self.message_target()
@@ -544,19 +606,17 @@ class TestNvim(TxCase):
         self.assertEqual(record["cwd"], worktree)
         self.assertTrue(record["cmd"].endswith(f" +'DiffviewOpen {merge_base}'"), record["cmd"])
         self.assertEqual(self.fakes.wait_dump("nvim", record["id"])["argv"][-1], f"+DiffviewOpen {merge_base}")
+        self.assert_spawn_logged("worker-1-diff", worktree)
         listing = self.tx(["ls"]).out
         self.assertRegex(listing, r"\n  worker-1 +\S+ .*\[scope\] \[p1\]")
         self.assertRegex(listing, r"\n  worker-1-diff +\S+ .*\[scope\] \[p1\]")
 
     # ----- T-NVIM-14 -----------------------------------------------------------------------
 
-    def tmux_nav(self, *argv: str, env: dict[str, str | None] | None = None) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            [str(TMUX_NAV), *argv],
-            capture_output=True,
-            text=True,
-            env=scrubbed_env(self.home, self.tmux, self.fakes, env),
-        )
+    def tmux_nav(self, *argv: str, env: dict[str, str | None] | None = None) -> Result:
+        """The kit's copy of the `tmux-nav` helper (`TX_HELPERS_DIR`), under the scrubbed env — its
+        plain `tmux` is the PATH wrapper aimed at the private server."""
+        return self.helper("tmux-nav", *argv, env=env)
 
     def side_by_side(self, name: str = "S") -> tuple[str, str]:
         """A session with panes L (left) and R (right, active); returns their ids."""
@@ -574,34 +634,37 @@ class TestNvim(TxCase):
         left, right = self.side_by_side()
         self.assertEqual((self.active(left), self.active(right)), ("0", "1"))
         completed = self.tmux_nav("L", right)
-        self.assertEqual((completed.returncode, completed.stdout, completed.stderr), (0, "", ""))
+        self.assertEqual((completed.code, completed.out, completed.err), (0, "", ""))
         self.assertEqual((self.active(left), self.active(right)), ("1", "0"))
 
     def test_t_nvim_14_usage_error(self):
         left, right = self.side_by_side()
         completed = self.tmux_nav("X", right)
-        self.assertEqual(completed.returncode, 2)
-        self.assertEqual(completed.stderr, "usage: tmux-nav {L|D|U|R} [pane_id] [client_tty]\n")
+        self.assertEqual(completed.code, 2)
+        self.assertEqual(completed.err, "usage: tmux-nav {L|D|U|R} [pane_id] [client_tty]\n")
         self.assertEqual((self.active(left), self.active(right)), ("0", "1"))
 
     def test_t_nvim_14_no_pane_and_no_tmux_pane(self):
         left, right = self.side_by_side()
         completed = self.tmux_nav("L", env={"TMUX_PANE": None})
-        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.code, 0)
         self.assertEqual((self.active(left), self.active(right)), ("0", "1"))
 
     def test_t_nvim_14_nav_keys_off(self):
         left, right = self.side_by_side()
         self.tmux.run("set", "-g", "@tx-ide-nav-keys", "off", check=True)
         completed = self.tmux_nav("L", right)
-        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.code, 0)
         self.assertEqual((self.active(left), self.active(right)), ("0", "1"))
 
     def test_t_nvim_14_top_level_edge(self):
         left, right = self.side_by_side()
+        # Start on L: a broken nav that wraps L → R would then show, instead of leaving R "still" active.
+        self.tmux.run("select-pane", "-t", left, check=True)
+        self.assertEqual((self.active(left), self.active(right)), ("1", "0"))
         completed = self.tmux_nav("L", left)
-        self.assertEqual(completed.returncode, 0)
-        self.assertEqual((self.active(left), self.active(right)), ("0", "1"))
+        self.assertEqual(completed.code, 0)
+        self.assertEqual((self.active(left), self.active(right)), ("1", "0"))
 
     # ----- T-NVIM-15 -----------------------------------------------------------------------
 
@@ -625,7 +688,7 @@ class TestNvim(TxCase):
         self.attach_client("V")
         self.assertEqual(self.v_panes(), f"{left} 0\n{host} 1\n")
         completed = self.tmux_nav("L", inner_pane)
-        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.code, 0, completed.err)
         self.assertEqual(self.v_panes(), f"{left} 1\n{host} 0\n")
         self.assertEqual(self.tmux.run("list-panes", "-t", "I", "-F", "#{pane_id} #{pane_active}", check=True).stdout, f"{inner_pane} 1\n")
 
@@ -633,7 +696,7 @@ class TestNvim(TxCase):
         left, host, inner_pane = self.nested_fixture()
         self.assertEqual(self.tmux.display("V", "#{session_attached}"), "0")
         completed = self.tmux_nav("L", inner_pane)
-        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.code, 0, completed.err)
         self.assertEqual(self.v_panes(), f"{left} 0\n{host} 1\n")
 
     # ----- T-NVIM-16 -----------------------------------------------------------------------
@@ -662,20 +725,44 @@ class TestNvim(TxCase):
         self.addCleanup(stop)
         return process
 
+    @staticmethod
+    def kill_pid(pid: int) -> None:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+
+    def nvim_pid_of(self, session_id: str) -> str:
+        """The real nvim under session `session_id`'s pane: the pane process's child whose comm is
+        `nvim` (the skill's `pgrep -P $pane_pid | head -1`, made independent of child order). It is
+        killed at cleanup — an unreaped nvim is the known `--embed` orphan problem."""
+        pane_pid = self.tmux.run("list-panes", "-st", session_id, "-F", "#{pane_pid}", check=True).stdout.split()[0]
+
+        def child() -> str | None:
+            children = subprocess.run(["pgrep", "-P", pane_pid], capture_output=True, text=True).stdout.split()
+            for pid in children:
+                try:
+                    comm = Path(f"/proc/{pid}/comm").read_text().strip()
+                except OSError:
+                    continue
+                if comm == "nvim":
+                    return pid
+            return None
+
+        nvim_pid = self.wait_until(child)
+        self.addCleanup(self.kill_pid, int(nvim_pid))
+        return nvim_pid
+
     @requires_bin("nvim")
     @requires_bin("lsof")
     def test_t_nvim_16_socket_discovery(self):
         self.fakes.remove("nvim")
         self.stub_colorscheme()
-        self.spawn_nvim("N1", "--tag", "s")
+        # nvim's default socket dir is `$XDG_RUNTIME_DIR` (scrubbed from the env, so it would fall
+        # back to /tmp): keep it under the temp root, never the operator's /run/user/<uid>.
+        runtime_dir = self.root / "xdg-runtime"
+        runtime_dir.mkdir(mode=0o700)
+        self.spawn_nvim("N1", "--tag", "s", "--env", f"XDG_RUNTIME_DIR={runtime_dir}")
         record = self.show("N1")
-        pane_pid = self.tmux.run("list-panes", "-st", record["id"], "-F", "#{pane_pid}", check=True).stdout.split()[0]
-
-        def child() -> str | None:
-            children = subprocess.run(["pgrep", "-P", pane_pid], capture_output=True, text=True).stdout.split()
-            return children[0] if children else None
-
-        nvim_pid = self.wait_until(child)
+        nvim_pid = self.nvim_pid_of(record["id"])
         self.assertEqual(Path(f"/proc/{nvim_pid}/comm").read_text().strip(), "nvim")
 
         def socket() -> str | None:
@@ -687,6 +774,7 @@ class TestNvim(TxCase):
 
         socket_path = self.wait_until(socket)
         self.assertIn("nvim", socket_path)
+        self.assertTrue(socket_path.startswith(f"{runtime_dir}/"), socket_path)
         completed = self.remote_expr(socket_path, "1+1")
         self.assertEqual((completed.returncode, completed.stdout), (0, "2"), completed.stderr)
 
@@ -797,21 +885,26 @@ class TestNvim(TxCase):
 
     @expected_failure_on_python
     def test_t_nvim_20_fixed_socket_recorded_with_fake_nvim(self):
-        self.spawn_nvim("ed", "--tag", "s")
-        record = self.show("ed")
-        socket_path = f"{self.home.path}/nvim/{record['id']}.sock"
+        # Non-hex names (Q27): several uuid sessions are live by the time `tx show` / `tx kill` run.
+        editor, diff = self.non_hex_name("ed"), self.non_hex_name("d")
+        self.spawn_nvim(editor, "--tag", "s")
+        record = self.show(editor)
+        socket_dir = self.home.path / "nvim"
+        socket_path = f"{socket_dir}/{record['id']}.sock"
         self.assertEqual(record["nvim_socket"], socket_path)
+        self.assertTrue(socket_dir.is_dir(), socket_dir)
         self.assertEqual(record["cmd"], NVIM_BASE_COMMAND)
+        self.assert_spawn_logged(editor, record["cwd"])
         argv = self.fakes.wait_dump("nvim", record["id"])["argv"]
         self.assertIn("--listen", argv)
         self.assertEqual(argv[argv.index("--listen") + 1], socket_path)
         self.assertLess(argv.index("--listen"), argv.index("+set background=dark | colorscheme tokyonight-moon"))
 
-        self.spawn_nvim("d", "--tag", "s", "--diff", "--open", str(self.root / "x.md"))
-        argv = self.fakes.wait_dump("nvim", self.show("d")["id"])["argv"]
+        self.spawn_nvim(diff, "--tag", "s", "--diff", "--open", str(self.root / "x.md"))
+        argv = self.fakes.wait_dump("nvim", self.show(diff)["id"])["argv"]
         self.assertLess(argv.index("--listen"), argv.index("+DiffviewOpen main"))
         self.assertEqual(argv[-1], str(self.root / "x.md"))
-        self.assertEqual(self.show("d")["cmd"], f"{NVIM_BASE_COMMAND} +'DiffviewOpen main' {self.root / 'x.md'}")
+        self.assertEqual(self.show(diff)["cmd"], f"{NVIM_BASE_COMMAND} +'DiffviewOpen main' {self.root / 'x.md'}")
 
         result = self.tx(["spawn", "sh1", "--tag", "s", "--cmd", "sh"])
         self.assertEqual(result.code, 0, result.err)
@@ -823,9 +916,12 @@ class TestNvim(TxCase):
         result = self.tx(["artifact", "open", artifact_id], env={"TX_SESSION_ID": worker["id"]})
         self.assertEqual(result.code, 0, result.err)
         art = self.show("art-0123abcd")
-        self.assertEqual(art["nvim_socket"], f"{self.home.path}/nvim/{art['id']}.sock")
+        self.assertEqual(art["nvim_socket"], f"{socket_dir}/{art['id']}.sock")
 
-        result = self.tx(["kill", "ed"])
+        # The fake never listens, so plant the socket file the real nvim would have left behind:
+        # `tx kill` must remove it and keep the record's `nvim_socket` string.
+        Path(socket_path).touch()
+        result = self.tx(["kill", editor])
         self.assertEqual(result.code, 0, result.err)
         self.assertFalse(os.path.exists(socket_path))
         self.assertEqual(self.records.load(record["id"])["nvim_socket"], socket_path)
@@ -835,10 +931,16 @@ class TestNvim(TxCase):
     def test_t_nvim_20_fixed_socket_listens_with_real_nvim(self):
         self.fakes.remove("nvim")
         self.stub_colorscheme()
-        self.spawn_nvim("ed", "--tag", "s")
-        record = self.show("ed")
+        editor = self.non_hex_name("ed")
+        self.spawn_nvim(editor, "--tag", "s")
+        record = self.show(editor)
+        self.nvim_pid_of(record["id"])  # registers the cleanup kill
         socket_path = record["nvim_socket"]
         self.assertEqual(socket_path, f"{self.home.path}/nvim/{record['id']}.sock")
         self.wait_until(lambda: os.path.exists(socket_path))
         self.assertEqual(self.expr(socket_path, "1+1"), "2")
         self.assertEqual(self.expr(socket_path, "v:servername"), socket_path)
+        result = self.tx(["kill", editor])
+        self.assertEqual(result.code, 0, result.err)
+        self.wait_until(lambda: not os.path.exists(socket_path))
+        self.assertEqual(self.records.load(record["id"])["nvim_socket"], socket_path)
