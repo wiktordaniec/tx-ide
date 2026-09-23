@@ -49,6 +49,22 @@ GOLDEN_DIR = KIT_DIR / "golden"
 TX_BIN = str(Path(os.environ.get("TX_BIN", str(REPO / "bin" / "tx"))).expanduser().resolve())
 REAL_TMUX = shutil.which("tmux")
 
+
+def _entry_point(variable: str, default: Path) -> str:
+    return str(Path(os.environ.get(variable, str(default))).expanduser().resolve())
+
+
+# Entry points beside the binary (K1). The defaults are the reference's; a port sets them to its own
+# (`TX_INSTALLER="tx install"`-style wrappers, a statusline seam) so INST / STATUS / TMUXCONF exercise
+# the port, not the Python checkout. `TX_HELPERS_DIR` holds `tmux-pane-session-name`, `tmux-nav`,
+# `tmux-kill-tx-session`, `tmux-edit-tx-session`, `tmux-session-relabel`, `tmux-system-resources`,
+# `tx-assistant`, `tx-graph-focus-poke`; every kit run gets COPIES of them (see FakeBins).
+TX_HELPERS_DIR = Path(_entry_point("TX_HELPERS_DIR", REPO / "bin"))
+TX_INSTALLER = _entry_point("TX_INSTALLER", REPO / "install")
+TX_UNINSTALLER = _entry_point("TX_UNINSTALLER", REPO / "uninstall")
+TX_ENGINE_SETUP = _entry_point("TX_ENGINE_SETUP", REPO / "setup" / "engines" / "install.sh")
+TX_STATUSLINE = _entry_point("TX_STATUSLINE", REPO / "claude" / "statusline.sh")
+
 # What `ensure_home` creates (T-HOME-04). `agents` and `hooks/` are the installer's, mirrored below.
 HOME_DIRS = ("sessions", "history", "worktrees", "user-agents", "artifacts", "launch")
 
@@ -71,9 +87,12 @@ CODEX_HOOK_EVENTS = {
 }
 
 FAKE_NAMES = ("claude", "codex", "agy", "nvim", "fzf", "bwrap", "brew", "zsh")
-# `REPO/bin/*` helpers (`tmux-*`, `tx-assistant`, …) exposed on PATH beside a `tx` → TX_BIN link, so an
-# in-pane `tx`, a pane-border `tmux-pane-session-name` and the tmux fragment's helpers resolve.
-HELPER_BINS = tuple(sorted(path.name for path in (REPO / "bin").iterdir() if path.name != "tx"))
+# `TX_HELPERS_DIR/*` helpers (`tmux-*`, `tx-assistant`, …) copied beside a `tx` → TX_BIN link on PATH,
+# so an in-pane `tx`, a pane-border `tmux-pane-session-name` and the tmux fragment's helpers resolve —
+# to the binary under test.
+HELPER_BINS = tuple(
+    sorted(path.name for path in TX_HELPERS_DIR.iterdir() if path.name != "tx" and path.is_file())
+) if TX_HELPERS_DIR.is_dir() else ()
 # Long-running fakes stay alive so their tmux session (and the record's liveness) persists until
 # teardown; the short ones return at once.
 FAKE_DEFAULT_SLEEP = {"claude": 600, "codex": 600, "agy": 600, "nvim": 600, "zsh": 600}
@@ -646,8 +665,14 @@ class FakeBins:
     `stdin_log` (a tty-attached fake logs every raw chunk typed into its pane with a timestamp to
     `<name>-<key>.stdin.jsonl` — see `stdin_log()`; the Enter key arrives as a literal `\r`).
 
-    `helpers_dir` (after the fakes on PATH) links `tx` → `TX_BIN` and every `REPO/bin/*` helper, so
-    an in-pane `tx`, the pane-border `tmux-pane-session-name`, `tx-assistant` etc. resolve.
+    `helpers_dir` (after the fakes on PATH) is `<root>/helpers/bin`: a `tx` → `TX_BIN` link plus a
+    COPY of every `TX_HELPERS_DIR/*` helper (K1), with the sibling `shared/` (palette) and `tmux/`
+    (fragment) dirs copied beside it under `helpers_root`. The helpers find `tx` as
+    `$(dirname $(readlink -f $0))/tx` (`tmux-*`) or `<dir>/../bin/tx` (`tx-assistant`); a symlinked
+    helper would resolve back into the repo and run the reference, a copy runs the binary under
+    test. `helper(name)` is the copy's path. `tmux-session-relabel` (a Python helper importing
+    `lib/tx`) gets a `helpers/lib` link when the helpers dir is the reference layout; a port ships
+    its own.
     `add(name)` writes a recorder for a new basename (e.g. `ssh`); `write_script(name, body)`
     installs a hand-written executable instead.
     """
@@ -661,11 +686,27 @@ class FakeBins:
         self.names = names
         for name in names:
             self._write(name)
-        self.helpers_dir = root / "helper-bin"
+        self.helpers_root = root / "helpers"
+        self.helpers_dir = self.helpers_root / "bin"
         self.helpers_dir.mkdir(parents=True, exist_ok=True)
         (self.helpers_dir / "tx").symlink_to(TX_BIN)
         for helper in HELPER_BINS:
-            (self.helpers_dir / helper).symlink_to(REPO / "bin" / helper)
+            shutil.copy2(TX_HELPERS_DIR / helper, self.helpers_dir / helper)
+        # The helpers source `../shared/palette.sh`, and the tmux fragment binds `../bin/*`: copy
+        # both siblings so the tree is self-contained (`helpers_root/tmux/tx-ide.tmux` binds the
+        # copies, never the checkout).
+        for sibling in ("shared", "tmux"):
+            source = TX_HELPERS_DIR.parent / sibling
+            if source.is_dir():
+                shutil.copytree(source, self.helpers_root / sibling)
+        reference_lib = TX_HELPERS_DIR.parent / "lib"
+        if (reference_lib / "tx").is_dir():
+            (self.helpers_root / "lib").symlink_to(reference_lib)
+
+    def helper(self, name: str) -> Path:
+        """The kit's copy of helper `name` (`tmux-nav`, `tx-assistant`, …) — run THIS, never
+        `<repo>/bin/<name>`."""
+        return self.helpers_dir / name
 
     def add(self, name: str) -> None:
         """Install the standard recorder under a new basename (short-lived unless `sleep` is set)."""
@@ -1103,7 +1144,7 @@ def _check_safe(home: TxHome, env: dict[str, str]) -> None:
         )
 
 
-def run_tx(
+def run_script(
     argv: list[str],
     *,
     home: TxHome,
@@ -1114,9 +1155,11 @@ def run_tx(
     cwd: str | Path | None = None,
     timeout: float = 60.0,
 ) -> Result:
-    """Run `TX_BIN argv` under `scrubbed_env`. `stdin=None` feeds an empty stdin (EOF)."""
+    """Run any executable under `scrubbed_env` — an entry point (`TX_INSTALLER`, `TX_STATUSLINE`,
+    `bash <script>`), a helper copy (`fakes.helper(name)`), or `TX_BIN` (`run_tx`). `stdin=None`
+    feeds an empty stdin (EOF)."""
     completed = subprocess.run(
-        [TX_BIN, *argv],
+        argv,
         input=stdin if stdin is not None else "",
         capture_output=True,
         text=True,
@@ -1131,6 +1174,16 @@ def run_tx(
         raw_out=completed.stdout,
         raw_err=completed.stderr,
     )
+
+
+def run_tx(argv: list[str], **options) -> Result:
+    """Run `TX_BIN argv` under `scrubbed_env` (see `run_script` for the options)."""
+    return run_script([TX_BIN, *argv], **options)
+
+
+def run_helper(name: str, argv: list[str], *, fakes: FakeBins, **options) -> Result:
+    """Run the kit's COPY of helper `name` (`fakes.helper(name)`) under `scrubbed_env`."""
+    return run_script([str(fakes.helper(name)), *argv], fakes=fakes, **options)
 
 
 def run_tx_detached(
@@ -1278,6 +1331,16 @@ def expected_failure_on_python(test: Callable) -> Callable:
     )(test)
 
 
+def python_reference_only(test: Callable) -> Callable:
+    """The mirror of `expected_failure_on_python`: a PARITY leg of a quirk whose decision is FIX pins
+    the reference's unfixed behaviour, so it runs only against the Python reference and is skipped
+    when `TX_BIN` is a port (`TX_IMPL=rust`). Pair every FIX quirk's legs: fixed leg →
+    `expected_failure_on_python`, parity twin → `python_reference_only`."""
+    return unittest.skipUnless(
+        is_python_reference(), "parity leg of a FIX quirk; only the Python reference keeps the quirk"
+    )(test)
+
+
 @functools.cache
 def tmux_version() -> tuple[int, int] | None:
     if REAL_TMUX is None:
@@ -1356,6 +1419,33 @@ class TxCase(unittest.TestCase):
             stdin=stdin,
             cwd=cwd if cwd is not None else self.root,
         )
+
+    def script(
+        self,
+        argv: list[str],
+        *,
+        env: dict[str, str | None] | None = None,
+        stdin: str | None = None,
+        cwd: str | Path | None = None,
+        timeout: float = 60.0,
+    ) -> Result:
+        """`run_script` over the standard fixtures: an entry point (`[TX_INSTALLER]`,
+        `["bash", TX_STATUSLINE]`) or any executable, under the same env as `self.tx`."""
+        return run_script(
+            argv, home=self.home, tmux=self.tmux, fakes=self.fakes, env=env, stdin=stdin,
+            cwd=cwd if cwd is not None else self.root, timeout=timeout,
+        )
+
+    def helper(
+        self,
+        name: str,
+        *args: str,
+        env: dict[str, str | None] | None = None,
+        stdin: str | None = None,
+        cwd: str | Path | None = None,
+    ) -> Result:
+        """Run the kit's copy of helper `name` (`self.fakes.helper(name)`) with `args`."""
+        return self.script([str(self.fakes.helper(name)), *args], env=env, stdin=stdin, cwd=cwd)
 
     def env(self, extra: dict[str, str | None] | None = None) -> dict[str, str]:
         """The scrubbed environment `self.tx` runs under (for pty clients / hand-run helpers)."""

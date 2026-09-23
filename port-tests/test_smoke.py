@@ -14,7 +14,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from txkit import HOME_DIRS, TMUX_SOCKET_ENV, KitSafetyError, TxCase, resolved_home, run_tx, scrubbed_env
+from txkit import (HELPER_BINS, HOME_DIRS, TMUX_SOCKET_ENV, TX_BIN, TX_HELPERS_DIR, KitSafetyError, TxCase,
+                   resolved_home, run_tx, scrubbed_env)
 
 
 class TestSmokeSafety(TxCase):
@@ -167,3 +168,22 @@ class TestSmokeArtifact(TxCase):
         self.assertEqual((directory / "current.md").read_text(), "# plan\n")
         tail = self.log_tail()[0]
         self.assertEqual((tail["actor"], tail["type"]), ("user", "artifact-create"))
+
+
+class TestSmokeHelpers(TxCase):
+    def test_helpers_are_copies_beside_a_tx_link_to_the_binary_under_test(self):
+        self.assertIn("tmux-pane-session-name", HELPER_BINS)
+        for name in HELPER_BINS:
+            copy = self.fakes.helper(name)
+            self.assertTrue(copy.is_file() and not copy.is_symlink() and os.access(copy, os.X_OK), name)
+            # `$(dirname $(readlink -f $0))/tx` and `<dir>/../bin/tx` both land on the kit's link.
+            self.assertEqual(copy.resolve().parent, self.fakes.helpers_dir)
+        self.assertEqual(os.readlink(self.fakes.helpers_dir / "tx"), TX_BIN)
+        self.assertTrue((self.fakes.helpers_dir.parent / "bin" / "tx").exists())
+        if (TX_HELPERS_DIR.parent / "lib" / "tx").is_dir():
+            self.assertTrue((self.root / "helpers" / "lib" / "tx" / "__init__.py").exists())
+        # The copy runs (it sources `../shared/palette.sh` from the copied tree): a pane that nests
+        # no client renders the empty marker.
+        self.tmux.new_session("raw", "sleep 300")
+        result = self.helper("tmux-pane-session-name", self.tmux.pane_id("raw"))
+        self.assertEqual((result.code, result.out, result.err), (0, "#[fg=colour240,nobold]—#[default]", ""))
