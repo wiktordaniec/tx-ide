@@ -302,8 +302,10 @@ class TmuxServer:
         return self.run("has-session", "-t", f"={name}").returncode == 0
 
     def option(self, target: str, name: str, scope: str = "session") -> str | None:
-        """`show-options -v` for a session / window / pane / global option; None when unset."""
-        flag = {"session": [], "window": ["-w"], "pane": ["-p"], "global": ["-g"]}[scope]
+        """`show-options -v` for a session / window / pane / global / global-window option; None
+        when unset."""
+        flag = {"session": [], "window": ["-w"], "pane": ["-p"], "global": ["-g"],
+                "global-window": ["-gw"]}[scope]
         result = self.run("show-options", *flag, "-t", target, "-v", name)
         if result.returncode != 0:
             return None
@@ -384,6 +386,18 @@ class TmuxServer:
 
     def pane_tty(self, pane_id: str) -> str:
         return self.display(pane_id, "#{pane_tty}")
+
+    def split_window(self, target: str, *flags: str) -> str:
+        """`split-window [flags] -t target /bin/bash` → the new pane's id. Runs an explicit
+        non-login bash: a command-less split starts a LOGIN shell whose /etc/profile resets PATH
+        and drops the wrapper / helper dirs."""
+        return self.run("split-window", *flags, "-t", target, "-P", "-F", "#{pane_id}", "/bin/bash",
+                        check=True).stdout.strip()
+
+    def new_window(self, target: str, *flags: str) -> str:
+        """`new-window [flags] -t target /bin/bash` → the new window's pane id (same reason)."""
+        return self.run("new-window", *flags, "-t", target, "-P", "-F", "#{pane_id}", "/bin/bash",
+                        check=True).stdout.strip()
 
     def attach_client(self, session: str, *, env: dict[str, str], rows: int = 50, cols: int = 200,
                       timeout: float = 10.0) -> PtyProcess:
@@ -621,8 +635,10 @@ class FakeBins:
         path.chmod(0o755)
 
     def configure(self, name: str, **knobs) -> None:
-        """Set knobs for `name` (replaces earlier knobs for that basename)."""
+        """Set knobs for `name` (replaces earlier knobs for that basename; a `sequence` restarts
+        at its first entry)."""
         (self.knobs_dir / f"{name}.json").write_text(json.dumps(knobs))
+        (self.knobs_dir / f"{name}.json.count").unlink(missing_ok=True)
 
     def remove(self, name: str) -> None:
         """Take a fake off PATH (the "engine CLI absent" cases)."""
