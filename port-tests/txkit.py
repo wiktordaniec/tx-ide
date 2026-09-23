@@ -252,6 +252,23 @@ class TxHome:
 # ----- TmuxServer ------------------------------------------------------------------------------
 
 
+def write_tmux_wrapper(root: Path) -> Path:
+    """`<root>/tmux-bin/tmux`, the PATH wrapper every kit run puts first: it injects `-L` (and
+    `-f /dev/null`) ONLY when `TXKIT_TMUX_SOCKET` is set — `scrubbed_env` always sets it — so a
+    leaked PATH in an ordinary shell execs the real tmux untouched instead of pointing reconcile
+    at an empty private server. Idempotent; returns the dir."""
+    bin_dir = root / "tmux-bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    wrapper = bin_dir / "tmux"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        f'[ -n "$TXKIT_TMUX_SOCKET" ] && exec "{REAL_TMUX}" -L "$TXKIT_TMUX_SOCKET" -f /dev/null "$@"\n'
+        f'exec "{REAL_TMUX}" "$@"\n'
+    )
+    wrapper.chmod(0o755)
+    return bin_dir
+
+
 class TmuxServer:
     """A private tmux server (H2). The Python `Tmux` adapter takes only a binary name, so the
     private socket is injected by a `tmux` wrapper script placed first on PATH (Q1); direct
@@ -270,18 +287,7 @@ class TmuxServer:
     def __init__(self, root: Path, env: dict[str, str] | None = None):
         self.env = env
         self.socket = f"txkit-{uuid.uuid4().hex[:8]}"
-        self.bin_dir = root / "tmux-bin"
-        self.bin_dir.mkdir(parents=True, exist_ok=True)
-        # Safety: `-L` is injected ONLY when TXKIT_TMUX_SOCKET is set (scrubbed_env sets it). A
-        # leaked PATH in an ordinary shell then execs the real tmux untouched instead of pointing
-        # reconcile at an empty private server.
-        wrapper = self.bin_dir / "tmux"
-        wrapper.write_text(
-            "#!/bin/sh\n"
-            f'[ -n "$TXKIT_TMUX_SOCKET" ] && exec "{REAL_TMUX}" -L "$TXKIT_TMUX_SOCKET" -f /dev/null "$@"\n'
-            f'exec "{REAL_TMUX}" "$@"\n'
-        )
-        wrapper.chmod(0o755)
+        self.bin_dir = write_tmux_wrapper(root)
 
     def start(self) -> None:
         """Boot the private server config-free and keep it alive with no sessions (`exit-empty
@@ -1011,8 +1017,9 @@ def scrubbed_env(
 ) -> dict[str, str]:
     """The environment `tx` runs under: inherited env minus `TX_*`, `TMUX`, `TMUX_PANE`, `NAMEW`,
     `FZF_*`; plus the home's vars, `FAKE_OUT`, and PATH with the tmux wrapper, the fakes, then the
-    `tx` + `bin/` helper links first.
-    `extra` overrides; a `None` value unsets."""
+    `tx` + `bin/` helper links first. Without a `tmux` server the wrapper is aimed at a dead socket.
+    `extra` overrides; a `None` value unsets (`TX_IDE_HOME=None` exercises the `$HOME/.tx-ide`
+    default — `HOME` is the temp user home, so the resolved home stays under the kit root)."""
     env = {
         key: value
         for key, value in os.environ.items()
@@ -1023,6 +1030,12 @@ def scrubbed_env(
     if tmux is not None:
         path_dirs.append(str(tmux.bin_dir))
         env[TMUX_SOCKET_ENV] = tmux.socket
+    else:
+        # No server fixture (a script run such as `statusline.sh`): the wrapper still goes first,
+        # aimed at a fresh socket nothing ever started, so a stray `tmux` call meets "no server
+        # running" instead of the operator's live server.
+        path_dirs.append(str(write_tmux_wrapper(home.root)))
+        env[TMUX_SOCKET_ENV] = f"txkit-dead-{uuid.uuid4().hex[:8]}"
     if fakes is not None:
         path_dirs.append(str(fakes.bin_dir))
         path_dirs.append(str(fakes.helpers_dir))
@@ -1037,19 +1050,40 @@ def scrubbed_env(
     return env
 
 
+def resolved_home(env: dict[str, str]) -> Path | None:
+    """The `$TX_IDE_HOME` a `tx` run under `env` would use: `TX_IDE_HOME` with a leading `~/`
+    expanded against the env's own `HOME`, else `$HOME/.tx-ide`. None when it would fall back to
+    the process owner's real home (`HOME` unset, or a `~user` form)."""
+    user_home = env.get("HOME")
+    explicit = env.get("TX_IDE_HOME")
+    if explicit:
+        if explicit == "~" or explicit.startswith("~/"):
+            if user_home is None:
+                return None
+            explicit = user_home + explicit[1:]
+        elif explicit.startswith("~"):
+            return None
+        return Path(explicit)
+    if user_home is None:
+        return None
+    return Path(user_home) / ".tx-ide"
+
+
 def _check_safe(home: TxHome, env: dict[str, str]) -> None:
     """Refuse to let `TX_BIN` run against anything but a kit temp home on a private tmux socket.
-    Checked on the FINAL env (after `extra` overrides)."""
+    Checked on the FINAL env (after `extra` overrides), on the home `tx` would RESOLVE — so the
+    `$HOME/.tx-ide` default is fine while `HOME` is the temp user home, and never otherwise."""
     temp_root = Path(tempfile.gettempdir()).resolve()
     kit_root = home.root.resolve()
-    target = Path(env.get("TX_IDE_HOME", "")).expanduser().resolve()
-    if not kit_root.is_relative_to(temp_root) or not target.is_relative_to(kit_root):
+    target = resolved_home(env)
+    if target is None or not kit_root.is_relative_to(temp_root) or not target.resolve().is_relative_to(kit_root):
         raise KitSafetyError(
-            f"refusing to run tx: TX_IDE_HOME={target} is not under the kit temp root {kit_root}"
+            f"refusing to run tx: the resolved home {target} (TX_IDE_HOME={env.get('TX_IDE_HOME')!r}, "
+            f"HOME={env.get('HOME')!r}) is not under the kit temp root {kit_root}"
         )
     if not env.get(TMUX_SOCKET_ENV):
         raise KitSafetyError(
-            f"refusing to run tx: {TMUX_SOCKET_ENV} is unset — pass a TmuxServer so tmux is private"
+            f"refusing to run tx: {TMUX_SOCKET_ENV} is unset — tmux would not be private"
         )
 
 

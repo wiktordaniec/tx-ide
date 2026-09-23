@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from txkit import HOME_DIRS, TMUX_SOCKET_ENV, KitSafetyError, TxCase, run_tx
+from txkit import HOME_DIRS, TMUX_SOCKET_ENV, KitSafetyError, TxCase, resolved_home, run_tx, scrubbed_env
 
 
 class TestSmokeSafety(TxCase):
@@ -43,15 +43,38 @@ class TestSmokeSafety(TxCase):
         self.assertIn(f"{empty_tmpdir}/tmux-", without_socket.stderr)
         self.assertIn("/default", without_socket.stderr)
 
-    def test_run_tx_refuses_real_home_or_missing_socket(self):
+    def test_run_tx_refuses_a_home_that_resolves_outside_the_kit_root(self):
         real_home = str(Path.home() / ".tx-ide")
         with self.assertRaises(KitSafetyError):
             self.tx(["help"], env={"TX_IDE_HOME": real_home})
+        # The `$HOME/.tx-ide` default is refused whenever HOME is not the temp user home …
         with self.assertRaises(KitSafetyError):
-            self.tx(["help"], env={"TX_IDE_HOME": None})
+            self.tx(["help"], env={"TX_IDE_HOME": None, "HOME": str(Path.home())})
         with self.assertRaises(KitSafetyError):
-            run_tx(["help"], home=self.home, tmux=None, fakes=self.fakes)
+            self.tx(["help"], env={"TX_IDE_HOME": None, "HOME": None})
+        # … and `~` expands against the env's HOME, not the process owner's.
+        with self.assertRaises(KitSafetyError):
+            self.tx(["help"], env={"TX_IDE_HOME": "~/x", "HOME": str(Path.home())})
+        with self.assertRaises(KitSafetyError):
+            self.tx(["help"], env={"TX_IDE_HOME": f"~{os.environ.get('USER', 'root')}/x"})
         self.assertFalse(self.home.log_path.exists())
+        # Allowed: the default and a `~/` path while HOME is the temp user home (T-HOME-01).
+        self.assertEqual(resolved_home(self.env({"TX_IDE_HOME": None})), self.home.user_home / ".tx-ide")
+        self.assertEqual(resolved_home(self.env({"TX_IDE_HOME": "~/foo"})), self.home.user_home / "foo")
+
+    def test_no_server_fixture_means_a_dead_private_socket(self):
+        env = scrubbed_env(self.home, fakes=self.fakes)
+        socket = env[TMUX_SOCKET_ENV]
+        self.assertTrue(socket.startswith("txkit-dead-"))
+        self.assertNotEqual(socket, self.tmux.socket)
+        self.assertTrue(env["PATH"].startswith(str(self.home.root / "tmux-bin") + os.pathsep))
+        # `tmux` resolved through that PATH meets an empty server, never the operator's.
+        probe = subprocess.run(["tmux", "list-sessions"], env=env, capture_output=True, text=True)
+        self.assertNotEqual(probe.returncode, 0)
+        self.assertEqual(probe.stdout, "")
+        self.assertIn(f"/{socket}", probe.stderr)  # "error connecting to …/<socket>" / "no server running on …"
+        result = run_tx(["help"], home=self.home, tmux=None, fakes=self.fakes)
+        self.assertEqual(result.code, 0, result.err)
 
 
 class TestSmokeCli(TxCase):
