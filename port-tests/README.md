@@ -22,8 +22,10 @@ python3.14 port-tests/check_coverage.py [--spec PATH] [--tests DIR] [--verbose]
 ```
 
 Every test runs on a private tmux server behind a `tmux` wrapper first on PATH, so the operator's
-live server is never touched. Each test gets a fresh temp root; teardown kills the server and
-removes the tree.
+live server is never touched. `TxCase.setUp` boots that server config-free (`-f /dev/null`, `exit-empty
+off`) from the scrubbed environment, so its global environment — inherited by every pane, popup and
+hook — is the temp home's. Each test gets a fresh temp root; teardown kills the server and removes
+the tree.
 
 ## Safety
 

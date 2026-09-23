@@ -283,6 +283,16 @@ class TmuxServer:
         )
         wrapper.chmod(0o755)
 
+    def start(self) -> None:
+        """Boot the private server config-free and keep it alive with no sessions (`exit-empty
+        off`), so every later call — raw or via `tx` — joins a server whose global environment is
+        `env`. Call it AFTER `env` is set: the booting process's environment becomes the server's
+        global environment (inherited by every pane, popup and hook). A throwaway session carries
+        the boot because `start-server` does not honour `-f` on tmux 3.4."""
+        self.run("new-session", "-d", "-s", "__boot", "sleep 5", check=True)
+        self.run("set-option", "-g", "exit-empty", "off", check=True)
+        self.run("kill-session", "-t", "__boot", check=True)
+
     def run(self, *args: str, check: bool = False) -> subprocess.CompletedProcess:
         return subprocess.run(
             [REAL_TMUX, "-L", self.socket, "-f", "/dev/null", *args],
@@ -1148,9 +1158,10 @@ class TxCase(unittest.TestCase):
         self.fakes = FakeBins(self.root)
         self.home = TxHome(self.root, **self.home_options)
         self.records = Records(self.home)
-        # Every direct tmux call carries the hermetic env, so the server's global environment is the
-        # temp home's whichever call (raw or via tx) starts it — see TmuxServer.
+        # Every direct tmux call carries the hermetic env, and the server is booted here, after the
+        # env exists, so its global environment is the temp home's — see TmuxServer.start.
         self.tmux.env = self.env()
+        self.tmux.start()
         self._git: GitFixture | None = None
 
     @property
