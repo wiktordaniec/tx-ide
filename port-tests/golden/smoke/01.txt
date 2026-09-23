@@ -1,0 +1,30 @@
+tx — tmux + Claude Code session controller
+
+usage: tx <command> [args]
+
+commands:
+  start              Ensure the Views home base + tx-assistant exist, then attach Views.
+  attach             Open the interactive session picker (fzf).
+  ls                 List current (live) sessions (a single PROCESSES listing; views live in tmux).
+  spawn              Spawn a detached tmux session (--tag mandatory).
+  spawn-nvim         Spawn a detached nvim companion (--diff opens a diffview; --open opens a file).
+  spawn-view         Spawn a detached view session (a live @tx_view tmux home, not a store record).
+  tag                Read or set a session's tags (comma-separated).
+  group              Read or set a session's effort-group override (--clear returns to derived).
+  rename             Rename a session's display name (record; a process leaves its tmux id untouched).
+  whoami             Print the current session's display name (resolves #S — the id for a process).
+  send-message       Peer-message another agent session (delivered in a <from-agent> envelope).
+  send-user-message  Message another session as the operator (<from-user>, not a peer agent).
+  kill               End a tmux session and mark its record EXITED.
+  archive            Retire a session (mark ARCHIVED, keep the record) + force a full history ingest.
+  rm                 Delete a session record (by id or name).
+  show               Print a session record as JSON (by id or name).
+  history            List past (EXITED / ARCHIVED) sessions — filter by --tag / --cwd / --since / --until.
+  chat               Inspect a session's chats: `chat ls <session>` lists its ChatRefs + bundle paths.
+  resume             Re-spawn a past session + reattach its chat (claude --resume); collision-safe (§7).
+  artifact           Create / modify / inspect durable versioned artifacts (tx artifact <subcommand>).
+  sync               Manual archive sync of the reproducible corpus (push/pull/status) — never hot-path.
+  fork               Fork a session's chat into a NEW session that starts with the full history (§4).
+  handover           Distill a session's chat into a focused brief for a NEW worker session (§5).
+  rollover           Rotate a session onto a fresh chat in the SAME pane (context exhausted) (§6).
+  migrate            Upgrade $TX_IDE_HOME records to the current schemas (sessions v3→v6, artifacts v1→v2).
