@@ -168,28 +168,45 @@ class TestEvents(TxCase):
         self.assertEqual(len(golden.encode("utf-8")), 512)
         self.assert_golden("events/04", golden)
 
-    def test_t_events_04_exact_512_bytes_is_not_truncated(self):
-        # The `<=` boundary. `ts` is `repr(time.time())`, normally 18 chars, so the name is sized
-        # for an 18-char ts; the assertion adapts to the width actually observed (17/18 → the line
-        # is under/at the cap and intact; 19 → one byte over, msg loses exactly one char).
-        overhead_without_ts = len(
-            json.dumps({"ts": 0, "actor": "sess-1", "type": "rm", "msg": ""}, **COMPACT)
-        ) - 1 + 1  # minus the "0" placeholder, plus the newline
-        tail = " (r4)"
-        name_length = 512 - overhead_without_ts - 18 - len(tail)
-        name = "y" * name_length
-        self.records.llm(id="r4", name=name, state="exited", ended_at=1.0)
-        line = self.rm_line("r4", env={"TX_SESSION_ID": "sess-1"})
+    # Bytes of the line around `ts` and `msg`: `{"ts":` … `,"actor":"sess-1","type":"rm","msg":"` … `"}\n`.
+    BOUNDARY_OVERHEAD = len(
+        json.dumps({"ts": 0, "actor": "sess-1", "type": "rm", "msg": ""}, **COMPACT)
+    ) - len("0") + len("\n")
+
+    def _boundary_attempt(self, record_id: str, natural_at_18: int) -> int:
+        """One `tx rm` of a record whose line would be `natural_at_18` bytes with an 18-char `ts`.
+        `ts` is `repr(time.time())` — 18 chars for about three runs in four, 17 otherwise — so the
+        line's natural length is only known after the fact. Asserts the `<=` rule for the natural
+        length actually produced and returns it."""
+        tail = f" ({record_id})"
+        name = "y" * (natural_at_18 - self.BOUNDARY_OVERHEAD - 18 - len(tail))
+        self.records.llm(id=record_id, name=name, state="exited", ended_at=1.0)
+        self.home.log_path.unlink(missing_ok=True)
+        line = self.rm_line(record_id, env={"TX_SESSION_ID": "sess-1"})
         match = LINE.match(line)
         self.assertIsNotNone(match, line)
-        width = len(match.group("ts"))
+        natural = self.BOUNDARY_OVERHEAD + len(match.group("ts")) + len(name) + len(tail)
         full = name + tail
-        if width <= 18:
-            self.assertEqual(len(line.encode("utf-8")), 512 - 18 + width)
+        if natural <= 512:
+            self.assertEqual(len(line.encode("utf-8")), natural)
             self.assertEqual(match.group("msg"), full)
         else:
             self.assertEqual(len(line.encode("utf-8")), 512)
-            self.assertEqual(match.group("msg"), full[: -(width - 18)])
+            self.assertEqual(match.group("msg"), full[: 512 - natural])
+        return natural
+
+    def test_t_events_04_exact_512_bytes_is_not_truncated(self):
+        # The `<=` boundary: a line landing exactly on 512 bytes is intact; one byte over loses
+        # exactly one char of `msg`. Both legs must be OBSERVED, not merely tolerated: records are
+        # sized for an 18-char `ts` and re-tried with fresh ids (bounded) until a run has produced
+        # a 512-byte line and another a 513-byte one.
+        observed: set[int] = set()
+        for attempt in range(40):
+            observed.add(self._boundary_attempt(f"e{attempt}", 512))
+            observed.add(self._boundary_attempt(f"o{attempt}", 513))
+            if {512, 513} <= observed:
+                break
+        self.assertLessEqual({512, 513}, observed, f"never observed both legs: {sorted(observed)}")
 
     # ----- T-EVENTS-05 -------------------------------------------------------------------------
 
@@ -209,6 +226,11 @@ class TestEvents(TxCase):
     # ----- T-EVENTS-06 -------------------------------------------------------------------------
 
     def test_t_events_06_event_type_catalogue(self):
+        # Verbs the CLI/hook surface reaches from a plain home run here. `fork`, `rollover` /
+        # `rollover-finish`, `handover` / `handover-finish`, `send-message` and `capture-skip` are
+        # DELEGATED (spec rev 5) to test_chat.py (T-CHAT-02/08/11/12/16), test_msg.py (T-MSG-01/02)
+        # and test_hook.py (T-HOOK-19), which pin each type/msg pair where the fixture exists. The
+        # "no other type ever appears" clause is the subset check at the end.
         cwd = str(self.root)
         seen_types: set[str] = set()
 
@@ -297,6 +319,23 @@ class TestEvents(TxCase):
             ],
         )
         self.assertEqual(view["artifact_id"], artifact_id)
+        # `open` from a plain terminal (no TX_SESSION_ID, not inside tmux): only `artifact-open`
+        # resolves the invoker chain down to `user`; `spawn` and `bind-artifact` take the default
+        # actor, `$TX_SESSION_ID` verbatim, i.e. "" (spec rev 5). A second artifact, since the view
+        # name `art-<id8>` of the first is now taken.
+        plan3 = self.root / "plan3.md"
+        plan3.write_text("v0\n")
+        result, _ = one(["artifact", "create", str(plan3), "--title", "P3"], "artifact-create")
+        second_id = re.match(r"Created artifact (\S+) \(plan3\.md\)\n$", result.out).group(1)
+        _, appended = run(["artifact", "open", second_id, "--tag", "t"])
+        self.assertEqual(
+            [(line["type"], line["msg"], line["actor"]) for line in appended],
+            [
+                ("spawn", f"art-{second_id[:8]} [nvim] {self.home.artifacts_dir / second_id}", ""),
+                ("bind-artifact", f"art-{second_id[:8]} → {second_id}", ""),
+                ("artifact-open", f"{second_id} → user", "user"),
+            ],
+        )
         # send-user-message: sender = $TX_SESSION_ID's record, target must be live
         one(["spawn", "tgt", "--tag", "t", "--cwd", cwd, "--cmd", "bash"], "spawn", f"tgt [shell] {cwd}")
         one(["send-user-message", "tgt", "hello"], "send-user-message", "→ tgt", env={"TX_SESSION_ID": stuck})

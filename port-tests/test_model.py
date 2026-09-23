@@ -209,12 +209,11 @@ class TestModel(TxCase):
         self.assertEqual(origins[1], {"how": "spawn", "session_id": "z", "chat_id": None})
         listing = self.tx(["chat", "ls", session_id])
         self.assertEqual(listing.code, 0, listing.err)
-        row = "  {:<8}  {:<9} {:<18} {:>4} ago   {}"
-        self.assertEqual(listing.out, "\n".join([
-            "w — 2 chat(s)",
-            row.format("abcdef01", "fork", "fork←c0c0c0c0", "15m", "—"),
-            row.format("fedcba98", "original", "spawn", "15m", "—"),
-        ]) + "\n")
+        # Only the origin cells are this case's Then (the row layout and ages are T-RENDER-10).
+        self.assertEqual(listing.lines[0], "w — 2 chat(s)")
+        rows = [line.split() for line in listing.lines[1:]]
+        self.assertEqual([row[0] for row in rows], ["abcdef01", "fedcba98"])
+        self.assertEqual([row[2] for row in rows], ["fork←c0c0c0c0", "spawn"])
         result = self.tx(["show", "nosuch"])
         self.assertEqual(result.code, 1)
         self.assertEqual(result.err, f"{SKIP} m.json: 'chat_id'\n{NO_RECORD}")
@@ -470,6 +469,7 @@ class TestModel(TxCase):
         self.assertEqual(self.records.load("x2")["state"], "archived")
 
         self.assertEqual(self.tx(["spawn", "live", "--tag", "t", "--cmd", "bash"]).code, 0)
+        self.assertEqual(self.show("live")["state"], "alive")
         before = time.time()
         self.assertEqual(self.tx(["kill", "live"]).out, "Killed 'live'\n")
         live = self.show("live")
@@ -497,7 +497,9 @@ class TestModel(TxCase):
         rows = history.out.splitlines()[1:]
         self.assertEqual(len(rows), 2)
         self.assertTrue(all(" 0c " in row for row in rows), history.out)
-        self.assertNotIn('"chats"', self.tx(["show", "stray"]).out)
+        stray_show = self.tx(["show", "stray"])
+        self.assertEqual(stray_show.code, 0, stray_show.err)
+        self.assertNotIn('"chats"', stray_show.out)
 
     # ----- T-MODEL-25 ------------------------------------------------------------------------
 

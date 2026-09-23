@@ -201,12 +201,15 @@ class TestMigr(TxCase):
 
     def test_t_migr_04_dead_view_deleted_only(self):
         path = self.write_session("v2.json", v3_view("v2", "Gone"))
-        self.new_view_session("other")
+        # The bystander's name is prefixed by the dead view's, so a stamp through a bare `-t Gone`
+        # (tmux prefix-matches an unanchored target, Q27) would land on it and be caught below.
+        self.new_view_session("Gone-2")
         before = self.tmux.sessions()
         result = self.migrate()
         self.assertFalse(path.exists())
         self.assertEqual(self.tmux.sessions(), before)
         self.assertFalse(self.tmux.has_session("Gone"))
+        self.assertIsNone(self.tmux.option("Gone-2", "@tx_view"))
         self.assertIn("  view     Gone → stamped @tx_view, record removed\n", result.out)
         self.assertIn(SESSIONS_SUMMARY.format(0, 1, 0) + "\n", result.out)
         self.assertNotIn("  migrated", result.out)
@@ -262,9 +265,9 @@ class TestMigr(TxCase):
             "migrated 0 record(s) to v6; retired 0 view record(s); left 7 untouched.\n"
             "migrated 0 artifact record(s) to v2; left 0 untouched.\n"
         )
-        self.assertEqual(result.out, expected)
+        self.assertEqual(result.raw_out, expected)
         self.assertEqual(snapshot(self.home.sessions_dir), before)
-        self.assert_golden("migr/06", result.out)
+        self.assert_golden_raw("migr/06", result.raw_out)
 
     # ----- T-MIGR-07 ---------------------------------------------------------------------
 
