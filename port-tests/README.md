@@ -66,8 +66,8 @@ Subclass `TxCase`; `setUp` gives you:
 |---|---|---|
 | `self.root` | `Path` | the temp tree everything below lives in |
 | `self.home` | `TxHome` | `$TX_IDE_HOME` with the `ensure_home` dirs, `agents → <repo>/agents`, hook shims for claude + codex, plus `HOME` / `CLAUDE_CONFIG_DIR` / `CODEX_HOME` under the same root |
-| `self.tmux` | `TmuxServer` | private `tmux -L <random>`; `sessions()`, `has_session()`, `option(target, name, scope)`, `display(target, fmt)`, `environment(target)`, `capture(target)`, `new_session(name, cmd, tx_id=None)`, `kill_session()` |
-| `self.fakes` | `FakeBins` | PATH dir of recorders for `claude codex agy nvim fzf bwrap brew zsh`; `configure(name, **knobs)`, `dumps(name)`, `wait_dump(name, key)`, `remove(name)` |
+| `self.tmux` | `TmuxServer` | private `tmux -L <random> -f /dev/null` (stock config whichever call starts it); `sessions()`, `has_session()`, `option(target, name, scope)`, `display(target, fmt)`, `environment(target)`, `capture(target)`, `new_session(name, cmd, tx_id=None)`, `kill_session()`, `send_keys(target, *keys, literal=)`, `type_line(target, line)`, `clients()`, `panes(target=None)`, `pane_id(target)`, `pane_tty(pane)`, `attach_client(session, env=)`, `nest_attach(pane, session)` |
+| `self.fakes` | `FakeBins` | PATH dir of recorders for `claude codex agy nvim fzf bwrap brew zsh`; `configure(name, **knobs)`, `dumps(name)`, `wait_dump(name, key)`, `remove(name)`, `add(name)` (a recorder under a new basename, e.g. `ssh`), `write_script(name, body)` (a hand-written executable); `helpers_dir` — after the fakes on PATH — links `tx` → `TX_BIN` and every `<repo>/bin/*` helper so an in-pane `tx`, `tmux-pane-session-name` etc. resolve |
 | `self.records` | `Records` | `llm(...)` / `other(...)` write schema-6 records, `artifact(...)` writes a v2 record + `revs/` + `current.<ext>`; `load(id)`, `path(id)`, `chat_ref(...)` |
 | `self.git` | `GitFixture` (lazy) | repo with one commit on `main`; `with_origin_main()`, `as_linked_worktree()`, `git(...)`, `worktrees()`, `head()` |
 
@@ -82,8 +82,22 @@ wrapper then the fakes first. `env` overrides (a `None` value unsets). `out`/`er
 `raw_*` keep the escapes. Default `cwd` is the temp root.
 
 Also: `self.log_lines()`, `self.log_tail(n)`, `self.wait_until(predicate, timeout)`,
-`self.assert_golden(name, actual)`. The module-level `run_tx(...)`, `log_lines(home)`, etc. exist for
-tests that compose fixtures by hand.
+`self.assert_golden(name, actual)`, `self.env(extra)` (the scrubbed env, for hand-run helpers and pty
+clients), `self.spawn_process(name, cmd=, tag=, cwd=, extra=)` / `self.spawn_view(name, cwd=, cmd=)`
+(spawn, assert exit 0, return the record / nothing). The module-level `run_tx(...)`, `log_lines(home)`,
+`wait_until(...)`, etc. exist for tests that compose fixtures by hand.
+
+### Inside tmux and on a pty
+
+- `self.run_in_pane(pane, "tx whoami")` types the command into a shell pane (stdout/stderr redirected
+  under the temp root) and waits for its exit code — how a case runs `tx` with `$TMUX` / `#S` /
+  `$TX_SESSION_ID` set. The pane must run an interactive shell (a view's `/bin/bash`, or `--cmd bash`).
+- `self.tmux.nest_attach(pane, session)` nests a session the way the picker does (`TMUX= tmux attach -t …`
+  typed into the pane) and waits for the client whose `client_tty` is that pane's tty.
+- `PtyProcess(argv, env=, rows=, cols=)` runs a child on its own pty: `write(text)`, `read(timeout)`,
+  `expect(text, timeout)`, `wait(timeout)`, `close()`, `tty`. `self.tx_pty(argv)` runs `TX_BIN` that way (the
+  picker outside tmux, curses); `self.attach_client("Views")` is a real outer `tmux attach` client — the
+  `-c <client_tty>` target for `display-popup` cases. Both are closed at teardown.
 
 ### Fake binaries
 
@@ -97,6 +111,8 @@ before the run:
 - `prompt_glyph=True` — echo `❯ ` to stdout (visible in `capture-pane`)
 - `stdout="..."` — extra stdout (e.g. an fzf selection)
 - `passthrough=False` — `bwrap` only: do not exec the command after `--` (default: exec it, D13)
+- `sequence=[{...}, {...}]` — per-invocation knobs: the n-th run merges `sequence[n]` (the last entry
+  repeats), e.g. `fzf` printing a row once then exiting 130 on every later run
 
 The `bwrap` fake is the default on every host (user namespaces are blocked on CI-class hosts); the
 real sandbox is a hand-run smoke check.
