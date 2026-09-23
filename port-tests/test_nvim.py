@@ -38,11 +38,6 @@ DIAGNOSTIC_ROWS = (
 QUICKFIX_ROWS = "json_encode(map(getqflist(), {_, v -> [bufname(v.bufnr), v.lnum, v.col, v.text]}))"
 
 
-def tmux_socket_path(socket: str) -> str:
-    socket_dir = Path(os.environ.get("TMUX_TMPDIR") or "/tmp") / f"tmux-{os.getuid()}"
-    return str(socket_dir / socket)
-
-
 class TestNvim(TxCase):
     # ----- helpers -------------------------------------------------------------------------
 
@@ -52,7 +47,7 @@ class TestNvim(TxCase):
     def inside(self, session_id: str, *, tx_session_id: bool = True) -> dict[str, str]:
         """Env that puts a `tx` subprocess inside tx session `session_id`'s pane."""
         env = {
-            "TMUX": f"{tmux_socket_path(self.tmux.socket)},{os.getpid()},0",
+            "TMUX": f"{self.tmux.socket_path},{os.getpid()},0",
             "TMUX_PANE": self.tmux.display(session_id, "#{pane_id}"),
         }
         if tx_session_id:
@@ -621,10 +616,6 @@ class TestNvim(TxCase):
         host = self.tmux.display("V", "#{pane_id}")
         self.wait_until(lambda: self.tmux.run("list-clients", "-t", "I", "-F", "#{client_tty}").stdout.strip())
         return left, host, inner_pane
-
-    def attach_client(self, session: str) -> None:
-        self.background(["script", "-qfc", f"{shutil.which('tmux')} -L {self.tmux.socket} attach -t {session}", "/dev/null"], dict(os.environ))
-        self.wait_until(lambda: self.tmux.display(session, "#{session_attached}") == "1")
 
     def v_panes(self) -> str:
         return self.tmux.run("list-panes", "-t", "V", "-F", "#{pane_id} #{pane_active}", check=True).stdout

@@ -12,10 +12,11 @@ import re
 
 import subprocess
 import tempfile
+import unittest.mock
 from pathlib import Path
 
 from txkit import (HELPER_BINS, HOME_DIRS, TMUX_SOCKET_ENV, TX_BIN, TX_HELPERS_DIR, KitSafetyError, TxCase,
-                   resolved_home, run_tx, scrubbed_env)
+                   kill_home_children, resolved_home, run_tx, scrubbed_env)
 
 
 class TestSmokeSafety(TxCase):
@@ -28,7 +29,8 @@ class TestSmokeSafety(TxCase):
         }
         # With the env var: the wrapper reaches the private server.
         with_socket = subprocess.run(
-            [wrapper, "has-session", "-t", "=probe"], env={**base_env, TMUX_SOCKET_ENV: self.tmux.socket}
+            [wrapper, "has-session", "-t", "=probe"],
+            env={**base_env, TMUX_SOCKET_ENV: self.tmux.socket, "TMUX_TMPDIR": self.tmux.env["TMUX_TMPDIR"]},
         )
         self.assertEqual(with_socket.returncode, 0)
         # Without it: plain tmux, aimed (via TMUX_TMPDIR) at a place with no server at all.
@@ -187,3 +189,33 @@ class TestSmokeHelpers(TxCase):
         self.tmux.new_session("raw", "sleep 300")
         result = self.helper("tmux-pane-session-name", self.tmux.pane_id("raw"))
         self.assertEqual((result.code, result.out, result.err), (0, "#[fg=colour240,nobold]—#[default]", ""))
+
+
+class TestSmokeHermeticity(TxCase):
+    def test_scrubbed_env_drops_operator_knobs_and_keeps_every_socket_under_the_root(self):
+        leaked = {"XDG_CONFIG_HOME": "/op/xdg", "XDG_RUNTIME_DIR": "/op/run", "NVIM_LISTEN_ADDRESS": "/op/nvim",
+                  "NVIM": "/op/nvim", "VIMINIT": "so /op/init", "GIT_DIR": "/op/.git", "GIT_CONFIG_GLOBAL": "/op/gc",
+                  "TMUX_TMPDIR": "/op/tmux", "TX_IDE_HOME": str(Path.home() / ".tx-ide")}
+        with unittest.mock.patch.dict(os.environ, leaked):
+            env = self.env()
+        for key in leaked:
+            self.assertNotEqual(env.get(key), leaked[key], key)
+        self.assertEqual(env["TMUX_TMPDIR"], str(self.root / "tmux-tmp"))
+        self.assertTrue(self.tmux.socket_path.is_relative_to(self.root))
+        self.assertTrue(self.tmux.socket_path.exists())  # the private server's socket, under the root
+        # A crafted git fixture ignores the operator's global config.
+        self.assertEqual(self.git.git("config", "--global", "--list").strip(), "")
+
+    def test_teardown_reaper_kills_this_homes_children_but_not_the_server(self):
+        straggler = subprocess.Popen(["sleep", "300"], env=self.env(), stdin=subprocess.DEVNULL)
+        self.addCleanup(straggler.wait)
+        bystander = subprocess.Popen(["sleep", "300"], stdin=subprocess.DEVNULL)
+        self.addCleanup(bystander.kill)
+        self.spawn_process("p")  # a pane process (sleep 300) on the private server, TX_IDE_HOME in its env
+        killed = kill_home_children(self.home)
+        self.assertIn(straggler.pid, killed)
+        self.assertNotIn(bystander.pid, killed)
+        self.assertEqual(straggler.wait(timeout=5), -9)
+        self.assertIsNone(bystander.poll())
+        self.assertEqual(self.tmux.option("", "exit-empty", scope="global"), "off")  # server alive
+        self.wait_until(lambda: self.tmux.sessions() == [])

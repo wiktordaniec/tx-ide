@@ -128,6 +128,22 @@ record of the operator's real store, twice):
    gets the wrapper first on PATH, aimed at a fresh `txkit-dead-<hex>` socket nothing ever started,
    so a stray `tmux` call meets "no server" instead of the live one.
 
+5. **Nothing of the operator's leaks in, nothing of the test's leaks out (D15).** `scrubbed_env`
+   drops `TX_*`, `TXKIT_*`, `FZF_*`, `XDG_*`, `NVIM*`, `GIT_*`, `TMUX*`, `VIMINIT` / `MYVIMRC` from
+   the inherited env (unset, they default under the temp `HOME`), and sets
+   `TMUX_TMPDIR=<root>/tmux-tmp`: every socket — the private server's (`self.tmux.socket_path`), the
+   dead one, anything a bare real `tmux` would try after the wrapper dir is gone — lives under the
+   temp root, never in the operator's `/tmp/tmux-<uid>/`. `GitFixture` runs git with
+   `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`. Kit-made panes run
+   `bash --noprofile --norc` (`self.tmux.split_window` / `new_window`, `PANE_SHELL`): a login shell's
+   profile can reorder PATH ahead of the wrapper.
+6. **Teardown reaps first.** `TxCase.tearDown` SIGKILLs every process whose environment carries this
+   test's `TX_IDE_HOME` — detached chat-op finishers and watchers, `hook ingest` children, update
+   curls, fake engines, pane shells; not the private server — and `tearDown` runs BEFORE any
+   `addCleanup` (lock releases, `tmux.close`, rmtree), so a straggler can never outlive the lock it
+   waits on, the PATH wrapper or the socket dir (`kill_home_children`). Start background verbs with
+   `self.tx_popen(argv)` (scrubbed env, stdin closed, killed at cleanup) rather than a raw `Popen`.
+
 Rules for humans and agents: never call `$TX_BIN` yourself with the kit's PATH but a real home — go
 through `self.tx(...)`; never export a kit `fake-bin/` / `tmux-bin/` dir into an interactive shell's
 PATH; before any hand-run probe, `which tmux` must be the system tmux and `$TX_IDE_HOME` empty (or an
@@ -168,6 +184,8 @@ creates a plain `agents/` dir).
   `run-shell -t` (`$TMUX` set, `#S` == session, `TMUX_PANE` pinned to its active pane).
 - `self.run_in_pane(pane, "tx whoami")` — types the command into a shell pane (output redirected
   under the temp root) and waits for its exit code; the pane must run an interactive shell.
+- `self.tx_popen(argv, env=, cwd=)` — `TX_BIN` in the background (scrubbed env, stdin closed,
+  stdout/stderr piped; killed at cleanup) for verbs observed while they run.
 - `self.tx_detached(argv, env=)` — `setsid -w`, no controlling tty (`tx attach` then sizes from
   `$COLUMNS`); skips where `setsid` is absent (macOS).
 - `self.tx_pty(argv, env=, cwd=, rows=, cols=)` — `TX_BIN` on its own pty (picker outside tmux,
@@ -183,9 +201,9 @@ creates a plain `agents/` dir).
 - Module level, for tests composing fixtures by hand: `run_script`, `run_tx`, `run_helper`,
   `run_tx_detached`, `run_tx_inside`, `scrubbed_env`, `resolved_home`, `log_lines`, `log_tail`,
   `wait_until`, `strip_ansi`, `munge`, `assert_golden`, `golden`, `golden_path`, `tmux_version`,
-  `is_python_reference`, `REAL_TMUX`, `TX_BIN`, `TX_HELPERS_DIR`, `TX_INSTALLER`, `TX_UNINSTALLER`,
-  `TX_ENGINE_SETUP`, `TX_STATUSLINE`, `HELPER_BINS`, `REPO`, `HOME_DIRS`, `SESSION_RECORD_CMD`,
-  `TMUX_SOCKET_ENV`, `KitSafetyError`.
+  `is_python_reference`, `kill_home_children`, `REAL_TMUX`, `TX_BIN`, `TX_HELPERS_DIR`,
+  `TX_INSTALLER`, `TX_UNINSTALLER`, `TX_ENGINE_SETUP`, `TX_STATUSLINE`, `HELPER_BINS`, `PANE_SHELL`,
+  `REPO`, `HOME_DIRS`, `SESSION_RECORD_CMD`, `TMUX_SOCKET_ENV`, `KitSafetyError`.
 
 ### `TxHome`
 
@@ -196,14 +214,16 @@ creates a plain `agents/` dir).
 
 ### `TmuxServer`
 
-`socket`, `bin_dir`, `env`; `start()`; `run(*args, check=False, env=None)` (a direct call on the
-private server; `env` is the issuing client's environment, default the hermetic one);
+`socket`, `socket_path` (under `<root>/tmux-tmp`), `bin_dir`, `env`; `start()`;
+`run(*args, check=False, env=None)` (a direct call on the private server; `env` is the issuing
+client's environment, default the hermetic one);
 `sessions()`, `has_session(name)`, `option(target, name, scope="session"|"window"|"pane"|"global"|"global-window")`,
 `display(target, fmt)`, `environment(target)`, `capture(target)`, `clients()`, `panes(target=None)`,
 `pane_id(target)`, `pane_tty(pane)`, `pane_commands()` (`@tx_id → #{pane_current_command}`);
 `new_session(name, cmd, tx_id=None, *, cwd=, env=, client_env=)`, `kill_session(name)`,
-`split_window(target, *flags)` / `new_window(target, *flags)` (explicit non-login `/bin/bash` — a
-command-less split starts a login shell whose profile drops the kit PATH; return the new pane id);
+`split_window(target, *flags)` / `new_window(target, *flags)` (an explicit `bash --noprofile --norc`,
+`PANE_SHELL` — a command-less split starts a login shell whose profile drops the kit PATH; return the
+new pane id);
 `send_keys(target, *keys, literal=)`, `type_line(target, line)`; `attach_client(session, env=)`,
 `nest_attach(pane, session)` (nest a session the way the picker does: `TMUX= tmux attach -t …` typed
 into the pane, then wait for the client whose `client_tty` is that pane's tty); `close()`.

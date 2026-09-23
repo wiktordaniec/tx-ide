@@ -31,6 +31,7 @@ import re
 import select
 import shlex
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -97,11 +98,17 @@ HELPER_BINS = tuple(
 # teardown; the short ones return at once.
 FAKE_DEFAULT_SLEEP = {"claude": 600, "codex": 600, "agy": 600, "nvim": 600, "zsh": 600}
 
-SCRUB_PREFIXES = ("TX_", "TXKIT_", "FZF_")
-SCRUB_KEYS = ("TMUX", "TMUX_PANE", "NAMEW", "TERM_PROGRAM", "PYTHONPATH")
+# Dropped from the inherited env (D15): the operator's tx/kit/fzf state, tmux client vars, and the
+# XDG / nvim / git knobs that would otherwise steer nvim, the installer's nvim step and git at the
+# operator's own config (`XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `NVIM_LISTEN_ADDRESS`, `VIMINIT`,
+# `GIT_DIR`, `GIT_CONFIG_*`, …). Unset, they all default under the temp `HOME`.
+SCRUB_PREFIXES = ("TX_", "TXKIT_", "FZF_", "XDG_", "NVIM", "GIT_")
+SCRUB_KEYS = ("TMUX", "TMUX_PANE", "TMUX_TMPDIR", "NAMEW", "TERM_PROGRAM", "PYTHONPATH", "VIMINIT", "MYVIMRC")
 
 # The env var the PATH `tmux` wrapper keys on; without it the wrapper is a transparent pass-through.
 TMUX_SOCKET_ENV = "TXKIT_TMUX_SOCKET"
+# The shell a kit-made pane runs (`TmuxServer.split_window` / `new_window`): non-login, no rc files.
+PANE_SHELL = "/bin/bash --noprofile --norc"
 
 
 class KitSafetyError(RuntimeError):
@@ -431,15 +438,16 @@ class TmuxServer:
         return self.display(pane_id, "#{pane_tty}")
 
     def split_window(self, target: str, *flags: str) -> str:
-        """`split-window [flags] -t target /bin/bash` → the new pane's id. Runs an explicit
-        non-login bash: a command-less split starts a LOGIN shell whose /etc/profile resets PATH
-        and drops the wrapper / helper dirs."""
-        return self.run("split-window", *flags, "-t", target, "-P", "-F", "#{pane_id}", "/bin/bash",
+        """`split-window [flags] -t target <PANE_SHELL>` → the new pane's id. Runs an explicit
+        non-login, rc-less bash: a command-less split starts a LOGIN shell whose /etc/profile (or a
+        macOS `path_helper`) reorders PATH and drops the wrapper / helper dirs — the D15 path to the
+        operator's server for an in-pane `TMUX= tmux attach`."""
+        return self.run("split-window", *flags, "-t", target, "-P", "-F", "#{pane_id}", PANE_SHELL,
                         check=True).stdout.strip()
 
     def new_window(self, target: str, *flags: str) -> str:
-        """`new-window [flags] -t target /bin/bash` → the new window's pane id (same reason)."""
-        return self.run("new-window", *flags, "-t", target, "-P", "-F", "#{pane_id}", "/bin/bash",
+        """`new-window [flags] -t target <PANE_SHELL>` → the new window's pane id (same reason)."""
+        return self.run("new-window", *flags, "-t", target, "-P", "-F", "#{pane_id}", PANE_SHELL,
                         check=True).stdout.strip()
 
     def attach_client(self, session: str, *, env: dict[str, str], rows: int = 50, cols: int = 200,
@@ -472,11 +480,17 @@ class TmuxServer:
                 pairs[tx_id] = command
         return pairs
 
+    @property
+    def socket_path(self) -> Path:
+        """Where this server's socket lives: `$TMUX_TMPDIR/tmux-<uid>/<socket>` of the hermetic env
+        (`<root>/tmux-tmp/…` once `env` is set — the value a crafted `$TMUX` should carry)."""
+        base = (self.env or os.environ).get("TMUX_TMPDIR") or "/tmp"
+        return Path(base) / f"tmux-{os.getuid()}" / self.socket
+
     def close(self) -> None:
         """Kill the private server and drop its socket file (tmux leaves it behind)."""
         self.run("kill-server")
-        socket_dir = Path(os.environ.get("TMUX_TMPDIR") or "/tmp") / f"tmux-{os.getuid()}"
-        (socket_dir / self.socket).unlink(missing_ok=True)
+        self.socket_path.unlink(missing_ok=True)
 
 
 # ----- PtyProcess ------------------------------------------------------------------------------
@@ -791,8 +805,11 @@ class GitFixture:
         self.git("commit", "-q", "-m", "initial")
 
     def git(self, *args: str, cwd: Path | None = None) -> str:
+        """Run git on the fixture with NO operator config: inherited `GIT_*` dropped, the global
+        config aimed at /dev/null (no gpgsign / hooksPath / aliases), the system one skipped."""
         env = {
-            **os.environ,
+            **{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+            "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_AUTHOR_NAME": "txkit",
             "GIT_AUTHOR_EMAIL": "txkit@example.invalid",
@@ -1072,9 +1089,10 @@ def scrubbed_env(
     fakes: FakeBins | None = None,
     extra: dict[str, str | None] | None = None,
 ) -> dict[str, str]:
-    """The environment `tx` runs under: inherited env minus `TX_*`, `TMUX`, `TMUX_PANE`, `NAMEW`,
-    `FZF_*`; plus the home's vars, `FAKE_OUT`, and PATH with the tmux wrapper, the fakes, then the
-    `tx` + `bin/` helper links first. Without a `tmux` server the wrapper is aimed at a dead socket.
+    """The environment `tx` runs under: inherited env minus `SCRUB_PREFIXES` / `SCRUB_KEYS` (`TX_*`,
+    `TMUX*`, `XDG_*`, `NVIM*`, `GIT_*`, …); plus the home's vars, `FAKE_OUT`, `TMUX_TMPDIR` under
+    the root, and PATH with the tmux wrapper, the fakes, then the `tx` + helper copies first.
+    Without a `tmux` server the wrapper is aimed at a dead socket.
     `extra` overrides; a `None` value unsets (`TX_IDE_HOME=None` exercises the `$HOME/.tx-ide`
     default — `HOME` is the temp user home, so the resolved home stays under the kit root)."""
     env = {
@@ -1083,6 +1101,12 @@ def scrubbed_env(
         if not key.startswith(SCRUB_PREFIXES) and key not in SCRUB_KEYS
     }
     env.update(home.env())
+    # Every socket — the private server's, the dead one, anything a stray real `tmux` would try —
+    # lives under the temp root: the operator's `/tmp/tmux-<uid>/default` is out of reach even for a
+    # `tmux` reached after the wrapper dir is gone (D15).
+    tmux_tmp = home.root / "tmux-tmp"
+    tmux_tmp.mkdir(parents=True, exist_ok=True)
+    env["TMUX_TMPDIR"] = str(tmux_tmp)
     path_dirs = []
     if tmux is not None:
         path_dirs.append(str(tmux.bin_dir))
@@ -1262,6 +1286,38 @@ def run_tx_inside(
     )
 
 
+def kill_home_children(home: TxHome) -> list[int]:
+    """SIGKILL every process whose environment carries this home's `TX_IDE_HOME` — detached `tx`
+    children (chat-op finisher / watcher, `hook ingest`, update curls), fake engines, pane shells —
+    except the private tmux server itself (`TmuxServer.close` takes that down). `TxCase.tearDown`
+    calls it, i.e. BEFORE any `addCleanup` (lock releases, `tmux.close`, rmtree), so nothing can run
+    on after the kit's PATH and socket dir are gone and reach a real `tmux` (D15). Linux reads
+    /proc; elsewhere it falls back to `pkill -f <root>` (command lines naming the temp root)."""
+    marker = f"TX_IDE_HOME={home.path}".encode() + b"\0"
+    proc = Path("/proc")
+    if not proc.is_dir():
+        subprocess.run(["pkill", "-KILL", "-f", str(home.root)], capture_output=True)
+        return []
+    killed = []
+    for entry in proc.iterdir():
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            environ = (entry / "environ").read_bytes()
+            comm = (entry / "comm").read_bytes()
+        except OSError:
+            continue
+        # Linux tmux renames only its comm (`tmux: server`); the cmdline keeps the starting argv.
+        if marker not in environ or comm.startswith(b"tmux: server"):
+            continue
+        try:
+            os.kill(int(entry.name), signal.SIGKILL)
+        except ProcessLookupError:
+            continue
+        killed.append(int(entry.name))
+    return killed
+
+
 def log_lines(home: TxHome) -> list[dict]:
     """Parsed `log.jsonl` (empty when absent)."""
     if not home.log_path.exists():
@@ -1395,6 +1451,11 @@ class TxCase(unittest.TestCase):
         self.tmux.start()
         self._git: GitFixture | None = None
 
+    def tearDown(self) -> None:
+        # Runs before every addCleanup (lock releases, tmux.close, rmtree): reap the detached
+        # children of this home first — see kill_home_children.
+        kill_home_children(self.home)
+
     @property
     def git(self) -> GitFixture:
         """A lazily created `GitFixture` under the temp root."""
@@ -1499,6 +1560,26 @@ class TxCase(unittest.TestCase):
             argv += ["--cmd", cmd]
         result = self.tx(argv)
         self.assertEqual(result.code, 0, result.err)
+
+    def tx_popen(
+        self, argv: list[str], *, env: dict[str, str | None] | None = None, cwd: str | Path | None = None
+    ) -> subprocess.Popen:
+        """`TX_BIN argv` started in the background under the scrubbed env — for verbs a case must
+        observe WHILE they run (a finisher blocked on a lock, an archive racing an ingest). stdin
+        closed, stdout/stderr piped (text); killed at cleanup if still running (the tearDown reaper
+        gets it first)."""
+        process = subprocess.Popen(
+            [TX_BIN, *argv], env=self.env(env), cwd=str(cwd if cwd is not None else self.root),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+
+        def stop() -> None:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+
+        self.addCleanup(stop)
+        return process
 
     def tx_detached(
         self, argv: list[str], *, env: dict[str, str | None] | None = None
