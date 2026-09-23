@@ -26,6 +26,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -775,6 +776,48 @@ def run_tx(
     )
 
 
+def run_tx_inside(
+    tmux: TmuxServer,
+    target: str,
+    argv: list[str],
+    *,
+    home: TxHome,
+    fakes: FakeBins | None = None,
+    env: dict[str, str | None] | None = None,
+    cwd: str | Path | None = None,
+    scratch: Path,
+) -> Result:
+    """Run `TX_BIN argv` INSIDE tmux session `target` via `run-shell -t` — synchronous, and the job
+    inherits `$TMUX` + `$TMUX_PANE` from the server so `#S` resolves to `target` (the "harness types
+    the command into s1" recipe of T-MSG-02 / T-ART-21 / T-CLI-12). The environment is rebuilt from
+    `scrubbed_env` under `env -i` (only tmux's own `TMUX`/`TMUX_PANE` pass through); stdout/stderr/exit
+    land in `scratch` (`run-shell` would otherwise paint stdout into a pane)."""
+    scratch.mkdir(parents=True, exist_ok=True)
+    out_path, err_path, code_path = (scratch / name for name in ("out", "err", "code"))
+    for path in (out_path, err_path, code_path):
+        path.unlink(missing_ok=True)
+    assignments = " ".join(
+        f"{key}={shlex.quote(value)}" for key, value in scrubbed_env(home, tmux, fakes, env).items()
+    )
+    command = (
+        f"cd {shlex.quote(str(cwd if cwd is not None else home.root))} && "
+        f'env -i TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" {assignments} '
+        f"{shlex.quote(TX_BIN)} {shlex.join(argv)} "
+        f">{shlex.quote(str(out_path))} 2>{shlex.quote(str(err_path))}; "
+        f"echo $? >{shlex.quote(str(code_path))}"
+    )
+    tmux.run("run-shell", "-t", target, command, check=True)
+    raw_out = out_path.read_text()
+    raw_err = err_path.read_text()
+    return Result(
+        code=int(code_path.read_text().strip()),
+        out=strip_ansi(raw_out),
+        err=strip_ansi(raw_err),
+        raw_out=raw_out,
+        raw_err=raw_err,
+    )
+
+
 def log_lines(home: TxHome) -> list[dict]:
     """Parsed `log.jsonl` (empty when absent)."""
     if not home.log_path.exists():
@@ -917,6 +960,27 @@ class TxCase(unittest.TestCase):
             env=env,
             stdin=stdin,
             cwd=cwd if cwd is not None else self.root,
+        )
+
+    def tx_inside(
+        self,
+        target: str,
+        argv: list[str],
+        *,
+        env: dict[str, str | None] | None = None,
+        cwd: str | Path | None = None,
+    ) -> Result:
+        """`self.tx(argv)` but run inside the private server's session `target` (see
+        `run_tx_inside`): `$TMUX` is set and `#S` == `target`."""
+        return run_tx_inside(
+            self.tmux,
+            target,
+            argv,
+            home=self.home,
+            fakes=self.fakes,
+            env=env,
+            cwd=cwd,
+            scratch=self.root / "inside",
         )
 
     def log_lines(self) -> list[dict]:
