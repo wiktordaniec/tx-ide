@@ -257,9 +257,18 @@ class TmuxServer:
     private socket is injected by a `tmux` wrapper script placed first on PATH (Q1); direct
     inspection from the test goes through the real binary with the same `-L`. Both pass
     `-f /dev/null` so the server starts stock (no operator / system tmux.conf) whichever call
-    starts it."""
+    starts it.
 
-    def __init__(self, root: Path):
+    `env` is the environment every direct call runs under. The FIRST call that reaches the socket
+    starts the server, and the server keeps that process's environment as its global environment
+    — inherited by every pane, popup and hook it later launches. `TxCase` sets it to the scrubbed
+    env (temp `HOME` / `TX_IDE_HOME`, the wrapper first on PATH), so a raw `new_session` can never
+    seed the private server with the operator's home: a `tx` launched from one of its panes would
+    otherwise read the REAL `~/.tx-ide` against the private socket and reconcile every live record
+    to exited."""
+
+    def __init__(self, root: Path, env: dict[str, str] | None = None):
+        self.env = env
         self.socket = f"txkit-{uuid.uuid4().hex[:8]}"
         self.bin_dir = root / "tmux-bin"
         self.bin_dir.mkdir(parents=True, exist_ok=True)
@@ -280,6 +289,7 @@ class TmuxServer:
             capture_output=True,
             text=True,
             check=check,
+            env=self.env,
         )
 
     def sessions(self) -> list[str]:
@@ -1122,6 +1132,9 @@ class TxCase(unittest.TestCase):
         self.fakes = FakeBins(self.root)
         self.home = TxHome(self.root, **self.home_options)
         self.records = Records(self.home)
+        # Every direct tmux call carries the hermetic env, so the server's global environment is the
+        # temp home's whichever call (raw or via tx) starts it — see TmuxServer.
+        self.tmux.env = self.env()
         self._git: GitFixture | None = None
 
     @property
