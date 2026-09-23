@@ -158,11 +158,19 @@ class Installer:
         # The fake fzf drains stdin by default; `fzf --version` in the dependency check would eat
         # the answers meant for the later [y/N] prompts.
         case.fakes.configure("fzf", read_stdin=False)
-        # The pre-flight banner's `$(tx)` / `$(tx start)` are unescaped command substitutions: a
-        # silent stub keeps that from reaching whatever `tx` the operator has installed.
+        # The pre-flight banner's `$(tx)` / `$(tx start)` are unescaped command substitutions (Q31):
+        # a silent stub keeps that from reaching whatever `tx` the operator has installed, and logs
+        # every invocation so T-INST-01 can see whether anything ran before the confirm prompt.
+        self.stub_log = case.root / "tx-stub.log"
         stub = case.fakes.bin_dir / "tx"
-        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.write_text(f"#!/bin/sh\nprintf 'tx%s\\n' \"${{*:+ $*}}\" >>{shlex.quote(str(self.stub_log))}\nexit 0\n")
         stub.chmod(0o755)
+
+    def stub_calls(self) -> list[str]:
+        """Every `tx …` command line the stub saw, in order (`tx`, `tx start`, …)."""
+        if not self.stub_log.exists():
+            return []
+        return self.stub_log.read_text().splitlines()
 
     # paths the scripts touch
     @property
@@ -422,6 +430,26 @@ class TestInst(TxCase):
             self.assertTrue(link.is_symlink(), link)
             self.assertEqual(os.readlink(link), str(REPO / "bin" / tool))
             self.assert_status(result, link, "linked")
+
+    @python_reference_only
+    def test_t_inst_01_parity_banner_runs_tx_before_confirm(self):
+        # Q31 (reference): the banner heredoc's unescaped `$(tx)` / `$(tx start)` run while the
+        # banner prints — before the operator has answered anything, even when they decline.
+        installer = self.installer
+        result = installer.install(stdin="n\n")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertTrue(result.out.endswith("\nAborted.\n"), result.out)
+        self.assertEqual(installer.stub_calls(), ["tx", "tx start"])
+        self.assertFalse(installer.local_bin.exists())
+
+    @expected_failure_on_python
+    def test_t_inst_01_fixed_no_tx_before_confirm(self):
+        installer = self.installer
+        result = installer.install(stdin="n\n")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertTrue(result.out.endswith("\nAborted.\n"), result.out)
+        self.assertEqual(installer.stub_calls(), [])
+        self.assertFalse(installer.local_bin.exists())
 
     def test_t_inst_02_link_already_linked_is_a_no_op(self):
         installer = self.installer
