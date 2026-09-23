@@ -176,4 +176,4 @@ Linux). Each entry: what the spec said, what the code does (verified in `lib/tx/
 - **Login shells drop the kit PATH.** A command-less `split-window`/`new-window` starts a login
   shell whose `/etc/profile` resets PATH; use `TmuxServer.split_window` / `new_window` (explicit
   non-login `/bin/bash`).
-- **Runtime.** Whole section ≈ 4 min sequential on this host (one private server per test).
+- **Runtime.** Whole section 162 s sequential on this host (202 tests, one private server per test).
