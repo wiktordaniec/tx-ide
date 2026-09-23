@@ -1,0 +1,7 @@
+PROCESSES
+  loc-none                 alive    —                         —     
+  loc-one                  alive    work[1]                   —     
+  loc-three                alive    work[2] +2                —     
+  loc-22                   alive    aaaaaaaaaaaaaaaaaaaaaa[1] —     
+  loc-23                   alive    aaaaaaaaaaaaaaaaaaaaa…[1] —     
+  loc-30                   alive    aaaaaaaaaaaaaaaaaa…[1] +1 —     

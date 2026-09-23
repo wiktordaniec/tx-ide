@@ -1,0 +1,11 @@
+Rust port plan  (abcdef01-2345-4678-8abc-000000000001)
+  filename:   plan.md
+  created:    15m ago
+  updated:    1m ago
+  group:      derived: derived-g
+  revisions:  3
+  working:    dirty — un-snapshotted edits (close with `tx artifact modify`)
+  history:
+    rev 0     15m ago  worker-1            
+    rev 1      5m ago  user                  typo fix
+    rev 2      1m ago  worker-1            
