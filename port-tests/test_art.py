@@ -891,6 +891,16 @@ class TestArt(TxCase):
         result = self.tx(["artifact", "open", "cccccccc"])
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(json.loads(self.tx(["show", "art-cccccccc"]).out)["tags"], ["artifact"])
+        # Edge: an UNTAGGED invoker inside tmux (record `s2` resolved from `#S`, no `TX_SESSION_ID`)
+        # also falls back to `["artifact"]`.
+        self.records.llm(id="s2", name="untagged", tags=())
+        self.tmux.new_session("s2", "sleep 1000", tx_id="s2")
+        self.open_fixture(untagged_inside := "eeeeeeee-0000-4000-8000-000000000005")
+        result = self.tx_inside("s2", ["artifact", "open", "eeeeeeee"])
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(json.loads(self.tx(["show", "art-eeeeeeee"]).out)["tags"], ["artifact"])
+        opened = [line for line in self.log_lines() if line["type"] == "artifact-open"][-1]
+        self.assertEqual((opened["msg"], opened["actor"]), (f"{untagged_inside} → s2", "s2"))
 
         empty = self.tx(["artifact", "open", "dddddddd", "--tag", ""])
         self.assertEqual((empty.code, empty.out), (2, ""))
