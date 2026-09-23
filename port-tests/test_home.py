@@ -98,14 +98,18 @@ class TestHome(TxCase):
 
     def _working_records(self) -> float:
         """Three WORKING llm records (turn ages 1 s / 500 s / 700 s), each live on a `sleep` pane;
-        `last_activity` mirrors the turn start so `tx ls` lists them w1, w2, w3."""
+        `last_activity` mirrors the turn start so `tx ls` lists them w1, w2, w3. The sessions are
+        booted BEFORE the timestamps are taken, so the 1 s turn is only tx's own startup old when
+        `tx ls` reads it (the `new-session` calls are the slow part)."""
+        names = ("w1", "w2", "w3")
+        for name in names:
+            self.tmux.new_session(name, "sleep 1000", tx_id=name)
         now = time.time()
-        for name, age in (("w1", 1), ("w2", 500), ("w3", 700)):
+        for name, age in zip(names, (1, 500, 700)):
             self.records.llm(
                 id=name, name=name, state="working", created_at=now - 2000,
                 last_activity=now - age, turn_started_at=now - age,
             )
-            self.tmux.new_session(name, "sleep 1000", tx_id=name)
         return now
 
     def _states(self, out: str) -> list[str]:
@@ -130,7 +134,10 @@ class TestHome(TxCase):
         self._assert_threshold(["working", "working", "idle"])
 
     def test_t_home_05_stuck_threshold_configured(self):
-        self.home.write_config({"stuck_working_threshold_seconds": 5})
+        # 60 s rather than the spec's 5 s: the 1 s turn must still be under the threshold when tx
+        # reads it, and a loaded host can take more than 4 s between the record write and the
+        # reconcile. The Then is unchanged (only the 500 s and 700 s turns are stuck).
+        self.home.write_config({"stuck_working_threshold_seconds": 60})
         self._working_records()
         self._assert_threshold(["working", "idle", "idle"])
 
@@ -175,6 +182,14 @@ class TestHome(TxCase):
         lines = result.out.splitlines()
         return result.code, lines[-1] if lines else "", result.err
 
+    def _sync_status_refused(self, config: dict) -> str:
+        """`tx sync status` under a config the reader rejects: exit 1, stdout EMPTY; returns stderr."""
+        self.home.write_config(config)
+        result = self.tx(["sync", "status"])
+        self.assertEqual(result.code, 1)
+        self.assertEqual(result.out, "")
+        return result.err
+
     def test_t_home_06_parity_config_sync_backend(self):
         for config in (None, {}, {"sync": None}):
             code, last, _ = self._sync_status_last_line(config)
@@ -193,27 +208,19 @@ class TestHome(TxCase):
         self.assertEqual(code, 0)
         self.assertEqual(last, f"Remote (s3://b): {S3_DEFERRED}")
 
-        code, last, err = self._sync_status_last_line({"sync": {"backend": "gcs"}})
-        self.assertEqual(code, 1)
-        self.assertEqual(last, "")
+        err = self._sync_status_refused({"sync": {"backend": "gcs"}})
         self.assertIn("unknown sync backend 'gcs' (expected 's3' or 'local')", err)
 
-        code, last, err = self._sync_status_last_line({"sync": {"backend": "local"}})
-        self.assertEqual(code, 1)
-        self.assertEqual(last, "")
+        err = self._sync_status_refused({"sync": {"backend": "local"}})
         self.assertIn("path", err)
 
     @expected_failure_on_python
     def test_t_home_06_fixed_bad_backend_is_a_message(self):
-        code, last, err = self._sync_status_last_line({"sync": {"backend": "gcs"}})
-        self.assertEqual(code, 1)
-        self.assertEqual(last, "")
+        err = self._sync_status_refused({"sync": {"backend": "gcs"}})
         self.assertIn("unknown sync backend 'gcs' (expected 's3' or 'local')", err)
         self.assertNotIn("Traceback", err)
 
-        code, last, err = self._sync_status_last_line({"sync": {"backend": "local"}})
-        self.assertEqual(code, 1)
-        self.assertEqual(last, "")
+        err = self._sync_status_refused({"sync": {"backend": "local"}})
         self.assertIn("path", err)
         self.assertNotIn("Traceback", err)
 
