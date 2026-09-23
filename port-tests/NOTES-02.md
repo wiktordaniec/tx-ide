@@ -177,3 +177,138 @@ Linux). Each entry: what the spec said, what the code does (verified in `lib/tx/
   shell whose `/etc/profile` resets PATH; use `TmuxServer.split_window` / `new_window` (explicit
   non-login `/bin/bash`).
 - **Runtime.** Whole section 162 s sequential on this host (202 tests, one private server per test).
+
+## Review pass (Phase 5b, review `bfd226f5…`, spec rev 5)
+
+Every non-OK row of the section-02 review, applied on `feat/port-tests-fix-02`. Where the spec was
+corrected separately (rev 5) the test asserts the code's behaviour; the entries below say what.
+
+### WRONG
+
+- **T-TMUX-15.** `…_15_parity_remote_session_read_at_session_scope` now carries
+  `@python_reference_only` (D17 pair with `…_15_fixed_…`): a Q30-fixed port reads pane scope only
+  and the session-scope shape is reference-only.
+
+### WEAK → strengthened
+
+- **T-TMUX-02 / T-TMUX-09.** The "no server" legs `kill-server` first (the kit's server is always
+  up, `exit-empty off`) and assert `list-sessions` fails before the verb runs; `tx spawn-view work`
+  is asserted to start the server (exact stdout, `spawn-view` log line).
+- **T-TMUX-16.** Both envelopes assert exit 0 and empty stderr.
+- **T-SPAWN-18.** Every argparse line is asserted exactly (`err.endswith("\ntx spawn: error: <line>\n")`).
+  Two lines differ from the spec's abbreviation: `--env` / `--group` are `type=` converters, so
+  argparse prefixes them — `tx spawn: error: argument --env: --env expects KEY=VALUE, got 'NOEQ'`
+  and `tx spawn: error: argument --group: a group cannot be empty`. `--effort 6` keeps the
+  `argument --effort: invalid choice: '6' (choose from …)` prefix (the choice list is the
+  registry's).
+- **T-SPAWN-19.** The `mytool` leg compares `git worktree list` before/after (no worktree added)
+  and reads the fake's argv; name `mx` (non-hex). "NO tmux server" → the rev-5 "no live sessions"
+  (`self.tmux.sessions() == []` before the bare spawn).
+- **T-LIFE-01/03/05/08/09.** `live_shell` / `live_llm` seed a STALE `attached_to`
+  (`STALE_LOCATION`) by default, so every "cleared / re-snapshotted to `[]`" assertion now
+  observes a write. T-LIFE-01: the by-id leg asserts the launch script, `ended_at`, `err == ""` and
+  exactly one new `kill` line from `before`; the idempotent leg asserts the record was rewritten
+  (mtime). T-LIFE-03: the exited leg asserts `err == ""`. (Kit candidate: seed the stale Location in
+  `Records.llm/other` or a `live_*` helper.)
+- **T-LIFE-06.** The full `tx group: error: a group cannot be empty — use --clear to drop the
+  override` line is asserted (`endswith`), as NOTES-02 claimed.
+- **T-LIFE-12.** New leg `…_12_revive_non_llm_record_to_alive` (`@expected_failure_on_python`): an
+  exited shell record with a live `@tx_id` session revives to `alive`, `ended_at` null,
+  `attached_to` re-snapshotted from a stale value, one `revive` line, `tx ls` lists it and does not
+  re-exit it.
+- **T-ATTACH-07.** New leg `…_07_nested_tmux_pane_falls_through_to_switch_client` (the view pane
+  already hosts a nested `tmux attach` of an untracked session): no respawn (start command and
+  `pane_pid` unchanged), the Views client switches to `U2`, the pane's own nested client stays on
+  `plain`, `attached_to` stays `[]`. "within ~1 s" is waited with a 3 s bound (headroom for a loaded
+  host).
+- **T-ATTACH-09.** The nest-attach fallback leg repeats T-ATTACH-07's checks: the pane's `pane_pid`
+  changed, a client on the pane tty views `U2`, `tx ls` LOCATION `tmux[0] +1` and `attached_to` =
+  `[Alt:0.0, Views:0.0]` (both windows waited to `tmux` under automatic-rename).
+- **T-TMUXCONF-03.** Borders-off snapshots all six border window options before the fragment runs
+  and asserts them unchanged after (the config-free server's stock values; `pane-border-indicators`
+  is `colour` on tmux 3.4, not `off`).
+- **T-TMUXCONF-08.** Pane-keys-off compares prefix `M-1..M-7` with the STOCK state read before the
+  fragment ran — bound line or `unknown key` per key (3.4 binds `M-1..M-5` only); `M-1` is
+  additionally pinned to `select-layout even-horizontal`.
+- **T-TMUXCONF-11.** New leg `…_11_non_ascii_tag_colour_agrees_with_list` (Q13 PARITY): the helper's
+  `colour<n>` for `é` equals the `\e[38;5;<n>m` number of the same chip in `tx _list`. Verified: the
+  bash palette hashes per CHARACTER only under a UTF-8 locale (`é` → colour 73, matching Python's
+  code points) and per BYTE under `C` (colour 198), so every helper run pins
+  `LANG=LC_ALL=C.UTF-8` (`UTF8_LOCALE`); no marker — both implementations agree under the pinned
+  locale. Also asserts no trailing newline and `err == ""` on the main leg.
+- **T-TMUXCONF-12.** The attach-cycle leg runs the helper behind a recording `tmux` (ahead of the kit
+  wrapper on PATH) and asserts exactly 8 `display-message -p -t <pane> #{pane_at_left}` edge checks,
+  no `select-pane`, and the view's active pane unchanged.
+- **T-TMUXCONF-16.** New "negative idle delta" stale leg (falls back to the aggregate); the state
+  file is asserted `^\d+ \d+\n$` on every read (also the `$XDG_RUNTIME_DIR` file); the second-run
+  check asserts `elapsed > 0` and `elapsed_idle >= 0` instead of branching on them.
+- **T-TMUXCONF-18.** New leg `…_18_blank_or_missing_buffer_never_spawns` with NO live assistant:
+  exit 0, buffer consumed, `sessions/` empty, no tmux session, no fake-claude dump, no log line.
+- **T-EDITOR-03.** New leg `…_03_home_then_end_moves_the_cursor_to_the_end`: `Home`, insert, `BSpace`,
+  `End`, `X`, Enter → name `abcX`, log `rename abc → abcX` (a broken `End` would yield `Xabc`).
+
+### FRAGILE → deterministic
+
+- **T-TMUX-01 (Q21).** The bad-cwd leg is version-gated as the spec says: on tmux < 3.5 (verified
+  3.4) the fallback is asserted exactly (exit 0, exact stdout, record `cwd=/nope`, pane path
+  `$HOME`, one `spawn` line). On a newer tmux the tolerance is UNVERIFIED (no such tmux on this host;
+  the tmux changelog is silent), so the leg accepts either documented outcome, each in full —
+  fallback as above, or `tx spawn: tmux new-session … failed: …` with nothing persisted. First run
+  on a ≥ 3.5 host should settle it and drop the branch.
+- **T-TMUX-11/12/13/16/19, T-ATTACH-09 `jump_fixture`, T-LIFE-05.** Every command-less
+  `new-window` / `split-window` (login shell — a profile can reorder PATH ahead of the wrapper, D15)
+  is now `self.tmux.new_window` / `split_window`; `test_life.py`'s private `split_window` is gone.
+- **T-TMUX-17.** The recording `tmux` is a separate dir PREPENDED to PATH for the picker's pty run;
+  the kit wrapper is no longer overwritten in place.
+- **T-TMUX-18.** The popup runs through `subprocess.Popen` with a 15 s bound (a picker that hangs
+  fails the case, not the suite).
+- **T-TMUX-19 `tx start` leg.** An inert `tx-assistant` stub is first on PATH in the pane, beside
+  the pre-seeded live record. The reference resolves the helper REPO-relative (`_repo_root()/bin/
+  tx-assistant`), so only the record protects it; the stub covers a port that resolves it through
+  PATH. `@tx_view`, the two record files and the log tail (`spawn`, `spawn-view`) are asserted.
+- **T-SPAWN-01.** `e1`/`e2` → `ex1`/`ex2` (Q27, ~10 uuid sessions live).
+- **T-SPAWN-16 / T-RO-02 / T-RO-03.** `path_without_binary(case, binary)` (in `test_ro.py`, imported by
+  `test_spawn.py`; kit candidate): the kit dirs first, then ONE symlink dir holding every executable
+  of the inherited PATH except the binary (first hit wins) — `bwrap` is gone even from an apt
+  host's `/usr/bin` while bash / git / python stay reachable. The refusal legs also assert no tmux
+  session and no log line.
+- **T-ATTACH-07.** `bash` before the popup is waited for, not read once.
+- **T-ATTACH-08.** The crafted `$TMUX` uses `self.tmux.socket_path` (under the root's `tmux-tmp`).
+- **T-ATTACH-09 "moves nothing".** The Space keystroke into the nested client is repeated until that
+  client's `client_activity` (1 s resolution) is strictly past the outer client's, so the nested
+  client is provably the most recently active one (Q43) before the popup opens; the client set is
+  compared by `(client_tty, client_session)`, not the volatile activity stamp; Alt's active pane is
+  asserted unchanged too.
+- **T-TMUXCONF-14.** The pty client and the server's global env pin `LANG`/`LC_ALL=C.UTF-8`
+  (`utf8_client`), so the rounded border, `›` and `—` render regardless of the host locale.
+- **T-TMUXCONF-17.** `--warm` bound relaxed from < 5 s to < 10 s (measured 1.4 s; the refused edge
+  is ≈ 10 s and asserted ≥ 9 s).
+
+### SPEC (rev 5 amended; the tests assert the code)
+
+- **T-SPAWN-17.** Order as the rev-5 Given: live `w` and `w-2` first, then the refused `codex` spawn;
+  the listing keeps main + `r--w` + `r--w-2` and has no `r--c` (only the refused spawn's own
+  worktree is removed); no new record, no new log line.
+- **T-SPAWN-19.** "NO tmux server" is unreachable under D15; asserted "no live sessions".
+- **T-WT-02 (Q25 FIX leg).** `--engine claude` on all three names (`""`, `.`, `..`) so the worker
+  path (`next_name`) is reached; each asserts exit 1, a single `tx spawn: …` stderr line naming
+  `'<name>'`, empty stdout, no record, no worktree entry, nothing under `worktrees/<key>/`, no tmux
+  session, no log line. The exact wording is left to the port (the spec says "names the rejected
+  name").
+- **T-TMUXCONF-05.** tmux renders the focus hooks `run-shell -b <dir>/tmux/../bin/tx-graph-focus-poke`
+  — un-normalised and unquoted — asserted as such (now against the kit's copied fragment).
+- **T-TMUXCONF-13.** The plain-session `y` FAILS VISIBLY: the client shows
+  `tx kill: session 'p' not found (no live @tx_id, no store record)` then tmux's `returned 1`
+  (asserted both); new leg `…_13_prefix_x_binding_drives_the_helper` sources the fragment, presses
+  `C-b X` on the pty client, answers `y`, and asserts the kill through the record and the log.
+
+### Entry points (D16)
+
+- **TMUXCONF** runs the kit's COPIES throughout: the fragment is `<root>/helpers/tmux/tx-ide.tmux`
+  (its `dirname`-relative binds name `<root>/helpers/tmux/../bin/<helper>` — the `helper_prefix`
+  the T-TMUXCONF-02/04/05/07 renderings are compared against), helpers go through
+  `self.helper(name, …)` / `helper_popen(name, …)` (`self.fakes.helper(name)`), and `tx-assistant`
+  is the kit copy re-copied into the temp git repo beside a `bin/tx → TX_BIN` link (it spawns with
+  `--cwd <two dirs above its real path>` and runs `<that>/bin/tx`, so the copy must sit in a git
+  repo). Nothing under `<repo>/bin` or `<repo>/tmux` is referenced any more. **EDITOR** only ever
+  ran `TX_BIN` (`tx _edit-session`), unchanged.
