@@ -417,31 +417,38 @@ class TestCli(TxCase):
     # ----- T-CLI-07 ---------------------------------------------------------------------------
 
     def test_t_cli_07_spawn_nvim_flags_and_output(self):
+        # The spec's `ed`/`ed2`/`ed3` are hex-only names (Q27 prefix match against the three live
+        # uuid sessions); live names must also be unique, hence `nv`, `nv2`, `nv3` — see NOTES-04.md.
         cwd = str(self.root)
         nvim_prefix = "nvim +'set background=dark | colorscheme tokyonight-moon'"
-        result = self.tx(["spawn-nvim", "ed", "--tag", "t", "--diff", "--cwd", cwd])
+        result = self.tx(["spawn-nvim", "nv", "--tag", "t", "--diff", "--cwd", cwd])
         self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(result.out, f"Spawned nvim 'ed' (cwd={cwd}, tag=t, diff=main)\n")
-        record = self._show("ed")
+        self.assertEqual(result.out, f"Spawned nvim 'nv' (cwd={cwd}, tag=t, diff=main)\n")
+        record = self._show("nv")
         self.assertEqual(record["role"], "nvim")
         self.assertTrue(record["cmd"].startswith(nvim_prefix), record["cmd"])
         self.assertIn("+'DiffviewOpen main'", record["cmd"])
-        result = self.tx(["spawn-nvim", "ed2", "--tag", "t", "--diff", "origin/x", "--open", "f.txt", "--cwd", cwd])
+        result = self.tx(["spawn-nvim", "nv2", "--tag", "t", "--diff", "origin/x", "--open", "f.txt", "--cwd", cwd])
         self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(result.out, f"Spawned nvim 'ed2' (cwd={cwd}, tag=t, diff=origin/x, open=f.txt)\n")
-        self.assertTrue(self._show("ed2")["cmd"].endswith("+'DiffviewOpen origin/x' f.txt"))
-        result = self.tx(["spawn-nvim", "ed3", "--tag", "t", "--cwd", cwd])
+        self.assertEqual(result.out, f"Spawned nvim 'nv2' (cwd={cwd}, tag=t, diff=origin/x, open=f.txt)\n")
+        record = self._show("nv2")
+        self.assertEqual(record["role"], "nvim")
+        self.assertTrue(record["cmd"].startswith(nvim_prefix), record["cmd"])
+        self.assertTrue(record["cmd"].endswith("+'DiffviewOpen origin/x' f.txt"), record["cmd"])
+        result = self.tx(["spawn-nvim", "nv3", "--tag", "t", "--cwd", cwd])
         self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(result.out, f"Spawned nvim 'ed3' (cwd={cwd}, tag=t)\n")
-        self.assertEqual(self._show("ed3")["cmd"], nvim_prefix)
+        self.assertEqual(result.out, f"Spawned nvim 'nv3' (cwd={cwd}, tag=t)\n")
+        record = self._show("nv3")
+        self.assertEqual(record["role"], "nvim")
+        self.assertEqual(record["cmd"], nvim_prefix)
         # Edges.
-        missing = self.tx(["spawn-nvim", "ed4", "--cwd", cwd])
+        missing = self.tx(["spawn-nvim", "nv4", "--cwd", cwd])
         self.assertEqual(missing.code, 2)
         self.assertTrue(missing.err.endswith("tx spawn-nvim: error: the following arguments are required: --tag\n"))
-        empty = self.tx(["spawn-nvim", "ed4", "--tag", "", "--cwd", cwd])
+        empty = self.tx(["spawn-nvim", "nv4", "--tag", "", "--cwd", cwd])
         self.assertEqual(empty.code, 2)
         self.assertTrue(empty.err.endswith("tx spawn-nvim: error: --tag requires at least one value\n"))
-        group = self.tx(["spawn-nvim", "ed4", "--tag", "t", "--group", "", "--cwd", cwd])
+        group = self.tx(["spawn-nvim", "nv4", "--tag", "t", "--group", "", "--cwd", cwd])
         self.assertEqual(group.code, 2)
         self.assertTrue(group.err.endswith("tx spawn-nvim: error: argument --group: a group cannot be empty\n"))
 
@@ -464,11 +471,17 @@ class TestCli(TxCase):
         again = self.tx(["spawn-view", "Views", "--cwd", str(cwd)])
         self.assertEqual((again.code, again.err), (1, "tx spawn-view: session 'Views' already exists\n"))
         self.tx(["spawn", "w1", "--tag", "t", "--cwd", str(cwd)])
+        [w1_record] = self._record_files()
         clash = self.tx(["spawn-view", "w1", "--cwd", str(cwd)])
         self.assertEqual((clash.code, clash.err), (1, "tx spawn-view: session 'w1' already exists\n"))
         tagged = self.tx(["spawn-view", "V2", "--cwd", str(cwd), "--tag", "t"])
         self.assertEqual(tagged.code, 2)
         self.assertTrue(tagged.err.endswith("tx spawn-view: error: unrecognized arguments: --tag t\n"), tagged.err)
+        # Edge: `--cmd` defaults to `$SHELL`, else `zsh` (the fake `zsh` on PATH keeps the pane alive).
+        unset = self.tx(["spawn-view", "V3", "--cwd", str(cwd)], env={"SHELL": None})
+        self.assertEqual((unset.code, unset.out), (0, f"Spawned view 'V3' (cwd={cwd})\n"), unset.err)
+        self.assertEqual(self.tmux.display("V3", "#{pane_start_command}"), "zsh")
+        self.assertEqual(self._record_files(), [w1_record])
 
     # ----- T-CLI-09 ---------------------------------------------------------------------------
 
@@ -482,17 +495,11 @@ class TestCli(TxCase):
         self._live(SH1_ID)
         self._nest_attach(W1_ID)
 
-        [w1_record] = self._record_files()
     def test_t_cli_09_ls_output(self):
         now = time.time()
         self._ls_fixture(now - 600, now - 10)
         vanished = self.records.llm(name="vanished", state="idle")  # no tmux session → reconciled EXITED
         result = self.tx(["ls"])
-        # Edge: `--cmd` defaults to `$SHELL`, else `zsh` (the fake `zsh` on PATH keeps the pane alive).
-        unset = self.tx(["spawn-view", "V3", "--cwd", str(cwd)], env={"SHELL": None})
-        self.assertEqual((unset.code, unset.out), (0, f"Spawned view 'V3' (cwd={cwd})\n"), unset.err)
-        self.assertEqual(self.tmux.display("V3", "#{pane_start_command}"), "zsh")
-        self.assertEqual(self._record_files(), [w1_record])
         self.assertEqual((result.code, result.err), (0, ""))
         self.assertEqual(
             result.out,
@@ -851,30 +858,6 @@ class TestCli(TxCase):
         self.assertEqual((session_scoped.code, session_scoped.err), (0, ""))
         self.assertEqual(session_scoped.out, prefix + "inner-remote='1' inner-session-name='host' session-kind='view'/>")
 
-    # ----- T-CLI-24 ---------------------------------------------------------------------------
-
-    def _v3_llm(self, name: str) -> dict:
-        record = {
-            "schema_version": 3, "id": name, "name": name, "role": "llm", "state": "idle", "cwd": "/x",
-            "cmd": SESSION_RECORD_CMD, "tags": [], "env": {}, "parent": None, "pid": None, "attached_to": [],
-            "created_at": 1.0, "ended_at": None, "engine": "claude", "last_activity": None, "chats": [],
-        }
-        return record
-
-    def test_t_cli_24_migrate_output(self):
-        self.records.write(self._v3_llm("old"))
-        cur = self.records.llm(id="cur")
-        art = self.home.artifacts_dir / "art.json"
-        art.write_text(json.dumps({
-            "artifact_schema_version": 1, "id": "art", "title": None, "filename": "a.md", "created_at": 1.0,
-            "history": [{"session_id": "s1", "at": 1.0, "rev": 0, "changes": None}],
-        }))
-        result = self.tx(["migrate"])
-        self.assertEqual((result.code, result.err), (0, ""))
-        self.assertEqual(
-            result.lines,
-            [
-                "  migrated old.json → v6",
     def test_t_cli_21_pane_gone(self):
         # Q37 PARITY (tmux-version dependent): only exit 0, no trailing newline and the ABSENCE of
         # the record-join attrs are the contract. tmux 3.4 expands `display-message -p -t %999`
@@ -899,6 +882,30 @@ class TestCli(TxCase):
         self.assertEqual(lines[0]["type"], "selfcheck")
         self.assertRegex(lines[0]["msg"], r"^created s1a-selfcheck \([0-9a-f-]{36}\)$")
 
+    # ----- T-CLI-24 ---------------------------------------------------------------------------
+
+    def _v3_llm(self, name: str) -> dict:
+        record = {
+            "schema_version": 3, "id": name, "name": name, "role": "llm", "state": "idle", "cwd": "/x",
+            "cmd": SESSION_RECORD_CMD, "tags": [], "env": {}, "parent": None, "pid": None, "attached_to": [],
+            "created_at": 1.0, "ended_at": None, "engine": "claude", "last_activity": None, "chats": [],
+        }
+        return record
+
+    def test_t_cli_24_migrate_output(self):
+        self.records.write(self._v3_llm("old"))
+        cur = self.records.llm(id="cur")
+        art = self.home.artifacts_dir / "art.json"
+        art.write_text(json.dumps({
+            "artifact_schema_version": 1, "id": "art", "title": None, "filename": "a.md", "created_at": 1.0,
+            "history": [{"session_id": "s1", "at": 1.0, "rev": 0, "changes": None}],
+        }))
+        result = self.tx(["migrate"])
+        self.assertEqual((result.code, result.err), (0, ""))
+        self.assertEqual(
+            result.lines,
+            [
+                "  migrated old.json → v6",
                 "  skipped  cur.json (already v6)",
                 "migrated 1 record(s) to v6; retired 0 view record(s); left 1 untouched.",
                 "  migrated art.json → artifact v2",
@@ -955,10 +962,24 @@ class TestCli(TxCase):
         self.assertNotIn("tx-assistant", self.tmux.sessions())  # liveness target is the record's id
         self.assertIn(assistant["id"], self.tmux.sessions())
         log = self.log_lines()
+        views_before = self.tmux.display("Views", "#{session_id} #{session_created} #{pane_id} #{pane_pid}")
         again = self.tx(["start"])
         self.assertEqual((again.code, again.out), (0, "tx-assistant already running.\n"))
+        self.assertIn("open terminal failed", again.err)
         self.assertEqual(self.log_lines(), log)
         self.assertEqual(self.tmux.sessions().count("Views"), 1)
+        self.assertEqual(self.tmux.display("Views", "#{session_id} #{session_created} #{pane_id} #{pane_pid}"), views_before)
+        # Edge: with `$TMUX` set the trailing step is `switch-client -t Views`, not `attach`: the
+        # outer client attached to `raw` is moved onto `Views` and no attach error is printed.
+        self.tmux.new_session("raw", "sleep 1000")
+        client = self.attach_client("raw")
+        self.assertEqual([row["client_session"] for row in self.tmux.clients()], ["raw"])
+        inside = self.tx_inside("raw", ["start"])
+        self.assertEqual((inside.code, inside.out, inside.err), (0, "tx-assistant already running.\n", ""))
+        self.wait_until(lambda: [row["client_session"] for row in self.tmux.clients()] == ["Views"])
+        self.assertEqual(self.log_lines(), log)
+        self.assertEqual(self.tmux.display("Views", "#{session_id} #{session_created} #{pane_id} #{pane_pid}"), views_before)
+        client.close()
 
     # ----- T-CLI-26 ---------------------------------------------------------------------------
 
@@ -973,24 +994,10 @@ class TestCli(TxCase):
 
     def _assert_refused(self, argv: list[str], message: str, *, code: int = 1) -> None:
         records, sessions = self._record_files(), self.tmux.sessions()
-        views_before = self.tmux.display("Views", "#{session_id} #{session_created} #{pane_id} #{pane_pid}")
         result = self.tx(argv)
         self.assertEqual((result.code, result.out, result.err), (code, "", message), argv)
-        self.assertIn("open terminal failed", again.err)
         self.assertEqual(self._record_files(), records)
         self.assertEqual(self.tmux.sessions(), sessions)
-        self.assertEqual(self.tmux.display("Views", "#{session_id} #{session_created} #{pane_id} #{pane_pid}"), views_before)
-        # Edge: with `$TMUX` set the trailing step is `switch-client -t Views`, not `attach`: the
-        # outer client attached to `raw` is moved onto `Views` and no attach error is printed.
-        self.tmux.new_session("raw", "sleep 1000")
-        client = self.attach_client("raw")
-        self.assertEqual([row["client_session"] for row in self.tmux.clients()], ["raw"])
-        inside = self.tx_inside("raw", ["start"])
-        self.assertEqual((inside.code, inside.out, inside.err), (0, "tx-assistant already running.\n", ""))
-        self.wait_until(lambda: [row["client_session"] for row in self.tmux.clients()] == ["Views"])
-        self.assertEqual(self.log_lines(), log)
-        self.assertEqual(self.tmux.display("Views", "#{session_id} #{session_created} #{pane_id} #{pane_pid}"), views_before)
-        client.close()
 
     def test_t_cli_26_parity_chat_ls_and_resume_guards(self):
         self._resume_fixture()
