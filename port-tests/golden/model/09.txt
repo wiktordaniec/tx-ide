@@ -1,0 +1,23 @@
+{
+  "schema_version": 6,
+  "id": "11111111-aaaa-4bbb-8ccc-000000000001",
+  "name": "worker-1",
+  "role": "llm",
+  "state": "waiting",
+  "cwd": "/repo",
+  "cmd": "",
+  "tags": [
+    "docs"
+  ],
+  "group": null,
+  "env": {},
+  "parent": null,
+  "pid": null,
+  "attached_to": [],
+  "created_at": 900.0,
+  "ended_at": null,
+  "engine": "claude",
+  "last_activity": 970.0,
+  "chats": [],
+  "turn_started_at": null
+}
