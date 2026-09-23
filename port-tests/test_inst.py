@@ -14,28 +14,39 @@ import glob
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
+import unittest
+import uuid
 from pathlib import Path
 
 from txkit import (
     HOME_DIRS,
     REPO,
+    TX_ENGINE_SETUP,
+    TX_INSTALLER,
+    TX_UNINSTALLER,
     Result,
     TxCase,
     expected_failure_on_python,
+    python_reference_only,
     requires_tmux,
     scrubbed_env,
     strip_ansi,
+    tmux_version,
 )
 
-INSTALL = REPO / "install"
-UNINSTALL = REPO / "uninstall"
-ENGINES_DIR = REPO / "setup" / "engines"
+# Entry points (H9 / D16): never the repo's scripts by path — a port names its own installer,
+# uninstaller and engine-setup dir, and the defaults are the reference's files.
+INSTALL = Path(TX_INSTALLER)
+UNINSTALL = Path(TX_UNINSTALLER)
+INSTALL_SH = Path(TX_ENGINE_SETUP)
+ENGINES_DIR = INSTALL_SH.parent
 CLAUDE_SH = ENGINES_DIR / "claude.sh"
 CODEX_SH = ENGINES_DIR / "codex.sh"
-INSTALL_SH = ENGINES_DIR / "install.sh"
+# Only for the expected strings baked into shims / markers (the reference's exec line).
 LIB_DIR = REPO / "lib"
 
 CLI_TOOLS = ("tx", "tx-assistant", "tmux-pane-session-name", "tmux-system-resources")
@@ -611,6 +622,7 @@ class TestInst(TxCase):
         self.assertEqual([backup.read_text() for backup in backups(shim)], ["run-shell '/old/tx-ide.tmux'\n"])
         self.assert_status(result, shim, "written")
 
+    @python_reference_only
     def test_t_inst_09_parity_identical_content_rewritten_with_bak(self):
         # Q22: `$(cat)` strips the trailing newline, so `already current` is unreachable.
         installer = self.installer
@@ -811,8 +823,10 @@ class TestInst(TxCase):
         claude_after = snapshot(installer.claude_dir)
         self.assertEqual(claude_after["settings.json"], claude_before["settings.json"])
         newest = max(backups(installer.settings), key=lambda backup: backup.stat().st_mtime_ns)
-        self.assertGreaterEqual(newest.stat().st_mtime, self.rerun_started_at)
+        # one second of slack: the .bak's mtime and time.time() come from different clocks/resolutions
+        self.assertGreaterEqual(newest.stat().st_mtime, self.rerun_started_at - 1)
 
+    @python_reference_only
     def test_t_inst_15_parity_install_idempotent_end_to_end(self):
         user_home_before, tx_home_before, claude_before = self._rerun_fixture()
         installer = self.installer
@@ -1026,6 +1040,7 @@ class TestInst(TxCase):
         self.assertTrue(agents.is_dir())
         self.assertFalse(agents.is_symlink())
 
+    @python_reference_only
     def test_t_inst_21_parity_plain_uninstall_keeps_state_deletes_config_and_log(self):
         # Q10 (reference): `uninstall` removes config.json AND log.jsonl unconditionally.
         installer = self.installer
@@ -1640,6 +1655,7 @@ class TestInst(TxCase):
         self.assertEqual(backups_before, self.engines_backups(copy))
         self.assertTrue(self.engines_sidecar(copy).exists())
 
+    @python_reference_only
     def test_t_inst_34_parity_missing_parent_key(self) -> None:
         copy, before, backups_before = self.engines_missing_parent_copy()
         result = self.installer.claude_sh("uninstall", "--settings", str(copy))
