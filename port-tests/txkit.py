@@ -363,6 +363,26 @@ if NAME == "bwrap" and knobs.get("passthrough", True) and "--" in sys.argv:
     if inner:
         os.execvp(inner[0], inner)
 
+if knobs.get("stdin_log") and sys.stdin.isatty():
+    # Log every raw chunk typed into the pane (send-keys delivery timing): canonical mode off so a
+    # chunk is readable before Enter, ICRNL off so the Enter key arrives as the literal "\r", echo
+    # left on so capture-pane still shows the text. Runs until the pane is killed.
+    import termios
+    attributes = termios.tcgetattr(0)
+    attributes[0] &= ~termios.ICRNL
+    attributes[3] &= ~termios.ICANON
+    attributes[6][termios.VMIN] = 1
+    attributes[6][termios.VTIME] = 0
+    termios.tcsetattr(0, termios.TCSANOW, attributes)
+    log_path = os.path.join(out_dir, f"{NAME}-{key}.stdin.jsonl")
+    while True:
+        chunk = os.read(0, 4096)
+        if not chunk:
+            break
+        with open(log_path, "a") as handle:
+            handle.write(json.dumps({"at": time.time(), "data": chunk.decode("utf-8", "replace")}) + "\n")
+            handle.flush()
+
 time.sleep(knobs.get("sleep", DEFAULT_SLEEP))
 sys.exit(knobs.get("exit_code", 0))
 '''
@@ -375,7 +395,9 @@ class FakeBins:
     Knobs (per basename, set before the run): `sleep` seconds, `exit_code`, `transcript` (write a
     fake transcript at this path; `transcript_text` for its body), `prompt_glyph` (echo `❯ ` to
     stdout), `stdout` (extra text), `read_stdin` (default only for `fzf`), `passthrough` (bwrap:
-    exec the command after `--`, default on).
+    exec the command after `--`, default on), `stdin_log` (a tty-attached fake logs every raw
+    chunk typed into its pane with a timestamp to `<name>-<key>.stdin.jsonl` — see `stdin_log()`;
+    the Enter key arrives as a literal `\r`).
     """
 
     def __init__(self, root: Path, names: tuple[str, ...] = FAKE_NAMES):
@@ -415,6 +437,13 @@ class FakeBins:
 
     def dump_path(self, name: str, key: str) -> Path:
         return self.out_dir / f"{name}-{key}.json"
+
+    def stdin_log(self, name: str, key: str) -> list[dict]:
+        """The `stdin_log=True` chunks for `name`/`key` so far: `[{"at": <epoch>, "data": <text>}]`."""
+        path = self.out_dir / f"{name}-{key}.stdin.jsonl"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line]
 
     def wait_dump(self, name: str, key: str | None = None, timeout: float = 10.0) -> dict:
         """Block until a dump for `name` (and `key` = TX_SESSION_ID or pid, if given) appears."""
