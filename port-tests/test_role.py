@@ -100,7 +100,7 @@ class TestRole(TxCase):
             [os.path.realpath(path) for path in self.git.worktrees()],
             [os.path.realpath(self.git.path)],
         )
-        self.assertEqual(self.tmux.sessions(), [])
+        self.assert_no_sessions()
         self.assertFalse(self.home.log_path.exists())
 
     def assert_link_failure(self, result: Result, fragment: str) -> None:
@@ -114,7 +114,12 @@ class TestRole(TxCase):
             [os.path.realpath(path) for path in self.git.worktrees()],
             [os.path.realpath(self.git.path)],
         )
-        self.assertEqual(self.tmux.sessions(), [])
+        self.assert_no_sessions()
+
+    def assert_no_sessions(self) -> None:
+        """`TmuxServer.sessions()` is `[]` on a dead server too; pin that the server answered."""
+        listing = self.tmux.run("list-sessions", "-F", "#{session_name}")
+        self.assertEqual((listing.returncode, listing.stdout), (0, ""), listing.stderr)
 
     # ----- T-ROLE-01 -----------------------------------------------------------------------
 
