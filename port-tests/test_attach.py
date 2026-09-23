@@ -416,12 +416,15 @@ class TestAttach(TxCase):
         pane_tty = self.tmux.pane_tty(pane)
         nested = self.wait_until(lambda: self.client_on(pane_tty))
         self.assertEqual(nested["client_session"], record["id"])
-        window_name = self.tmux.display(pane, "#{window_name}")
+        # Stock config: `automatic-rename` follows `pane_current_command`, and tmux applies it a
+        # beat after the command changes — wait for the name the spec states (`tmux` once nested)
+        # so the two reads below (`tx ls`, `tx show`) see the settled value, not the race.
+        self.wait_until(lambda: self.tmux.display(pane, "#{window_name}") == "tmux")
         pane_index = self.tmux.display(pane, "#{pane_index}")
         listing = self.tx(["ls"]).out
-        self.assertIn(f"  U2                       alive    {window_name}[{pane_index}]", listing)
+        self.assertIn(f"  U2                       alive    tmux[{pane_index}]", listing)
         shown = json.loads(self.tx(["show", "U2"]).out)
-        self.assertEqual(shown["attached_to"], [{"host": "Views", "window_index": "0", "window_name": window_name, "pane_id": pane, "pane_index": "0"}])
+        self.assertEqual(shown["attached_to"], [{"host": "Views", "window_index": "0", "window_name": "tmux", "pane_id": pane, "pane_index": "0"}])
         # the Views client itself did not switch
         self.assertEqual(self.client_on(client.tty)["client_session"], "Views")
         self.assertEqual(len(self.fakes.dumps("fzf")), 1)
