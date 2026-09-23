@@ -67,8 +67,12 @@ wrapper then the fakes first. `env` overrides (a `None` value unsets). `out`/`er
 `raw_*` keep the escapes. Default `cwd` is the temp root.
 
 Also: `self.log_lines()`, `self.log_tail(n)`, `self.wait_until(predicate, timeout)`,
-`self.assert_golden(name, actual)`. The module-level `run_tx(...)`, `log_lines(home)`, etc. exist for
-tests that compose fixtures by hand.
+`self.assert_golden(name, actual)`, `self.live(id, cmd="sleep 1000")` (the "live record" recipe:
+a session named by the id with `@tx_id` set), `self.tx_detached(argv, env=...)` (`setsid -w`, no
+controlling tty — `tx attach` then sizes from `$COLUMNS`; skips without `setsid`),
+`self.records.patch(id, key=value, gone=...)` (rewrite a stored record; `...` deletes a key), and
+`self.tmux.pane_commands()` (`@tx_id → #{pane_current_command}`). The module-level `run_tx(...)`,
+`run_tx_detached(...)`, `log_lines(home)`, etc. exist for tests that compose fixtures by hand.
 
 ### Fake binaries
 
