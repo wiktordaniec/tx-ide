@@ -36,15 +36,6 @@ class TestRender(TxCase):
 
     # ----- helpers -------------------------------------------------------------------------
 
-    def live(self, record_id: str) -> None:
-        self.tmux.new_session(record_id, "sleep 1000", tx_id=record_id)
-
-    def patch(self, record_id: str, **fields) -> None:
-        """Overwrite fields the `Records` builders default (e.g. a null `created_at`)."""
-        record = self.records.load(record_id)
-        record.update(fields)
-        self.records.write(record)
-
     def list_rows(self, namew: str = "12") -> list[list[str]]:
         result = self.tx(["_list"], env={"NAMEW": namew})
         self.assertEqual(result.code, 0, result.err)
@@ -52,21 +43,9 @@ class TestRender(TxCase):
 
     def attach_dump(self, cols: int, run_dir: Path) -> dict:
         """`COLUMNS=<cols> setsid -w tx attach` with no controlling tty; returns the fake fzf dump."""
-        if shutil.which("setsid") is None:
-            self.skipTest("setsid not on PATH")
         run_dir.mkdir()
-        env = txkit.scrubbed_env(
-            self.home, self.tmux, self.fakes, {"COLUMNS": str(cols), "FAKE_OUT": str(run_dir)}
-        )
-        completed = subprocess.run(
-            ["setsid", "-w", txkit.TX_BIN, "attach"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=60,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = self.tx_detached(["attach"], env={"COLUMNS": str(cols), "FAKE_OUT": str(run_dir)})
+        self.assertEqual(result.code, 0, result.err)
         dumps = list(run_dir.glob("fzf-*.json"))
         self.assertEqual(len(dumps), 1)
         return json.loads(dumps[0].read_text())
@@ -131,9 +110,9 @@ class TestRender(TxCase):
             self.records.llm(id=record_id, name=record_id, state="exited", cwd="/r", tags=(),
                              chats=[], created_at=self.now - 200000, ended_at=ended)
         self.records.llm(id="n", name="n", state="exited", cwd="/r", tags=(), chats=[])
-        self.patch("n", ended_at=None, last_activity=None, created_at=None)
+        self.records.patch("n", ended_at=None, last_activity=None, created_at=None)
         self.records.llm(id="z", name="z", state="exited", cwd="/r", tags=(), chats=[])
-        self.patch("z", ended_at=0, last_activity=None, created_at=None)
+        self.records.patch("z", ended_at=0, last_activity=None, created_at=None)
 
         result = self.tx(["history"])
         self.assertEqual(result.code, 0, result.err)
@@ -242,7 +221,7 @@ class TestRender(TxCase):
         expected = [12, 53, 53, 53, 60, 59, 12, 12, 12, 60, 60]
         seen = []
         for index, (cols, longest) in enumerate(pairs):
-            self.patch("nv", name="x" * longest)
+            self.records.patch("nv", name="x" * longest)
             dump = self.attach_dump(cols, self.root / f"fzf-run-{index}")
             seen.append(int(dump["env"]["NAMEW"]))
         self.assertEqual(seen, expected)
