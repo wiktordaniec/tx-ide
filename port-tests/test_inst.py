@@ -978,14 +978,20 @@ class TestInst(TxCase):
         self.assertEqual(installer.user_tmux_conf.read_text(), "set -g mouse on\n")
         self.assertEqual(installer.rc_file(".zshrc").read_text(), "alias x=y\n")
 
-    def test_t_inst_18_statusline_ownership_check(self):
+    def ownership_fixture(self) -> bytes:
+        """T-INST-18: the marker claims `bash <HOME>/statusline.sh`, settings point elsewhere;
+        returns settings.json's bytes."""
         installer = self.installer
         installer.tx_home.mkdir()
         installer.marker.write_text(
             json.dumps({"statusLine_command": f"bash {installer.tx_home}/statusline.sh"}, indent=2) + "\n"
         )
         installer.write_settings({"theme": "dark", "statusLine": {"type": "command", "command": "bash /elsewhere.sh"}})
-        before = installer.settings.read_bytes()
+        return installer.settings.read_bytes()
+
+    def test_t_inst_18_statusline_ownership_check(self):
+        installer = self.installer
+        before = self.ownership_fixture()
         result = installer.uninstall()
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(installer.settings.read_bytes(), before)
@@ -995,9 +1001,34 @@ class TestInst(TxCase):
         self.assertIn("\n  → statusLine not ours / absent — left alone", statusline_section)
         self.assertNotIn("backup:", statusline_section)
         # The statusLine step wrote no .bak; every .bak on disk is one some later step announced
-        # (the reference's claude.sh rewrites settings.json whenever a marker exists — see NOTES).
+        # (Q33: the reference's claude.sh rewrites settings.json whenever a marker exists — see NOTES).
         announced = re.findall(r"^  backup: (.+)$", result.out, re.M)
         self.assertEqual(sorted(str(backup) for backup in backups(installer.settings)), sorted(announced))
+
+    @python_reference_only
+    def test_t_inst_18_parity_needless_rewrite_drops_a_bak(self):
+        # Q33 (reference): `do_uninstall` returns an EMPTY plan whenever any marker exists, so
+        # `write()` still runs — settings.json is rewritten byte-identically and one `.bak` dropped.
+        installer = self.installer
+        before = self.ownership_fixture()
+        result = installer.uninstall()
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(installer.settings.read_bytes(), before)
+        self.assertEqual([backup.read_bytes() for backup in backups(installer.settings)], [before])
+        self.assertEqual(len(re.findall(r"^  backup: .+$", result.out, re.M)), 1)
+
+    @expected_failure_on_python
+    def test_t_inst_18_fixed_no_needless_rewrite(self):
+        installer = self.installer
+        before = self.ownership_fixture()
+        stat_before = installer.settings.stat()
+        result = installer.uninstall()
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(installer.settings.read_bytes(), before)
+        self.assertEqual(backups(installer.settings), [])
+        self.assertNotIn("backup:", result.out)
+        stat_after = installer.settings.stat()
+        self.assertEqual((stat_after.st_ino, stat_after.st_mtime_ns), (stat_before.st_ino, stat_before.st_mtime_ns))
 
     def test_t_inst_18_legacy_in_settings_marker_fallback(self):
         installer = self.installer
@@ -1526,9 +1557,34 @@ class TestInst(TxCase):
         self.assertEqual(CONTEXT_PROFILE, marker["context_profile"])
         self.assertEqual(recorded, marker["context_profile_previous"])
         self.assertIs(True, self.engines_read(copy)["disableWorkflows"])
-        # a later uninstall still restores (the emptied `permissions` parent is left behind)
+        # a later uninstall still restores; whether the emptied `permissions` parent survives is
+        # Q29's surface (the marked pair below), so it is excluded here
         self.assertEqual(0, self.installer.claude_sh("uninstall", "--settings", str(copy)).code)
+        restored = self.engines_read(copy)
+        self.assertNotIn("deny", restored.get("permissions", {}))
+        restored.pop("permissions", None)
+        self.assertEqual({"disableWorkflows": False}, restored)
+
+    def engines_no_context_profile_uninstalled_copy(self) -> Path:
+        """T-INST-31 (b) taken through to uninstall: install, `--no-context-profile` re-install,
+        uninstall — the emptied `permissions` parent is what Q29 decides."""
+        copy = self.engines_copy({"disableWorkflows": False})
+        self.assertEqual(0, self.installer.claude_sh("install", "--settings", str(copy)).code)
+        self.assertEqual(0, self.installer.claude_sh("install", "--no-context-profile", "--settings", str(copy)).code)
+        self.assertEqual(0, self.installer.claude_sh("uninstall", "--settings", str(copy)).code)
+        return copy
+
+    @python_reference_only
+    def test_t_inst_31_parity_uninstall_leaves_emptied_permissions(self) -> None:
+        # Q29 (reference): `path_del` pops only the leaf; the `permissions` parent install's
+        # `path_set` created stays behind empty.
+        copy = self.engines_no_context_profile_uninstalled_copy()
         self.assertEqual({"disableWorkflows": False, "permissions": {}}, self.engines_read(copy))
+
+    @expected_failure_on_python
+    def test_t_inst_31_fixed_uninstall_drops_emptied_permissions(self) -> None:
+        copy = self.engines_no_context_profile_uninstalled_copy()
+        self.assertEqual({"disableWorkflows": False}, self.engines_read(copy))
 
     # ----- T-INST-32 ---------------------------------------------------------------------------
 
@@ -1584,16 +1640,20 @@ class TestInst(TxCase):
         result = self.installer.claude_sh("uninstall", "--settings", str(copy))
         self.assertEqual(0, result.code)
         restored = {"type": "command", "command": "/mailbox/stop.sh", "timeout": 10, "async": True}
+        # Everything but `permissions`: whether the emptied parent survives is Q29 (T-INST-33's
+        # marked pair below); `permissions.deny` itself must be gone either way.
+        settings = self.engines_read(copy)
+        self.assertNotIn("deny", settings.get("permissions", {}))
+        settings.pop("permissions", None)
         self.assertEqual(
             {
                 "hooks": {
                     "Notification": [foreign_notify],
                     "Stop": [{"matcher": "", "hooks": [peon, restored]}],
                 },
-                "permissions": {},
                 "_tx_ide_managed": {"hook_commands": {"Stop": "/mailbox/stop.sh"}},
             },
-            self.engines_read(copy),
+            settings,
         )
         post_command = str(self.installer.claude_shim("post"))
         self.assertIn(engines_plan_line("Stop", f"restore  {post_command}  →  /mailbox/stop.sh"), result.out)
@@ -1609,7 +1669,22 @@ class TestInst(TxCase):
         copy = self.engines_installed_copy({})
         result = self.installer.claude_sh("uninstall", "--settings", str(copy))
         self.assertEqual(0, result.code)
+        settings = self.engines_read(copy)
+        self.assertNotIn("hooks", settings)
+        self.assertEqual({}, {key: value for key, value in settings.items() if key != "permissions"})
+
+    @python_reference_only
+    def test_t_inst_33_parity_hooks_dropped_when_empty_leaves_permissions(self) -> None:
+        # Q29 (reference): uninstall of a fresh `{}` install leaves the emptied `permissions` parent.
+        copy = self.engines_installed_copy({})
+        self.assertEqual(0, self.installer.claude_sh("uninstall", "--settings", str(copy)).code)
         self.assertEqual({"permissions": {}}, self.engines_read(copy))
+
+    @expected_failure_on_python
+    def test_t_inst_33_fixed_hooks_dropped_when_empty(self) -> None:
+        copy = self.engines_installed_copy({})
+        self.assertEqual(0, self.installer.claude_sh("uninstall", "--settings", str(copy)).code)
+        self.assertEqual({}, self.engines_read(copy))
 
     def test_t_inst_33_drift_skipped(self) -> None:
         copy = self.engines_installed_copy({})
