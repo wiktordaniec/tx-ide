@@ -52,20 +52,32 @@ TX_BIN = str(Path(os.environ.get("TX_BIN", str(REPO / "bin" / "tx"))).expanduser
 REAL_TMUX = shutil.which("tmux")
 
 
-def _entry_point(variable: str, default: Path) -> str:
-    return str(Path(os.environ.get(variable, str(default))).expanduser().resolve())
+def _entry_dir(variable: str, default: Path) -> Path:
+    return Path(os.environ.get(variable, str(default))).expanduser().resolve()
 
 
-# Entry points beside the binary (K1). The defaults are the reference's; a port sets them to its own
-# (`TX_INSTALLER="tx install"`-style wrappers, a statusline seam) so INST / STATUS / TMUXCONF exercise
-# the port, not the Python checkout. `TX_HELPERS_DIR` holds `tmux-pane-session-name`, `tmux-nav`,
-# `tmux-kill-tx-session`, `tmux-edit-tx-session`, `tmux-session-relabel`, `tmux-system-resources`,
-# `tx-assistant`, `tx-graph-focus-poke`; every kit run gets COPIES of them (see FakeBins).
-TX_HELPERS_DIR = Path(_entry_point("TX_HELPERS_DIR", REPO / "bin"))
-TX_INSTALLER = _entry_point("TX_INSTALLER", REPO / "install")
-TX_UNINSTALLER = _entry_point("TX_UNINSTALLER", REPO / "uninstall")
-TX_ENGINE_SETUP = _entry_point("TX_ENGINE_SETUP", REPO / "setup" / "engines" / "install.sh")
-TX_STATUSLINE = _entry_point("TX_STATUSLINE", REPO / "claude" / "statusline.sh")
+def _entry_argv(variable: str, default: Path) -> list[str]:
+    """A scalar entry point (H9) is an argv PREFIX — `TX_INSTALLER="tx install"` — split like a
+    shell would; a first word containing `/` is resolved to an absolute path, a bare word is looked
+    up on the run's PATH (where `tx` is the helper link to `TX_BIN`)."""
+    words = shlex.split(os.environ.get(variable, "")) or [str(default)]
+    if "/" in words[0]:
+        words[0] = str(Path(words[0]).expanduser().resolve())
+    return words
+
+
+# Entry points beside the binary (H9 / K1). The defaults reproduce the reference exactly; a port sets
+# every one of them to its own commands (`tx install`, `tx statusline`, …) so INST / STATUS /
+# TMUXCONF / NVIM exercise the port, not the Python checkout. Two are directories holding one entry
+# point per file name; three are argv prefixes. `TX_HELPERS_DIR` holds `tmux-pane-session-name`,
+# `tmux-nav`, `tmux-kill-tx-session`, `tmux-edit-tx-session`, `tmux-session-relabel`,
+# `tmux-system-resources`, `tx-assistant`, `tx-graph-focus-poke`; every kit run gets COPIES of them
+# (see FakeBins). `TX_ENGINE_SETUP` holds `{install,claude,codex,antigravity}.sh`.
+TX_HELPERS_DIR = _entry_dir("TX_HELPERS_DIR", REPO / "bin")
+TX_ENGINE_SETUP = _entry_dir("TX_ENGINE_SETUP", REPO / "setup" / "engines")
+TX_INSTALLER = _entry_argv("TX_INSTALLER", REPO / "install")
+TX_UNINSTALLER = _entry_argv("TX_UNINSTALLER", REPO / "uninstall")
+TX_STATUSLINE = _entry_argv("TX_STATUSLINE", REPO / "claude" / "statusline.sh")
 
 # What `ensure_home` creates (T-HOME-04). `agents` and `hooks/` are the installer's, mirrored below.
 HOME_DIRS = ("sessions", "history", "worktrees", "user-agents", "artifacts", "launch")
@@ -1193,9 +1205,9 @@ def run_script(
     cwd: str | Path | None = None,
     timeout: float = 60.0,
 ) -> Result:
-    """Run any executable under `scrubbed_env` — an entry point (`TX_INSTALLER`, `TX_STATUSLINE`,
-    `bash <script>`), a helper copy (`fakes.helper(name)`), or `TX_BIN` (`run_tx`). `stdin=None`
-    feeds an empty stdin (EOF)."""
+    """Run any executable under `scrubbed_env` — an entry point (`[*TX_INSTALLER, …]`,
+    `[*TX_STATUSLINE]`, `[str(TX_ENGINE_SETUP / "claude.sh"), …]`), a helper copy
+    (`fakes.helper(name)`), or `TX_BIN` (`run_tx`). `stdin=None` feeds an empty stdin (EOF)."""
     completed = subprocess.run(
         argv,
         input=stdin if stdin is not None else "",
@@ -1514,8 +1526,8 @@ class TxCase(unittest.TestCase):
         cwd: str | Path | None = None,
         timeout: float = 60.0,
     ) -> Result:
-        """`run_script` over the standard fixtures: an entry point (`[TX_INSTALLER]`,
-        `["bash", TX_STATUSLINE]`) or any executable, under the same env as `self.tx`."""
+        """`run_script` over the standard fixtures: an entry point (`[*TX_INSTALLER, …]`,
+        `[*TX_STATUSLINE]`) or any executable, under the same env as `self.tx`."""
         return run_script(
             argv, home=self.home, tmux=self.tmux, fakes=self.fakes, env=env, stdin=stdin,
             cwd=cwd if cwd is not None else self.root, timeout=timeout,

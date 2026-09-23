@@ -68,3 +68,18 @@ Test edits made for the kit changes (case ids, reasons):
 | `test_nvim.py::TestNvim.attach_client` (T-NVIM-15) | local `script(1)` attach with `dict(os.environ)` removed; the kit's `attach_client` (scrubbed pty client) applies | review 05 §4, D15 breach; K3 |
 | `test_nvim.py` crafted `$TMUX` value | `self.tmux.socket_path` instead of a runner-env-derived path | the socket now lives under `<root>/tmux-tmp` |
 | `test_attach.py` T-ATTACH-07 | `self.tmux.wait_for_window_name(pane, "tmux")` replaces the inline wait | K4 helper |
+
+## Phase 5b — integrating the section fixers (`feat/port-tests-fix-01..05`)
+
+All five branch from `c7056fa`, touch disjoint test files and no kit file; the merges were clean.
+
+- **Entry points aligned to spec rev 5 (H9).** The K1 kit exposed `TX_ENGINE_SETUP` as the
+  `install.sh` FILE and every scalar entry point as one resolved path; H9 makes `TX_ENGINE_SETUP` a
+  DIRECTORY (`{install,claude,codex,antigravity}.sh` by file name) and each scalar an argv PREFIX
+  that may carry arguments (`TX_INSTALLER="tx install"`). fix-05's NOTES flagged both. The kit now
+  matches H9: `TX_ENGINE_SETUP: Path` (dir), `TX_INSTALLER` / `TX_UNINSTALLER` / `TX_STATUSLINE:
+  list[str]` (shell-split; a first word with `/` resolved). Test edits: `test_inst.py` module
+  constants (`INSTALL = TX_INSTALLER`, `INSTALL_SH = [str(TX_ENGINE_SETUP / "install.sh")]`, …),
+  `Installer.run(command: list[str], *args)`, the uninstaller-source read via `Path(UNINSTALL[0])`;
+  `test_status.py` runs `[*TX_STATUSLINE]` (the reference script has a shebang and is executable; a
+  port's `tx statusline` is an argv prefix). No assertion changed.

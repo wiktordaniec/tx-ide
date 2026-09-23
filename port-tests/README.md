@@ -25,19 +25,22 @@ python3.14 port-tests/check_coverage.py [--spec PATH] [--tests DIR] [--verbose]
 
 ## Entry points
 
-Everything the suite executes is selected by environment variables, resolved once at import
-(`txkit.TX_BIN`, `TX_HELPERS_DIR`, …). The defaults are the Python reference's files; a port sets
-every one of them, or the suite silently tests the checkout instead of the port.
+Everything the suite executes is selected by environment variables (spec H9), resolved once at
+import (`txkit.TX_BIN`, `TX_HELPERS_DIR`, …). The defaults are the Python reference's files; a port
+sets every one of them, or the suite silently tests the checkout instead of the port. Two are
+directories holding one entry point per file name; the scalars are argv prefixes split like a
+shell would (a first word with a `/` is resolved, a bare word such as `tx` is found on the run's
+PATH, where `tx` is the link to `TX_BIN`).
 
 | variable | default | what it names |
 |---|---|---|
 | `TX_BIN` | `<repo>/bin/tx` | the `tx` binary under test |
 | `TX_IMPL` | detected | `python` or `rust`, for the D9 / parity markers (see Markers). Without it the Python shim is recognised by the `-m tx` line in `bin/tx`; set `TX_IMPL=rust` when the port is wrapped in a shell script |
 | `TX_HELPERS_DIR` | `<repo>/bin` | the dir holding `tmux-pane-session-name`, `tmux-nav`, `tmux-kill-tx-session`, `tmux-edit-tx-session`, `tmux-session-relabel`, `tmux-system-resources`, `tx-assistant`, `tx-graph-focus-poke`. Every test gets COPIES of them in `<root>/helpers/bin/` beside a `tx → TX_BIN` link, because the helpers find `tx` relative to their own resolved path (`$(dirname $(readlink -f $0))/tx`, `<dir>/../bin/tx`) — a symlink would resolve back into the repo and run the reference. Use `self.helper(name, …)` / `self.fakes.helper(name)`, never `<repo>/bin/<name>` |
-| `TX_INSTALLER` | `<repo>/install` | the installer (D4: `tx install` in the port — wrap it in a script) |
-| `TX_UNINSTALLER` | `<repo>/uninstall` | the uninstaller |
-| `TX_ENGINE_SETUP` | `<repo>/setup/engines/install.sh` | the per-engine setup entry (`claude.sh` / `codex.sh` sit beside it) |
-| `TX_STATUSLINE` | `<repo>/claude/statusline.sh` | the statusline script (run as `bash <TX_STATUSLINE>`) |
+| `TX_INSTALLER` | `<repo>/install` | the installer — an argv PREFIX, may carry arguments (`TX_INSTALLER="tx install"`); the kit exposes it as a list, run it as `self.script([*TX_INSTALLER, …])` |
+| `TX_UNINSTALLER` | `<repo>/uninstall` | the uninstaller (argv prefix) |
+| `TX_ENGINE_SETUP` | `<repo>/setup/engines` | the DIRECTORY of engine-wiring entry points, used as `TX_ENGINE_SETUP / "{install,claude,codex,antigravity}.sh"` |
+| `TX_STATUSLINE` | `<repo>/claude/statusline.sh` | the statusline (argv prefix; `tx statusline` in a port), fed the hook payload on stdin |
 | `TX_UPDATE_GOLDEN=1` | — | capture goldens from the Python reference instead of comparing (see Goldens) |
 
 The copy is a small tree, `self.fakes.helpers_root` = `<root>/helpers/{bin,shared,tmux}`: the

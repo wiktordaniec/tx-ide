@@ -40,12 +40,14 @@ from txkit import (
 
 # Entry points (H9 / D16): never the repo's scripts by path — a port names its own installer,
 # uninstaller and engine-setup dir, and the defaults are the reference's files.
-INSTALL = Path(TX_INSTALLER)
-UNINSTALL = Path(TX_UNINSTALLER)
-INSTALL_SH = Path(TX_ENGINE_SETUP)
-ENGINES_DIR = INSTALL_SH.parent
-CLAUDE_SH = ENGINES_DIR / "claude.sh"
-CODEX_SH = ENGINES_DIR / "codex.sh"
+# H9: the scalar entry points are argv PREFIXES (`TX_INSTALLER="tx install"` for a port); the
+# engine-wiring entry points live in the `TX_ENGINE_SETUP` directory, one per file name.
+INSTALL = TX_INSTALLER
+UNINSTALL = TX_UNINSTALLER
+ENGINES_DIR = TX_ENGINE_SETUP
+INSTALL_SH = [str(ENGINES_DIR / "install.sh")]
+CLAUDE_SH = [str(ENGINES_DIR / "claude.sh")]
+CODEX_SH = [str(ENGINES_DIR / "codex.sh")]
 # Only for the expected strings baked into shims / markers (the reference's exec line).
 LIB_DIR = REPO / "lib"
 
@@ -223,7 +225,7 @@ class Installer:
 
     def run(
         self,
-        script: Path,
+        command: list[str],
         *args: str,
         stdin: str = "y\n",
         env: dict[str, str | None] | None = None,
@@ -231,7 +233,7 @@ class Installer:
         timeout: float = 120.0,
     ) -> Result:
         completed = subprocess.run(
-            [str(script), *args],
+            [*command, *args],
             input=stdin,
             capture_output=True,
             text=True,
@@ -898,7 +900,7 @@ class TestInst(TxCase):
     def test_t_inst_16_uninstall_help(self):
         result = self.installer.uninstall("--help")
         self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(result.out, "".join(UNINSTALL.read_text().splitlines(keepends=True)[1:9]))
+        self.assertEqual(result.out, "".join(Path(UNINSTALL[0]).read_text().splitlines(keepends=True)[1:9]))
         self.assertEqual(result.err, "")
 
     def test_t_inst_16_uninstall_declined(self):

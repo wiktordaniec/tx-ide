@@ -18,7 +18,6 @@ from pathlib import Path
 from txkit import TX_STATUSLINE, GitFixture, TxCase, scrubbed_env
 
 # Entry point (H9 / D16): the reference's `claude/statusline.sh` by default, a port's own seam otherwise.
-STATUSLINE = Path(TX_STATUSLINE)
 
 DIM = "\x1b[38;2;169;177;214m"
 DIR = "\x1b[38;5;31m"
@@ -102,7 +101,7 @@ class TestStatus(TxCase):
         timeout: float = 30.0,
     ) -> subprocess.CompletedProcess:
         return subprocess.run(
-            ["bash", str(STATUSLINE)],
+            [*TX_STATUSLINE],  # an argv prefix (H9): the reference script, or a port's `tx statusline`
             input=payload if isinstance(payload, str) else json.dumps(payload),
             capture_output=True,
             text=True,
@@ -420,7 +419,7 @@ class TestStatus(TxCase):
         payload, body = self.usage_payload()
 
         process = subprocess.Popen(
-            ["bash", str(STATUSLINE)],
+            [*TX_STATUSLINE],  # an argv prefix (H9): the reference script, or a port's `tx statusline`
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
