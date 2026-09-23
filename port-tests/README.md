@@ -1,8 +1,10 @@
 # port-tests — the black-box acceptance suite for the Rust `tx`
 
-Spec: artifact `15681067-0027-4677-9ffd-c618378aa890` (*tx-ide Rust port — test-suite specification*).
-The suite is stdlib `unittest`, never imports `lib/tx`, and drives whatever binary `TX_BIN` names
-through the observable surfaces of Appendix B3.
+Spec: artifact `15681067-0027-4677-9ffd-c618378aa890` (*tx-ide Rust port — test-suite specification*),
+rev 4: 432 cases across 27 areas (Appendix A). The suite is stdlib `unittest` (D7), never imports `lib/tx`
+(D1), and drives whatever binary `TX_BIN` names through the observable surfaces of Appendix B3:
+stdout/stderr/exit code, files under `$TX_IDE_HOME`, tmux state on a private server, fake-binary
+argv/env dumps, and the git fixture.
 
 ## Run
 
@@ -21,125 +23,44 @@ python3.14 -m unittest port-tests.test_art.TestArt.test_t_art_01_record_round_tr
 python3.14 port-tests/check_coverage.py [--spec PATH] [--tests DIR] [--verbose]
 ```
 
-Every test runs on a private tmux server behind a `tmux` wrapper first on PATH, so the operator's
-live server is never touched. `TxCase.setUp` boots that server config-free (`-f /dev/null`, `exit-empty
-off`) from the scrubbed environment, so its global environment — inherited by every pane, popup and
-hook — is the temp home's. Each test gets a fresh temp root; teardown kills the server and removes
-the tree.
+| variable | meaning |
+|---|---|
+| `TX_BIN` | the binary under test; default `<repo>/bin/tx` (the Python reference). Resolved once at import. |
+| `TX_IMPL` | `python` or `rust` — says explicitly which implementation `TX_BIN` is, for the D9 marker. Without it the Python shim is recognised by the `-m tx` line in `bin/tx`; set `TX_IMPL=rust` when the port is wrapped in a shell script. |
+| `TX_UPDATE_GOLDEN=1` | capture goldens from the Python reference instead of comparing (see Goldens). |
 
-## Safety
-
-Two hard guards keep `tx` away from the operator's real `~/.tx-ide` and live tmux server (added
-after a leaked kit PATH let a reconcile against an empty private server exit every live record):
-
-1. **The PATH `tmux` wrapper injects `-L` only when `TXKIT_TMUX_SOCKET` is set.** `scrubbed_env`
-   sets it to the test's private socket; in any other shell the wrapper execs the real tmux
-   untouched, so a leaked PATH is harmless.
-2. **`run_tx` / `scrubbed_env` raise `KitSafetyError`** unless the final `TX_IDE_HOME` (after
-   `env=` overrides) is under the kit's temp root and `TXKIT_TMUX_SOCKET` is set. `$TX_BIN` is never
-   executed against `~/.tx-ide`; passing `tmux=None` to `run_tx` is refused.
-
-Never call `$TX_BIN` yourself from a test or subagent with the kit's PATH but a real home. Go
-through `self.tx(...)`.
+The whole suite takes ≈ 10 minutes sequentially on a laptop-class host (one private tmux server per
+test; section 02 — TMUX/SPAWN/LIFE/WT/RO/ATTACH/TMUXCONF/EDITOR — is ≈ 4 minutes of it). The spec's
+tmux floor is 3.6 (D13); on a 3.4 host the version-gated cases skip.
 
 ## Layout
 
 ```
 port-tests/
-  txkit.py            fixtures, runner, goldens, markers
+  txkit.py            fixtures, runner, safety guards, goldens, markers
   check_coverage.py   spec heading → test method audit
   test_smoke.py       one green test per kit layer (not spec cases)
-  test_<area>.py      Phase 3: one file per spec area (model, store, home, …, inst, status, nvim)
-  golden/<area>/<nn>.txt   captured Python output for `golden:` cases (see below)
+  test_<area>.py      one file per spec area: model store home events recon render migr ·
+                      tmux spawn life wt ro attach tmuxconf editor · eng hook hist chat ·
+                      role group msg art sync cli · inst status nvim
+  golden/<area>/<nn>.txt   captured Python output for `golden:` cases
+  NOTES-<nn>.md       per section: every case where the spec's Then and the reference disagreed
+  NOTES-merge.md      kit reconciliations and test edits made while integrating the sections
 ```
 
 ## Naming rule
 
 `test_<area>.py :: Test<Area> :: test_t_<area>_<nn>_<slug>` for spec case `T-<AREA>-<nn>`, e.g.
 `T-TMUXCONF-03` → `test_tmuxconf.py::TestTmuxconf::test_t_tmuxconf_03_<slug>`. `check_coverage.py`
-matches on the `test_t_<area>_<nn>` prefix, so a case may be split across several methods (rev 3:
-put the `expected_failure_on_python` marker on the fixed-behaviour leg only, in its own method).
-
-## Fixtures (`txkit.py`)
-
-Subclass `TxCase`; `setUp` gives you:
-
-| attribute | fixture | what it is |
-|---|---|---|
-| `self.root` | `Path` | the temp tree everything below lives in |
-| `self.home` | `TxHome` | `$TX_IDE_HOME` with the `ensure_home` dirs, `agents → <repo>/agents`, hook shims for claude + codex, plus `HOME` / `CLAUDE_CONFIG_DIR` / `CODEX_HOME` under the same root |
-| `self.tmux` | `TmuxServer` | private `tmux -L <random> -f /dev/null` (stock config whichever call starts it); `sessions()`, `has_session()`, `option(target, name, scope)`, `display(target, fmt)`, `environment(target)`, `capture(target)`, `new_session(name, cmd, tx_id=None)`, `kill_session()`, `send_keys(target, *keys, literal=)`, `type_line(target, line)`, `clients()`, `panes(target=None)`, `pane_id(target)`, `pane_tty(pane)`, `attach_client(session, env=)`, `nest_attach(pane, session)`, `split_window(target, *flags)` / `new_window(target, *flags)` (explicit `/bin/bash`, return the new pane id) |
-| `self.fakes` | `FakeBins` | PATH dir of recorders for `claude codex agy nvim fzf bwrap brew zsh`; `configure(name, **knobs)`, `dumps(name)`, `wait_dump(name, key)`, `remove(name)`, `add(name)` (a recorder under a new basename, e.g. `ssh`), `write_script(name, body)` (a hand-written executable); `helpers_dir` — after the fakes on PATH — links `tx` → `TX_BIN` and every `<repo>/bin/*` helper so an in-pane `tx`, `tmux-pane-session-name` etc. resolve |
-| `self.records` | `Records` | `llm(...)` / `other(...)` write schema-6 records, `artifact(...)` writes a v2 record + `revs/` + `current.<ext>`; `load(id)`, `path(id)`, `chat_ref(...)` |
-| `self.git` | `GitFixture` (lazy) | repo with one commit on `main`; `with_origin_main()`, `as_linked_worktree()`, `git(...)`, `worktrees()`, `head()` |
-
-Change how the home is built per class with `home_options`, e.g. `{"hooks": ()}` (no shims,
-T-SPAWN-13), `{"skeleton": False}` (empty home, T-HOME-04), `{"link_agents": False}` (Fixture R
-creates a plain `agents/` dir).
-
-`self.tx(argv, *, env=None, stdin=None, cwd=None) -> Result(code, out, err, raw_out, raw_err)`
-runs `TX_BIN` under a scrubbed environment: inherited env minus `TX_*`, `TMUX`, `TMUX_PANE`,
-`NAMEW`, `FZF_*`, `TERM_PROGRAM`, `PYTHONPATH`; plus the home's vars, `FAKE_OUT`, and PATH with the tmux
-wrapper then the fakes first. `env` overrides (a `None` value unsets). `out`/`err` are ANSI-stripped;
-`raw_*` keep the escapes. Default `cwd` is the temp root.
-
-Also: `self.log_lines()`, `self.log_tail(n)`, `self.wait_until(predicate, timeout)`,
-`self.assert_golden(name, actual)`, `self.env(extra)` (the scrubbed env, for hand-run helpers and pty
-clients), `self.spawn_process(name, cmd=, tag=, cwd=, extra=)` / `self.spawn_view(name, cwd=, cmd=)`
-(spawn, assert exit 0, return the record / nothing), `self.live(id, cmd="sleep 1000")` (the "live
-record" recipe: a session named by the id with `@tx_id` set), `self.tx_detached(argv, env=...)`
-(`setsid -w`, no controlling tty — `tx attach` then sizes from `$COLUMNS`; skips without `setsid`),
-`self.records.patch(id, key=value, gone=...)` (rewrite a stored record; `...` deletes a key), and
-`self.tmux.pane_commands()` (`@tx_id → #{pane_current_command}`). The module-level `run_tx(...)`,
-`run_tx_detached(...)`, `log_lines(home)`, `wait_until(...)`, etc. exist for tests that compose
-fixtures by hand.
-
-### Inside tmux and on a pty
-
-- `self.run_in_pane(pane, "tx whoami")` types the command into a shell pane (stdout/stderr redirected
-  under the temp root) and waits for its exit code — how a case runs `tx` with `$TMUX` / `#S` /
-  `$TX_SESSION_ID` set. The pane must run an interactive shell (a view's `/bin/bash`, or `--cmd bash`).
-- `self.tmux.nest_attach(pane, session)` nests a session the way the picker does (`TMUX= tmux attach -t …`
-  typed into the pane) and waits for the client whose `client_tty` is that pane's tty.
-- `PtyProcess(argv, env=, rows=, cols=)` runs a child on its own pty: `write(text)`, `read(timeout)`,
-  `expect(text, timeout)`, `wait(timeout)`, `close()`, `tty`. `self.tx_pty(argv)` runs `TX_BIN` that way (the
-  picker outside tmux, curses); `self.attach_client("Views")` is a real outer `tmux attach` client — the
-  `-c <client_tty>` target for `display-popup` cases. Both are closed at teardown.
-
-### Fake binaries
-
-Each run writes `$FAKE_OUT/<basename>-<TX_SESSION_ID or pid>.json` with `argv`, `env`, `cwd`,
-`pid`, `stdin` (read only for `fzf` unless `read_stdin=True`). Knobs via `self.fakes.configure(name, ...)`
-before the run:
-
-- `sleep=<s>` — how long to stay alive (default 600 for claude/codex/agy/nvim/zsh, 0 otherwise)
-- `exit_code=<n>`
-- `transcript="<path>"` (+ `transcript_text=`) — write a fake transcript before sleeping
-- `prompt_glyph=True` — echo `❯ ` to stdout (visible in `capture-pane`)
-- `stdout="..."` — extra stdout (e.g. an fzf selection)
-- `passthrough=False` — `bwrap` only: do not exec the command after `--` (default: exec it, D13)
-- `sequence=[{...}, {...}]` — per-invocation knobs: the n-th run merges `sequence[n]` (the last entry
-  repeats), e.g. `fzf` printing a row once then exiting 130 on every later run
-- `stdin_log=True` — a tty-attached fake logs every raw stdin chunk with a timestamp to `<name>-<key>.stdin.jsonl` (`self.fakes.stdin_log(name, key)`); the Enter key arrives as a literal `\r`, and the pane still echoes the text
-
-The `bwrap` fake is the default on every host (user namespaces are blocked on CI-class hosts); the
-real sandbox is a hand-run smoke check.
-
-### Records and ages (D8)
-
-There is no clock injection. RECON/RENDER ages come from explicit past timestamps on crafted
-records: `self.records.llm(created_at=now-300, last_activity=now-300, turn_started_at=now-700, ...)`
-plus `self.home.write_config({"stuck_working_threshold_seconds": ...})`. A crafted record is "live"
-when the private server has a session named by its id with `@tx_id` set:
-`self.tmux.new_session(record_id, "sleep 1000", tx_id=record_id)`.
+matches on the `test_t_<area>_<nn>` prefix, so a case may be split across several methods; a case
+with a FIX leg and a parity leg is two methods (`..._<nn>_parity_...`, `..._<nn>_fixed_...`), the
+fixed one carrying the D9 marker. Cases marked `DROPPED` / `DEFERRED` in the spec have no test.
 
 ## Markers
 
 - `@expected_failure_on_python` — D9: the case asserts the FIXED behaviour of an Appendix-B quirk;
-  skipped when `TX_BIN` is the Python reference. `TX_IMPL=python|rust` says so explicitly and always
-  wins; without it the shim is recognised by the `python3.14 -m tx` line in `bin/tx`. Set `TX_IMPL=rust`
-  when the port is wrapped in a shell script.
-- `@requires_tmux(min="3.6")` — skip below the floor (this dev host runs 3.4; D13 sets 3.6 for CI).
+  skipped when `TX_BIN` is the Python reference (`TX_IMPL` decides, see Run).
+- `@requires_tmux(min="3.6")` — skip below the floor.
 - `@requires_bin("nvim")` — skip when the binary is absent.
 - `@platform_only("linux")` / `@platform_only("darwin")`.
 
@@ -157,9 +78,205 @@ python3.14 -m unittest discover port-tests -p 'test_art.py'                     
 A missing golden skips the case rather than failing (H6). Normalise volatile fields (uuids, `ts`)
 before calling `assert_golden`, as each case's spec text describes.
 
+## Safety
+
+Every `tx` the suite runs is aimed at a temp home on a private tmux server. Four guards enforce it
+(added after a leaked kit PATH let a reconcile against an empty private server exit every live
+record of the operator's real store, twice):
+
+1. **The PATH `tmux` wrapper injects `-L` (and `-f /dev/null`) only when `TXKIT_TMUX_SOCKET` is
+   set.** `scrubbed_env` sets it to the test's private socket; in any other shell the wrapper execs
+   the real tmux untouched, so a leaked PATH is harmless.
+2. **`scrubbed_env` (hence `run_tx` / `self.tx` / every helper) raises `KitSafetyError`** unless the
+   home `tx` would RESOLVE — `TX_IDE_HOME`, a leading `~/` expanded against the env's own `HOME`,
+   else `$HOME/.tx-ide` — lies under the kit's temp root (`resolved_home(env)`), and unless
+   `TXKIT_TMUX_SOCKET` is set. `TX_IDE_HOME=None` is fine (it exercises the default while `HOME`
+   is the temp user home); the process owner's `HOME`, an unset `HOME` or a `~user` path are refused.
+3. **The private server is booted from the scrubbed environment**, config-free, by
+   `TxCase.setUp` → `TmuxServer.start()` AFTER `tmux.env` is set, and every direct
+   `TmuxServer.run` carries that env. The server's global environment — inherited by every pane,
+   popup and hook it later launches — is therefore the temp home's, never the test process's: a
+   pane's `tmux` is the wrapper and its `tx` the helper link, so an in-pane `TMUX= tmux attach` or a
+   popup's `tx` can never reach the operator's tmux binary or home. (Booting inside
+   `TmuxServer.__init__`, before the env exists, is exactly the incident.)
+4. **A run without a `TmuxServer`** (`scrubbed_env(home)` for a script such as `statusline.sh`) still
+   gets the wrapper first on PATH, aimed at a fresh `txkit-dead-<hex>` socket nothing ever started,
+   so a stray `tmux` call meets "no server" instead of the live one.
+
+Rules for humans and agents: never call `$TX_BIN` yourself with the kit's PATH but a real home — go
+through `self.tx(...)`; never export a kit `fake-bin/` / `tmux-bin/` dir into an interactive shell's
+PATH; before any hand-run probe, `which tmux` must be the system tmux and `$TX_IDE_HOME` empty (or an
+explicit temp dir).
+
+## Fixtures and helper index (`txkit.py`)
+
+Subclass `TxCase`; `setUp` gives you:
+
+| attribute | fixture | what it is |
+|---|---|---|
+| `self.root` | `Path` | the temp tree everything below lives in (`/tmp/txkit-*`, removed at teardown) |
+| `self.home` | `TxHome` | `$TX_IDE_HOME` (`<root>/home`) with the `ensure_home` dirs, `agents → <repo>/agents`, hook shims for claude + codex; `HOME` (`<root>/user-home`), `CLAUDE_CONFIG_DIR`, `CODEX_HOME` under the same root |
+| `self.tmux` | `TmuxServer` | private `tmux -L <random> -f /dev/null`, booted from the scrubbed env, `exit-empty off`; killed at teardown |
+| `self.fakes` | `FakeBins` | PATH dir of argv+env recorders for `claude codex agy nvim fzf bwrap brew zsh`, plus `helpers_dir` (after the fakes) linking `tx` → `TX_BIN` and every `<repo>/bin/*` helper |
+| `self.records` | `Records` | crafted schema-6 session records and artifact-v2 records with explicit timestamps (D8) |
+| `self.git` | `GitFixture` (lazy) | repo with one commit on `main` |
+
+Change how the home is built per class with `home_options`, e.g. `{"hooks": ()}` (no shims,
+T-SPAWN-13), `{"skeleton": False}` (empty home, T-HOME-04), `{"link_agents": False}` (Fixture R
+creates a plain `agents/` dir).
+
+### Running `tx`
+
+- `self.tx(argv, *, env=None, stdin=None, cwd=None) -> Result(code, out, err, raw_out, raw_err)` —
+  `TX_BIN` under the scrubbed environment: inherited env minus `TX_*`, `TXKIT_*`, `TMUX`,
+  `TMUX_PANE`, `NAMEW`, `FZF_*`, `TERM_PROGRAM`, `PYTHONPATH`; plus the home's vars, `FAKE_OUT`, and
+  PATH with the tmux wrapper, the fakes, then the helper links first. `env` overrides (a `None`
+  value unsets). `out`/`err` are ANSI-stripped, `raw_*` keep the escapes; `stdin=None` is EOF.
+  Default `cwd` is the temp root.
+- `self.env(extra=None)` / `self.tx_env(extra=None)` — that environment itself, for pty clients,
+  hand-run scripts and crafted live sessions (`client_env=`).
+- `self.tx_inside(session, argv, env=, cwd=)` — the same run INSIDE a private-server session via
+  `run-shell -t` (`$TMUX` set, `#S` == session, `TMUX_PANE` pinned to its active pane).
+- `self.run_in_pane(pane, "tx whoami")` — types the command into a shell pane (output redirected
+  under the temp root) and waits for its exit code; the pane must run an interactive shell.
+- `self.tx_detached(argv, env=)` — `setsid -w`, no controlling tty (`tx attach` then sizes from
+  `$COLUMNS`); skips where `setsid` is absent (macOS).
+- `self.tx_pty(argv, env=, cwd=, rows=, cols=)` — `TX_BIN` on its own pty (picker outside tmux,
+  curses); closed at teardown.
+- `self.spawn_process(name, cmd=, tag=, cwd=, extra=)` → record / `self.spawn_view(name, cwd=, cmd=)`
+  — spawn, assert exit 0.
+- `self.live(id, cmd="sleep 1000")` — make a crafted record live (a session named by the id with
+  `@tx_id` set, the RECON/RENDER recipe).
+- `self.attach_client(session, rows=, cols=)` — a real outer `tmux attach` client on a pty (the
+  `-c <client_tty>` target for `display-popup` cases); closed at teardown.
+- `self.log_lines()`, `self.log_tail(n)` — parsed `log.jsonl`; `self.assert_golden(name, actual)`;
+  `self.wait_until(predicate, timeout=10, interval=0.05)`.
+- Module level, for tests composing fixtures by hand: `run_tx`, `run_tx_detached`, `run_tx_inside`,
+  `scrubbed_env`, `resolved_home`, `log_lines`, `log_tail`, `wait_until`, `strip_ansi`, `munge`,
+  `assert_golden`, `golden`, `golden_path`, `tmux_version`, `is_python_reference`, `REAL_TMUX`,
+  `TX_BIN`, `REPO`, `HOME_DIRS`, `SESSION_RECORD_CMD`, `TMUX_SOCKET_ENV`, `KitSafetyError`.
+
+### `TxHome`
+
+`path`, `user_home`, `claude_config_dir`, `codex_home`, `root`; `sessions_dir`, `artifacts_dir`,
+`history_dir`, `worktrees_dir`, `user_agents_dir`, `launch_dir`, `chat_ops_dir`, `hooks_dir`, `agents`,
+`log_path`, `config_path`; `entries()` (`ls -A`), `write_config(dict | str)`,
+`write_hook_shims(engine)`, `claude_transcript_path(cwd, chat_id)`, `env()`.
+
+### `TmuxServer`
+
+`socket`, `bin_dir`, `env`; `start()`; `run(*args, check=False, env=None)` (a direct call on the
+private server; `env` is the issuing client's environment, default the hermetic one);
+`sessions()`, `has_session(name)`, `option(target, name, scope="session"|"window"|"pane"|"global"|"global-window")`,
+`display(target, fmt)`, `environment(target)`, `capture(target)`, `clients()`, `panes(target=None)`,
+`pane_id(target)`, `pane_tty(pane)`, `pane_commands()` (`@tx_id → #{pane_current_command}`);
+`new_session(name, cmd, tx_id=None, *, cwd=, env=, client_env=)`, `kill_session(name)`,
+`split_window(target, *flags)` / `new_window(target, *flags)` (explicit non-login `/bin/bash` — a
+command-less split starts a login shell whose profile drops the kit PATH; return the new pane id);
+`send_keys(target, *keys, literal=)`, `type_line(target, line)`; `attach_client(session, env=)`,
+`nest_attach(pane, session)` (nest a session the way the picker does: `TMUX= tmux attach -t …` typed
+into the pane, then wait for the client whose `client_tty` is that pane's tty); `close()`.
+
+### `PtyProcess(argv, *, env, cwd=None, rows=24, cols=80)`
+
+A child on its own pty: `write(text)`, `read(timeout)`, `expect(text, timeout)`, `wait(timeout)`,
+`close()`, `tty` (the slave path — what tmux reports as `client_tty`), `pid`.
+
+### `FakeBins`
+
+Each run writes `$FAKE_OUT/<basename>-<TX_SESSION_ID or pid>.json` with `argv`, `env`, `cwd`, `pid`,
+`stdin` (read only for `fzf` unless `read_stdin=True`). `configure(name, **knobs)` (replaces earlier
+knobs; a `sequence` restarts at its first entry), `dumps(name)`, `wait_dump(name, key=None, timeout=)`,
+`dump_path(name, key)`, `stdin_log(name, key)`, `remove(name)`, `add(name)` (the standard recorder
+under a new basename, e.g. `ssh`, or a removed one back), `write_script(name, body)` (a hand-written
+executable), `bin_dir`, `helpers_dir`, `out_dir`. Knobs:
+
+- `sleep=<s>` — how long to stay alive (default 600 for claude/codex/agy/nvim/zsh, 0 otherwise)
+- `exit_code=<n>`
+- `transcript="<path>"` (+ `transcript_text=`) — write a fake transcript before sleeping
+- `prompt_glyph=True` — echo `❯ ` to stdout (visible in `capture-pane`)
+- `stdout="..."` — extra stdout (e.g. an fzf selection)
+- `read_stdin=True|False` — drain stdin (default only for `fzf`)
+- `passthrough=False` — `bwrap` only: do not exec the command after `--` (default: exec it, D13)
+- `sequence=[{...}, {...}]` — per-invocation knobs: the n-th run merges `sequence[n]` (the last entry
+  repeats), e.g. `fzf` printing a row once then exiting 130 on every later run
+- `stdin_log=True` — a tty-attached fake logs every raw stdin chunk with a timestamp to
+  `<name>-<key>.stdin.jsonl` (`stdin_log(name, key)`); the Enter key arrives as a literal `\r`, and
+  the pane still echoes the text
+
+The `bwrap` fake is the default on every host (user namespaces are blocked on CI-class hosts); the
+real sandbox is a hand-run smoke check.
+
+### `Records`
+
+`llm(...)` / `other(...)` write schema-6 records (every field a keyword; explicit `created_at`,
+`last_activity`, `turn_started_at`, `ended_at`), `artifact(...)` writes a v2 record + `revs/<n>.<ext>`
++ `current.<ext>`; `chat_ref(...)`; `load(id)`, `path(id)`, `write(record)`,
+`patch(id, key=value, gone=...)` (rewrite a stored record; `...` deletes a key);
+`artifact_record_path(id)`, `artifact_dir(id)`.
+
+There is no clock injection (D8). RECON/RENDER ages come from explicit past timestamps on crafted
+records: `self.records.llm(created_at=now-300, last_activity=now-300, turn_started_at=now-700, ...)`
+plus `self.home.write_config({"stuck_working_threshold_seconds": ...})`; `self.live(id)` makes such
+a record live.
+
+### `GitFixture(root, name="repo")`
+
+`path`, `git(*args, cwd=None)`, `head()`, `worktrees()`, `with_origin_main()` (a bare `origin` with
+`main` pushed), `as_linked_worktree(branch="linked")` (a linked worktree of the fixture repo).
+
+## Known kit limitations
+
+Collected from the five section NOTES files and the integration; each is worked around locally in
+the test named, not in the kit.
+
+- **Fakes record argv/env only.** A launch-time observation ("the bundle exists when the fake
+  distiller starts", T-CHAT-05; "the arm file exists during the run", T-ATTACH-02) is not reachable
+  black-box; those legs assert the ordering that follows from the blocking call instead.
+- **The fake `fzf` drains stdin by default** (`read_stdin` defaults to true for `fzf`). Anything
+  driving `install` through the fakes must `configure("fzf", read_stdin=False)`, or the dependency
+  check's `fzf --version` eats the answers meant for the later `[y/N]` prompts (T-INST-12).
+- **`FakeBins.remove()` is one-way**; `add(name)` re-installs the standard recorder. `test_inst.py`'s
+  `Installer` predates `add` and still puts `codex` back as a silent stub (T-INST-50).
+- **No runner for an arbitrary script under the scrubbed env.** STATUS calls
+  `subprocess.run(["bash", statusline.sh], env=scrubbed_env(self.home, extra=…))` itself; INST has its
+  own `Installer` (restricted PATH so the operator's engine CLIs stay invisible; the pre-flight
+  banner's unescaped `$(tx)` / `$(tx start)` are absorbed by a silent `tx` stub on the fakes PATH).
+- **No HTTP-listener fixture.** `test_status.py::UsageListener` (an `http.server` on `127.0.0.1:0` in
+  a daemon thread, with a hold-until-released mode) is local to STATUS.
+- **No `ssh` recorder among the fakes**; T-CLI-27 adds its own (`add("ssh")` / `write_script`).
+- **Codex shim / `hooks.json` builders** live in `test_inst.py` (`engines_codex_shim_text`,
+  `engines_codex_hooks_json`), not in `txkit`; the claude ones are `Installer.claude_shim_text` /
+  `tmux_session_closed`.
+- **tmux 3.4 on the dev host** (floor 3.6, D13): `claude.sh`'s hook step probes liveness with
+  `tmux info`, which fails from an unattached client on 3.4 — the four hook-applied INST cases are
+  gated `@requires_tmux(min="3.6")` and need CI to run; `run-shell -t` hands its job a stale
+  `TMUX_PANE` (pinned explicitly by `run_tx_inside`); `list-clients`-based waits replace `tmux info`.
+- **tmux prefix-matches a bare `show-options -t <name>` target** (candidate Q27, FIX leg xfail):
+  never name sessions with hex-only strings (`a`, `d1`) when two or more uuid-named sessions
+  coexist — it flaked T-SPAWN-10/11 and T-TMUX-20 at ≈ 6 % per pair. Use `alpha`, `small`, `agent`.
+- **`display-popup -E` blocks the invoking `tmux`** until the popup closes; ATTACH runs popups
+  through `subprocess.Popen` with cleanup rather than `TmuxServer.run`.
+- **Command-less `split-window` / `new-window` start a login shell** whose `/etc/profile` resets
+  PATH and drops the wrapper / helper dirs; use `split_window` / `new_window` (explicit `/bin/bash`).
+- **A pane command that exits at once takes its session (and, when it was the last, the server)
+  with it**, so `tx spawn --cmd <missing-binary>` fails before writing a record (T-NVIM-06 uses a
+  long-running stand-in; `exit-empty off` keeps the kit's server alive, not a spawned session).
+- **Distiller paths leave a detached `_chat-op-watch` (600 s)**; ENG/CHAT tests `pkill -f
+  "_chat-op-watch <op_id>"` at cleanup, before the kit tears the server down.
+- **Reconcile-on-read stamps non-terminal crafted records without a live session EXITED** and adds a
+  `state` log line; crafted sources that must stay untouched are written `state: exited`, or made
+  live with `self.live(id)`.
+- **Kit panes are 80 columns**; long stdout lines wrap in `capture-pane` — use `capture-pane -J`.
+- **`tx_detached` needs `setsid`** (Linux); it skips on macOS.
+- **`nvim` code tours / companions**: the `tx-code-tours` skill's `lsof '$NF'` recipe fails on lsof
+  4.95 and a real companion blocks RPC on a missing colorscheme, which is why the nvim socket is
+  recorded on the record at spawn (D11) rather than discovered.
+
 ## Adding a fixture
 
 Add a class to `txkit.py` that takes `root: Path` (and whatever fixtures it composes), creates its
 files under `root`, and exposes a `close()` only if it owns a process. Wire it into `TxCase.setUp`
 with `self.addCleanup(...)` when every test needs it, or expose it lazily like `git`. Keep it
-stdlib-only and black-box: no `lib/tx` imports, no writes outside the temp root.
+stdlib-only and black-box: no `lib/tx` imports, no writes outside the temp root, and every `tmux`
+call through `TmuxServer.run` (so it carries the hermetic env).

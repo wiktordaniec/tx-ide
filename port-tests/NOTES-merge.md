@@ -25,8 +25,15 @@ what its spec case says.
   wrapper first on PATH aimed at a fresh `txkit-dead-<hex>` socket nothing ever started. A real
   home (`HOME` unset, the process owner's `HOME`, a `~user` form) is still refused.
 
+- **`TmuxServer.run` signature** (02's `run(*args, check=)` vs 03's `run(*args, check=, env=)`):
+  03's kept. 02's `TmuxServer.start()` and its `TxCase.setUp` call merged identically because the
+  04 resolution had already adopted that shape (d5a9502).
+
 ## Test edits
 
 | test | edit | reason |
 |---|---|---|
 | `test_smoke.py::TestSmokeSafety::test_run_tx_refuses_real_home_or_missing_socket` | split into `test_run_tx_refuses_a_home_that_resolves_outside_the_kit_root` and `test_no_server_fixture_means_a_dead_private_socket` | encoded the kit accident (`TX_IDE_HOME=None` and `tmux=None` refused outright). Now pins the reconciled guard: real / unset `HOME` and `~user` refused, the temp-home default and `~/x` allowed, and a no-server env reaches a socket with no server (tmux 3.4 says `error connecting to …/<socket>`) |
+| `test_life.py::TestLife::test_t_life_12_revive_exited_record_whose_tx_id_session_is_alive` + `..._12_revive_unknown_session` | added | spec rev 4 added T-LIFE-12 (`tx revive`, Q32 FIX, D14). Both legs carry `@expected_failure_on_python` (the reference has no `revive` verb — argparse `invalid choice`); forced with `TX_IMPL=rust` they fail on the reference at the first assertion, as intended. Refusal messages are asserted by the `tx revive: ` prefix + quoted name only, as the case's Edge line asks (wording proposed); the not-found message is the resolver's established text (T-LIFE-11) |
+| `test_chat.py::TestChat::test_t_chat_08_finish_idempotent` | waits for the spawned worker's own fake-claude dump (`wait_dump("claude", worker_id)`) before asserting exactly one dump | the pane's fake starts asynchronously after `_chat-op-finish` exits; the immediate count raced it (failed ≈ 1 in 6 alone, every fast run). The assertion is unchanged (exactly one worker, exactly one fake run); only a bounded wait precedes it |
+| `test_spawn.py::TestSpawn::test_t_spawn_19_bare_spawn_is_shell_and_cmd_stamps_engine` | session names `c` → `cw`, `e1` → `ex1`, `e2` → `ex2` | with `s` (and later `z`, `X`) live, `tx show c` prefix-matched another session's uuid on the reference (Q27 shape, ≈ 6 % per pair; seen once in the full run as `KeyError: 'engine'`). Same remedy as 02's 645773f; no assertion changed (the spec's `Spawned 's' …` line is untouched, the worker's record and dump are asserted by id) |
