@@ -1,5 +1,6 @@
 """LIFE — `lib/tx/service.py` lifecycle: kill / archive / rm / tag / group / bind / rename mutations,
-hook-driven `record_state`, and id/name resolution (spec section 02, T-LIFE-01..11).
+hook-driven `record_state`, id/name resolution, and the rev-4 `tx revive` verb (spec section 02,
+T-LIFE-01..12).
 
 Every mutation is asserted through the record file, `log.jsonl` and the private tmux server; errors
 through `tx <cmd>: <msg>` + exit 1.
@@ -12,7 +13,7 @@ import re
 import subprocess
 import time
 
-from txkit import REAL_TMUX, TxCase
+from txkit import REAL_TMUX, TxCase, expected_failure_on_python
 
 NOT_FOUND = "not found (no live @tx_id, no store record)"
 
@@ -453,3 +454,63 @@ class TestLife(TxCase):
 
         bare = self.tx([])
         self.assertEqual((bare.code, bare.out, bare.err), (0, help_text.out, ""))
+
+    # ----- T-LIFE-12 ----------------------------------------------------------------------
+
+    @expected_failure_on_python
+    def test_t_life_12_revive_exited_record_whose_tx_id_session_is_alive(self):
+        # The Q32 shape: `w` was exited while its session lived on (server unreachable / hand edit).
+        stale = {"host": "stale", "window_index": "9", "window_name": "x", "pane_id": "%99", "pane_index": "9"}
+        self.records.llm(id="U", name="w", state="exited", ended_at=1234.5, attached_to=(stale,))
+        self.tmux.new_session("U", "sleep 300", tx_id="U")
+        self.records.other(id="U2", name="x", state="exited", ended_at=1234.5)
+        self.records.other(id="U3", name="z", state="archived", ended_at=1234.5)
+        self.tmux.new_session("U3", "sleep 300", tx_id="U3")
+        # Reconcile-on-read never revives (Q32): a plain `tx ls` leaves `w` exited.
+        self.assertEqual(self.tx(["ls"]).code, 0)
+        self.assertEqual(self.records.load("U")["state"], "exited")
+        before = len(self.log_lines())
+
+        result = self.tx(["revive", "w"])
+
+        self.assertEqual((result.code, result.out, result.err), (0, "Revived 'w'\n", ""))
+        record = self.records.load("U")
+        self.assertEqual((record["state"], record["ended_at"], record["attached_to"]), ("idle", None, []))
+        self.assertEqual(self.log_entries()[before:], [("", "revive", "w (U)")])
+        revived = self.records.path("U").read_bytes()
+
+        listing = self.tx(["ls"])
+        self.assertEqual(listing.code, 0, listing.err)
+        self.assertEqual(listing.lines[0], "PROCESSES")
+        self.assertTrue(any(re.match(r"\s+w\s+idle\b", line) for line in listing.lines[1:]), listing.out)
+        self.assertEqual(self.records.path("U").read_bytes(), revived)  # not re-exited
+        self.assertEqual(len(self.log_lines()), before + 1)
+
+        untouched = self.records.path("U2").read_bytes()
+        result = self.tx(["revive", "x"])
+        self.assertEqual((result.code, result.out), (1, ""))
+        self.assertTrue(result.err.startswith("tx revive: ") and "'x'" in result.err, result.err)
+        self.assertEqual(self.records.path("U2").read_bytes(), untouched)
+        self.assertEqual(len(self.log_lines()), before + 1)
+
+        archived = self.records.path("U3").read_bytes()
+        result = self.tx(["revive", "z"])
+        self.assertEqual((result.code, result.out), (1, ""))
+        self.assertTrue(result.err.startswith("tx revive: ") and "'z'" in result.err, result.err)
+        self.assertEqual(self.records.load("U3")["state"], "archived")
+        self.assertEqual(self.records.path("U3").read_bytes(), archived)
+        self.assertEqual(len(self.log_lines()), before + 1)
+
+        modified_before = self.records.path("U").stat().st_mtime_ns
+        result = self.tx(["revive", "w"])
+        self.assertEqual((result.code, result.out, result.err), (0, "'w' is already live\n", ""))
+        self.assertEqual(self.records.path("U").stat().st_mtime_ns, modified_before)  # no write
+        self.assertEqual(self.records.path("U").read_bytes(), revived)
+        self.assertEqual(len(self.log_lines()), before + 1)
+
+    @expected_failure_on_python
+    def test_t_life_12_revive_unknown_session(self):
+        result = self.tx(["revive", "nope"])
+        self.assertEqual((result.code, result.out), (1, ""))
+        self.assertEqual(result.err, f"tx revive: session 'nope' {NOT_FOUND}\n")
+        self.assertEqual(self.log_lines(), [])
