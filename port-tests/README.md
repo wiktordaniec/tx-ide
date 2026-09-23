@@ -318,7 +318,8 @@ the test named, not in the kit.
   banner's unescaped `$(tx)` / `$(tx start)` are absorbed by a silent `tx` stub on the fakes PATH).
 - **No HTTP-listener fixture.** `test_status.py::UsageListener` (an `http.server` on `127.0.0.1:0` in
   a daemon thread, with a hold-until-released mode) is local to STATUS.
-- **No `ssh` recorder among the fakes**; T-CLI-27 adds its own (`add("ssh")` / `write_script`).
+- **No `ssh` recorder among the fakes**; T-CLI-27 hand-writes its own script into `fakes.bin_dir`
+  (`add("ssh")` / `write_script` are available when the standard recorder suffices).
 - **Codex shim / `hooks.json` builders** live in `test_inst.py` (`engines_codex_shim_text`,
   `engines_codex_hooks_json`), not in `txkit`; the claude ones are `Installer.claude_shim_text` /
   `tmux_session_closed`.

@@ -257,7 +257,7 @@ class TestSync(TxCase):
         for action in ("status", "push"):
             result = self.tx(["sync", action])
             self.assertEqual(result.code, 1, action)
-            self.assertIn("tx sync: unknown sync backend 'ftp' (expected 's3' or 'local')", result.err)
+            self.assertIn("tx sync: unknown sync backend 'ftp' (expected 's3' or 'local')", result.err.splitlines(), action)
             self.assertNotIn("Traceback", result.err)
 
     def test_t_sync_08_status_output(self):
@@ -342,6 +342,6 @@ class TestSync(TxCase):
             self._local_block(0, 0, False, False) + f"Remote (s3://mybucket): {S3_DEFERRED}\n",
         )
         # No local key ever reaches the stub, so the push completes vacuously (see NOTES).
-        push = self.tx(["sync", "push", "--s3", "mybucket"])
+        push = self.tx(["sync", "push", "--s3", "mybucket/pre"])
         self.assertEqual(push.code, 0, push.err)
-        self.assertEqual(push.out, "sync push (local → s3://mybucket): 0 added, 0 updated, 0 unchanged\n")
+        self.assertEqual(push.out, "sync push (local → s3://mybucket/pre): 0 added, 0 updated, 0 unchanged\n")

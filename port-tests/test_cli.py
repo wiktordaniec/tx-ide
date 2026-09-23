@@ -2,7 +2,7 @@
 
 Every case drives `TX_BIN` and asserts stdout / stderr / exit code, the record files, tmux state on
 the private server, fake-binary dumps, and the `log.jsonl` tail. Spec/code disagreements are in
-`NOTES-04-cli.md`.
+`NOTES-04.md`.
 """
 
 from __future__ import annotations
@@ -23,7 +23,9 @@ from txkit import (
     TxCase,
     expected_failure_on_python,
     platform_only,
+    python_reference_only,
     strip_ansi,
+    tmux_version,
 )
 
 W1_ID = "11111111-1111-4111-8111-111111111111"
@@ -177,11 +179,21 @@ class TestCli(TxCase):
         self.assertEqual([line for line in self.log_lines() if line["type"] == "spawn-view"], [])
 
     def test_t_cli_02_missing_cwd_is_not_a_tmux_error(self):
-        # Q21 (PARITY, tmux-version gated): tmux 3.4 tolerates a nonexistent `-c` dir.
+        # Q21 (PARITY, tmux-version gated): tmux < 3.6 tolerates a nonexistent `-c` dir, so the
+        # spawn succeeds and the record keeps the cwd. On the 3.6 floor the tolerance is unverified
+        # here: the port must then match the reference — either the same tolerant spawn, or the
+        # error-boundary shape `tx spawn: tmux new-session … failed: …` with nothing created.
         result = self.tx(["spawn", "x", "--tag", "t", "--cwd", "/nonexistent"])
-        self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(result.out, "Spawned 'x' (cwd=/nonexistent, tag=t)\n")
-        self.assertEqual(self._show("x")["cwd"], "/nonexistent")
+        if tmux_version() < (3, 6) or result.code == 0:
+            self.assertEqual(result.code, 0, result.err)
+            self.assertEqual(result.out, "Spawned 'x' (cwd=/nonexistent, tag=t)\n")
+            self.assertEqual(self._show("x")["cwd"], "/nonexistent")
+        else:
+            self.assertEqual((result.code, result.out), (1, ""))
+            self.assertTrue(result.err.startswith("tx spawn: tmux new-session "), result.err)
+            self.assertIn(" failed: ", result.err)
+            self.assertEqual(self._record_files(), [])
+            self.assertEqual(self.tmux.sessions(), [])
 
     # ----- T-CLI-03 ---------------------------------------------------------------------------
 
@@ -405,31 +417,38 @@ class TestCli(TxCase):
     # ----- T-CLI-07 ---------------------------------------------------------------------------
 
     def test_t_cli_07_spawn_nvim_flags_and_output(self):
+        # The spec's `ed`/`ed2`/`ed3` are hex-only names (Q27 prefix match against the three live
+        # uuid sessions); live names must also be unique, hence `nv`, `nv2`, `nv3` — see NOTES-04.md.
         cwd = str(self.root)
         nvim_prefix = "nvim +'set background=dark | colorscheme tokyonight-moon'"
-        result = self.tx(["spawn-nvim", "ed", "--tag", "t", "--diff", "--cwd", cwd])
+        result = self.tx(["spawn-nvim", "nv", "--tag", "t", "--diff", "--cwd", cwd])
         self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(result.out, f"Spawned nvim 'ed' (cwd={cwd}, tag=t, diff=main)\n")
-        record = self._show("ed")
+        self.assertEqual(result.out, f"Spawned nvim 'nv' (cwd={cwd}, tag=t, diff=main)\n")
+        record = self._show("nv")
         self.assertEqual(record["role"], "nvim")
         self.assertTrue(record["cmd"].startswith(nvim_prefix), record["cmd"])
         self.assertIn("+'DiffviewOpen main'", record["cmd"])
-        result = self.tx(["spawn-nvim", "ed2", "--tag", "t", "--diff", "origin/x", "--open", "f.txt", "--cwd", cwd])
+        result = self.tx(["spawn-nvim", "nv2", "--tag", "t", "--diff", "origin/x", "--open", "f.txt", "--cwd", cwd])
         self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(result.out, f"Spawned nvim 'ed2' (cwd={cwd}, tag=t, diff=origin/x, open=f.txt)\n")
-        self.assertTrue(self._show("ed2")["cmd"].endswith("+'DiffviewOpen origin/x' f.txt"))
-        result = self.tx(["spawn-nvim", "ed3", "--tag", "t", "--cwd", cwd])
+        self.assertEqual(result.out, f"Spawned nvim 'nv2' (cwd={cwd}, tag=t, diff=origin/x, open=f.txt)\n")
+        record = self._show("nv2")
+        self.assertEqual(record["role"], "nvim")
+        self.assertTrue(record["cmd"].startswith(nvim_prefix), record["cmd"])
+        self.assertTrue(record["cmd"].endswith("+'DiffviewOpen origin/x' f.txt"), record["cmd"])
+        result = self.tx(["spawn-nvim", "nv3", "--tag", "t", "--cwd", cwd])
         self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(result.out, f"Spawned nvim 'ed3' (cwd={cwd}, tag=t)\n")
-        self.assertEqual(self._show("ed3")["cmd"], nvim_prefix)
+        self.assertEqual(result.out, f"Spawned nvim 'nv3' (cwd={cwd}, tag=t)\n")
+        record = self._show("nv3")
+        self.assertEqual(record["role"], "nvim")
+        self.assertEqual(record["cmd"], nvim_prefix)
         # Edges.
-        missing = self.tx(["spawn-nvim", "ed4", "--cwd", cwd])
+        missing = self.tx(["spawn-nvim", "nv4", "--cwd", cwd])
         self.assertEqual(missing.code, 2)
         self.assertTrue(missing.err.endswith("tx spawn-nvim: error: the following arguments are required: --tag\n"))
-        empty = self.tx(["spawn-nvim", "ed4", "--tag", "", "--cwd", cwd])
+        empty = self.tx(["spawn-nvim", "nv4", "--tag", "", "--cwd", cwd])
         self.assertEqual(empty.code, 2)
         self.assertTrue(empty.err.endswith("tx spawn-nvim: error: --tag requires at least one value\n"))
-        group = self.tx(["spawn-nvim", "ed4", "--tag", "t", "--group", "", "--cwd", cwd])
+        group = self.tx(["spawn-nvim", "nv4", "--tag", "t", "--group", "", "--cwd", cwd])
         self.assertEqual(group.code, 2)
         self.assertTrue(group.err.endswith("tx spawn-nvim: error: argument --group: a group cannot be empty\n"))
 
@@ -438,7 +457,7 @@ class TestCli(TxCase):
     def test_t_cli_08_spawn_view(self):
         cwd = self.root / "v"
         cwd.mkdir()
-        result = self.tx(["spawn-view", "Views", "--cwd", str(cwd)])
+        result = self.tx(["spawn-view", "Views", "--cwd", str(cwd)], env={"SHELL": "/bin/bash"})
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(result.out, f"Spawned view 'Views' (cwd={cwd})\n")
         self.assertEqual(self._record_files(), [])
@@ -452,11 +471,17 @@ class TestCli(TxCase):
         again = self.tx(["spawn-view", "Views", "--cwd", str(cwd)])
         self.assertEqual((again.code, again.err), (1, "tx spawn-view: session 'Views' already exists\n"))
         self.tx(["spawn", "w1", "--tag", "t", "--cwd", str(cwd)])
+        [w1_record] = self._record_files()
         clash = self.tx(["spawn-view", "w1", "--cwd", str(cwd)])
         self.assertEqual((clash.code, clash.err), (1, "tx spawn-view: session 'w1' already exists\n"))
         tagged = self.tx(["spawn-view", "V2", "--cwd", str(cwd), "--tag", "t"])
         self.assertEqual(tagged.code, 2)
         self.assertTrue(tagged.err.endswith("tx spawn-view: error: unrecognized arguments: --tag t\n"), tagged.err)
+        # Edge: `--cmd` defaults to `$SHELL`, else `zsh` (the fake `zsh` on PATH keeps the pane alive).
+        unset = self.tx(["spawn-view", "V3", "--cwd", str(cwd)], env={"SHELL": None})
+        self.assertEqual((unset.code, unset.out), (0, f"Spawned view 'V3' (cwd={cwd})\n"), unset.err)
+        self.assertEqual(self.tmux.display("V3", "#{pane_start_command}"), "zsh")
+        self.assertEqual(self._record_files(), [w1_record])
 
     # ----- T-CLI-09 ---------------------------------------------------------------------------
 
@@ -776,17 +801,6 @@ class TestCli(TxCase):
             f"pane-index='0' pane-title='I' pane-cmd='sleep' pane-path='{os.path.realpath(inner_dir)}' "
             "session-kind='process' session-tag='a,b'/>",
         )
-        # Edge: an `@remote-session` pane — remote marker, no inner-kind join. The reference reads
-        # the option WITHOUT `-p` (session scope of the pane's session), so that is where it is set
-        # here; a pane-scoped write (what `tx attach --host` does) is invisible to it — see NOTES.
-        self.tmux.run("set-option", "-t", "Views", "@remote-session", "host", check=True)
-        remote = self.tx(["focus-envelope", pane])
-        self.assertEqual(
-            remote.out,
-            f"<tx-command-prompt session-name='Views' window-index='0' window-name='main' pane-id='{pane}' "
-            f"pane-index='0' pane-title='T&amp;&apos;&lt;&gt;' pane-cmd='tmux' pane-path='{path}' "
-            "inner-remote='1' inner-session-name='host' session-kind='view'/>",
-        )
         # Edge: an untracked outer session carries no session-kind.
         self.tmux.new_session("raw", "sleep 1000", cwd=str(pane_dir))
         raw_pane = self.tmux.display("raw:0.0", "#{pane_id}")
@@ -799,17 +813,62 @@ class TestCli(TxCase):
             f"pane-index='0' pane-title='R' pane-cmd='sleep' pane-path='{path}'/>",
         )
 
+    def _remote_fixture(self) -> tuple[str, str, str]:
+        """The T-CLI-21 topology (`Views` pane nest-attached to process `i1`); returns the nested
+        pane's id, its realpath and the envelope's pure-tmux prefix up to `pane-path`."""
+        self.records.llm(id="i1", name="w1", tags=("a", "b"))
+        pane_dir = self.root / "p"
+        pane_dir.mkdir()
+        self._live("i1", cwd=str(self.root))
+        self._view(cwd=str(pane_dir), command=self._attach_command("i1"))
+        self.wait_until(lambda: "i1" in self._clients())
+        pane = self.tmux.display("Views:main.0", "#{pane_id}")
+        self.tmux.run("select-pane", "-t", pane, "-T", "T", check=True)
+        path = os.path.realpath(pane_dir)
+        prefix = (
+            f"<tx-command-prompt session-name='Views' window-index='0' window-name='main' pane-id='{pane}' "
+            f"pane-index='0' pane-title='T' pane-cmd='tmux' pane-path='{path}' "
+        )
+        return pane, path, prefix
+
+    @expected_failure_on_python
+    def test_t_cli_21_fixed_remote_pane_scope(self):
+        # Q30 FIX: `@remote-session` at PANE scope (`set-option -p`, what `tx attach --host` writes)
+        # → the remote marker replaces the nested join (no inner-kind / inner-tag).
+        pane, _, prefix = self._remote_fixture()
+        self.tmux.run("set-option", "-p", "-t", pane, "@remote-session", "host", check=True)
+        remote = self.tx(["focus-envelope", pane])
+        self.assertEqual((remote.code, remote.err), (0, ""))
+        self.assertEqual(remote.out, prefix + "inner-remote='1' inner-session-name='host' session-kind='view'/>")
+
+    @python_reference_only
+    def test_t_cli_21_parity_remote_session_scope(self):
+        # Q30 PARITY (reference-only, D17): `focus_attrs` reads `show-options -vqt <pane>` WITHOUT
+        # `-p`, so the pane-scoped stamp is invisible (plain nested join) and the same option at
+        # SESSION scope on `Views` yields the remote shape. A Q30-fixed port reads pane scope only.
+        pane, _, prefix = self._remote_fixture()
+        nested = "inner-session-name='i1' session-kind='view' inner-session-kind='process' inner-session-tag='a,b'/>"
+        self.tmux.run("set-option", "-p", "-t", pane, "@remote-session", "host", check=True)
+        pane_scoped = self.tx(["focus-envelope", pane])
+        self.assertEqual((pane_scoped.code, pane_scoped.err), (0, ""))
+        self.assertEqual(pane_scoped.out, prefix + nested)
+        self.tmux.run("set-option", "-p", "-u", "-t", pane, "@remote-session", check=True)
+        self.tmux.run("set-option", "-t", "Views", "@remote-session", "host", check=True)
+        session_scoped = self.tx(["focus-envelope", pane])
+        self.assertEqual((session_scoped.code, session_scoped.err), (0, ""))
+        self.assertEqual(session_scoped.out, prefix + "inner-remote='1' inner-session-name='host' session-kind='view'/>")
+
     def test_t_cli_21_pane_gone(self):
-        # tmux's `display-message -p -t %999` expands with empty fields (exit 0), so the envelope is
-        # emitted with empty values rather than nothing (see NOTES-04-cli.md).
+        # Q37 PARITY (tmux-version dependent): only exit 0, no trailing newline and the ABSENCE of
+        # the record-join attrs are the contract. tmux 3.4 expands `display-message -p -t %999`
+        # with empty fields (exit 0) so the reference prints an all-empty envelope; a port may
+        # print nothing (see NOTES-04.md).
         self.tmux.new_session("raw", "sleep 1000")
         result = self.tx(["focus-envelope", "%999"])
-        self.assertEqual((result.code, result.err), (0, ""))
-        self.assertEqual(
-            result.out,
-            "<tx-command-prompt session-name='' window-index='' window-name='' pane-id='%999' pane-index='' "
-            "pane-title='' pane-cmd='' pane-path=''/>",
-        )
+        self.assertEqual(result.code, 0, result.err)
+        self.assertFalse(result.raw_out.endswith("\n"), result.raw_out)
+        self.assertNotIn("session-kind", result.out)
+        self.assertNotIn("inner-", result.out)
 
     # ----- T-CLI-23 ---------------------------------------------------------------------------
 
@@ -903,10 +962,24 @@ class TestCli(TxCase):
         self.assertNotIn("tx-assistant", self.tmux.sessions())  # liveness target is the record's id
         self.assertIn(assistant["id"], self.tmux.sessions())
         log = self.log_lines()
+        views_before = self.tmux.display("Views", "#{session_id} #{session_created} #{pane_id} #{pane_pid}")
         again = self.tx(["start"])
         self.assertEqual((again.code, again.out), (0, "tx-assistant already running.\n"))
+        self.assertIn("open terminal failed", again.err)
         self.assertEqual(self.log_lines(), log)
         self.assertEqual(self.tmux.sessions().count("Views"), 1)
+        self.assertEqual(self.tmux.display("Views", "#{session_id} #{session_created} #{pane_id} #{pane_pid}"), views_before)
+        # Edge: with `$TMUX` set the trailing step is `switch-client -t Views`, not `attach`: the
+        # outer client attached to `raw` is moved onto `Views` and no attach error is printed.
+        self.tmux.new_session("raw", "sleep 1000")
+        client = self.attach_client("raw")
+        self.assertEqual([row["client_session"] for row in self.tmux.clients()], ["raw"])
+        inside = self.tx_inside("raw", ["start"])
+        self.assertEqual((inside.code, inside.out, inside.err), (0, "tx-assistant already running.\n", ""))
+        self.wait_until(lambda: [row["client_session"] for row in self.tmux.clients()] == ["Views"])
+        self.assertEqual(self.log_lines(), log)
+        self.assertEqual(self.tmux.display("Views", "#{session_id} #{session_created} #{pane_id} #{pane_pid}"), views_before)
+        client.close()
 
     # ----- T-CLI-26 ---------------------------------------------------------------------------
 

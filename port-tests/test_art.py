@@ -224,12 +224,21 @@ class TestArt(TxCase):
             [V1_SKIP.format(name="nover.json", version="None"), V1_SKIP.format(name="old.json", version=1)],
         )
 
-    @expected_failure_on_python
-    def test_t_art_02_fixed_show_named_v1_record(self):
+    def _show_named_v1_record(self):
         (self.home.artifacts_dir / "old.json").write_text('{"artifact_schema_version": 1, "id": "old", "foo": 1}')
         result = self.tx(["artifact", "show", "old"])
         self.assertEqual((result.code, result.out), (1, ""))
-        self.assertIn("artifact_schema_version=1 is unsupported", result.err)
+        self.assertIn("record artifact_schema_version=1 is unsupported (expected 2)", result.err)
+        return result
+
+    def test_t_art_02_parity_show_named_v1_record(self):
+        # Both implementations: exit 1, stdout empty, the version message on stderr (the reference
+        # carries it inside a leaked traceback — Q26).
+        self._show_named_v1_record()
+
+    @expected_failure_on_python
+    def test_t_art_02_fixed_show_named_v1_record(self):
+        result = self._show_named_v1_record()
         self.assertNotIn("Traceback", result.err)
 
     def test_t_art_03_exact_key_set_enforcement(self):
@@ -644,6 +653,10 @@ class TestArt(TxCase):
         self.assertEqual(creator(self.tx_inside("s9", ["artifact", "create", source], env={"TX_SESSION_ID": "s1"})), "s1")
         self.assertEqual(creator(self.tx_inside("s9", ["artifact", "create", source])), "s9")
         self.assertEqual(creator(self.tx_inside("plain", ["artifact", "create", source])), "user")
+        # (d) outside tmux with the server still running: `s9` is now the ONLY session, so an
+        # implementation that consulted tmux without the `$TMUX` gate would report `s9`.
+        self.tmux.kill_session("plain")
+        self.assertEqual(self.tmux.sessions(), ["s9"])
         self.assertEqual(creator(self.tx(["artifact", "create", source])), "user")
 
     # ----- T-ART-22 / 23: id resolution, modify outputs --------------------------------------
@@ -771,16 +784,17 @@ class TestArt(TxCase):
         empty = self.tx(["artifact", "ls"])
         self.assertEqual((empty.code, empty.out), (0, "ARTIFACTS\n  (none)\n"))
         title = "T" * 40
-        self.records.artifact(id="cccccccc-0000-4000-8000-000000000003", title=title, created_at=time.time() - 30)
+        # `now-600` renders `10m` (the `m` bucket is stable for 60 s; `30s` would flip at 1 s).
+        self.records.artifact(id="cccccccc-0000-4000-8000-000000000003", title=title, created_at=time.time() - 600)
         result = self.tx(["artifact", "ls"])
-        self.assertEqual(result.lines[1], f"  cccccccc    1r    30s  {'T' * 27}… [s1]")
+        self.assertEqual(result.lines[1], f"  cccccccc    1r    10m  {'T' * 27}… [s1]")
 
     def test_t_art_25_show_shape(self):
         now = time.time()
         self.write_p(now)
         self.records.llm(id="s1", name="alice", tags=("feat-x",))
-        result = self.tx(["artifact", "show", "aaaaaaaa"])
-        self.assertEqual((result.code, result.err), (0, ""))
+        first = self.tx(["artifact", "show", "aaaaaaaa"])
+        self.assertEqual((first.code, first.err), (0, ""))
         expected = (
             "Plan  (aaaaaaaa-0000-4000-8000-000000000001)\n"
             "  filename:   plan.md\n"
@@ -793,7 +807,7 @@ class TestArt(TxCase):
             "    rev 0      5m ago  alice               \n"
             "    rev 1      1m ago  user                  tweak\n"
         )
-        self.assertEqual(result.out, expected)
+        self.assertEqual(first.out, expected)
 
         self.write_p(now, group="g", dirty=False)
         result = self.tx(["artifact", "show", "aaaaaaaa"])
@@ -806,7 +820,7 @@ class TestArt(TxCase):
         self.assertIn("\n  group:      derived: ungrouped\n", result.out)
         self.assertIn("\n    rev 0      5m ago  s1                  \n", result.out)
 
-        self.assert_golden("art/25", expected)
+        self.assert_golden("art/25", first.out)
 
     @expected_failure_on_python
     def test_t_art_25_fixed_missing_current(self):
@@ -877,6 +891,16 @@ class TestArt(TxCase):
         result = self.tx(["artifact", "open", "cccccccc"])
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(json.loads(self.tx(["show", "art-cccccccc"]).out)["tags"], ["artifact"])
+        # Edge: an UNTAGGED invoker inside tmux (record `s2` resolved from `#S`, no `TX_SESSION_ID`)
+        # also falls back to `["artifact"]`.
+        self.records.llm(id="s2", name="untagged", tags=())
+        self.tmux.new_session("s2", "sleep 1000", tx_id="s2")
+        self.open_fixture(untagged_inside := "eeeeeeee-0000-4000-8000-000000000005")
+        result = self.tx_inside("s2", ["artifact", "open", "eeeeeeee"])
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(json.loads(self.tx(["show", "art-eeeeeeee"]).out)["tags"], ["artifact"])
+        opened = [line for line in self.log_lines() if line["type"] == "artifact-open"][-1]
+        self.assertEqual((opened["msg"], opened["actor"]), (f"{untagged_inside} → s2", "s2"))
 
         empty = self.tx(["artifact", "open", "dddddddd", "--tag", ""])
         self.assertEqual((empty.code, empty.out), (2, ""))
