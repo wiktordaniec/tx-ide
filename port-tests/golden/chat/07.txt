@@ -1,0 +1,1 @@
+Your task brief is at <brief> — read it and begin. Fuller predecessor history, only if the brief is insufficient: <home>/history/<S.id>/c1/ .
