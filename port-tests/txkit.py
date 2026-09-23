@@ -823,7 +823,13 @@ def assert_golden(case: unittest.TestCase, name: str, actual: str) -> None:
 
 @functools.cache
 def is_python_reference() -> bool:
-    """Whether `TX_BIN` is the Python shim (`bin/tx` execs `python3.14 -m tx`)."""
+    """Whether `TX_BIN` is the Python reference. `TX_IMPL=python|rust` decides explicitly; otherwise
+    the shim is recognised by its `python3.14 -m tx` line (`bin/tx`)."""
+    implementation = os.environ.get("TX_IMPL")
+    if implementation in ("python", "rust"):
+        return implementation == "python"
+    if implementation:
+        raise ValueError(f"TX_IMPL must be 'python' or 'rust', got {implementation!r}")
     try:
         text = Path(TX_BIN).read_text(errors="ignore")
     except OSError:

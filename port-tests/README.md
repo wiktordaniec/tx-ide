@@ -97,7 +97,9 @@ when the private server has a session named by its id with `@tx_id` set:
 ## Markers
 
 - `@expected_failure_on_python` — D9: the case asserts the FIXED behaviour of an Appendix-B quirk;
-  skipped when `TX_BIN` is the Python shim (detected by the `python3.14 -m tx` line in `bin/tx`).
+  skipped when `TX_BIN` is the Python reference. `TX_IMPL=python|rust` says so explicitly and always
+  wins; without it the shim is recognised by the `python3.14 -m tx` line in `bin/tx`. Set `TX_IMPL=rust`
+  when the port is wrapped in a shell script.
 - `@requires_tmux(min="3.6")` — skip below the floor (this dev host runs 3.4; D13 sets 3.6 for CI).
 - `@requires_bin("nvim")` — skip when the binary is absent.
 - `@platform_only("linux")` / `@platform_only("darwin")`.
