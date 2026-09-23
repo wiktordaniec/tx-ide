@@ -194,6 +194,8 @@ creates a plain `agents/` dir).
   — spawn, assert exit 0.
 - `self.live(id, cmd="sleep 1000")` — make a crafted record live (a session named by the id with
   `@tx_id` set, the RECON/RENDER recipe).
+- `self.non_hex_name(prefix="s")` — `sx1`, `sx2`, …: a name that can never prefix-match a uuid
+  session (see Flake rules).
 - `self.attach_client(session, rows=, cols=)` — a real outer `tmux attach` client on a pty (the
   `-c <client_tty>` target for `display-popup` cases); closed at teardown.
 - `self.log_lines()`, `self.log_tail(n)` — parsed `log.jsonl`; `self.assert_golden(name, actual)`;
@@ -219,7 +221,8 @@ creates a plain `agents/` dir).
 client's environment, default the hermetic one);
 `sessions()`, `has_session(name)`, `option(target, name, scope="session"|"window"|"pane"|"global"|"global-window")`,
 `display(target, fmt)`, `environment(target)`, `capture(target)`, `clients()`, `panes(target=None)`,
-`pane_id(target)`, `pane_tty(pane)`, `pane_commands()` (`@tx_id → #{pane_current_command}`);
+`pane_id(target)`, `pane_tty(pane)`, `pane_commands()` (`@tx_id → #{pane_current_command}`),
+`wait_for_window_name(target, name)`;
 `new_session(name, cmd, tx_id=None, *, cwd=, env=, client_env=)`, `kill_session(name)`,
 `split_window(target, *flags)` / `new_window(target, *flags)` (an explicit `bash --noprofile --norc`,
 `PANE_SHELL` — a command-less split starts a login shell whose profile drops the kit PATH; return the
@@ -276,6 +279,21 @@ a record live.
 `path`, `git(*args, cwd=None)`, `head()`, `worktrees()`, `with_origin_main()` (a bare `origin` with
 `main` pushed), `as_linked_worktree(branch="linked")` (a linked worktree of the fixture repo).
 
+## Flake rules
+
+Two tmux behaviours turn a correct assertion into a coin toss; the kit has a helper for each.
+
+- **No bare hex names.** The reference resolves a name through `show-options -t <name>`, which tmux
+  PREFIX-matches, so a hex-only display name (`a`, `c`, `e1`, `abc`, `ed`) that coexists with two or
+  more uuid-named sessions can resolve to ANOTHER session's record (Q27, ≈ 6 % per pair for one
+  letter). Name sessions with a non-hex character — `self.non_hex_name("w")` → `wx1` — whenever
+  more than one uuid session is live and the name is looked up (`tx show/kill/tag <name>`).
+- **Window names settle late.** Stock `automatic-rename` follows `pane_current_command`, applied a
+  beat after the command changes. Before asserting a window name (a `tx ls` LOCATION cell,
+  `attached_to.window_name`) after a pane's command changed, call
+  `self.tmux.wait_for_window_name(pane, "tmux")`; or create the window with `-n` / `rename-window`,
+  which pins it.
+
 ## Known kit limitations
 
 Collected from the five section NOTES files and the integration; each is worked around locally in
@@ -303,9 +321,8 @@ the test named, not in the kit.
   `tmux info`, which fails from an unattached client on 3.4 — the four hook-applied INST cases are
   gated `@requires_tmux(min="3.6")` and need CI to run; `run-shell -t` hands its job a stale
   `TMUX_PANE` (pinned explicitly by `run_tx_inside`); `list-clients`-based waits replace `tmux info`.
-- **tmux prefix-matches a bare `show-options -t <name>` target** (candidate Q27, FIX leg xfail):
-  never name sessions with hex-only strings (`a`, `d1`) when two or more uuid-named sessions
-  coexist — it flaked T-SPAWN-10/11 and T-TMUX-20 at ≈ 6 % per pair. Use `alpha`, `small`, `agent`.
+- **tmux prefix-matches a bare `show-options -t <name>` target** (Q27, FIX leg xfail): see Flake
+  rules — `self.non_hex_name()`.
 - **`display-popup -E` blocks the invoking `tmux`** until the popup closes; ATTACH runs popups
   through `subprocess.Popen` with cleanup rather than `TmuxServer.run`.
 - **Command-less `split-window` / `new-window` start a login shell** whose `/etc/profile` resets

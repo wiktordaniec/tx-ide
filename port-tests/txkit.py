@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import fcntl
 import functools
+import itertools
 import json
 import os
 import platform
@@ -397,7 +398,8 @@ class TmuxServer:
         args.append(cmd)
         self.run(*args, check=True, env=client_env)
         if tx_id is not None:
-            self.run("set-option", "-t", name, "@tx_id", tx_id, check=True)
+            # `=name`: exact match — a bare target prefix-matches another uuid-named session (Q27).
+            self.run("set-option", "-t", f"={name}", "@tx_id", tx_id, check=True)
 
     def kill_session(self, name: str) -> None:
         self.run("kill-session", "-t", f"={name}")
@@ -436,6 +438,15 @@ class TmuxServer:
 
     def pane_tty(self, pane_id: str) -> str:
         return self.display(pane_id, "#{pane_tty}")
+
+    def wait_for_window_name(self, target: str, name: str, timeout: float = 10.0) -> None:
+        """Wait until `#{window_name}` of `target` is `name`. The private server runs stock config,
+        so `automatic-rename` follows `pane_current_command` — and tmux applies the rename a beat
+        after the command changes. Any assertion on a window name (a `tx ls` LOCATION cell,
+        `attached_to.window_name`) after a pane's command changed must wait for the settled name
+        first, or use a window the test named itself (`-n` / `rename-window` pins it)."""
+        wait_until(lambda: self.display(target, "#{window_name}") == name, timeout,
+                   what=f"window of {target} named {name!r}")
 
     def split_window(self, target: str, *flags: str) -> str:
         """`split-window [flags] -t target <PANE_SHELL>` → the new pane's id. Runs an explicit
@@ -1450,6 +1461,7 @@ class TxCase(unittest.TestCase):
         self.tmux.env = self.env()
         self.tmux.start()
         self._git: GitFixture | None = None
+        self._names = itertools.count(1)
 
     def tearDown(self) -> None:
         # Runs before every addCleanup (lock releases, tmux.close, rmtree): reap the detached
@@ -1586,6 +1598,14 @@ class TxCase(unittest.TestCase):
     ) -> Result:
         """`run_tx_detached` over the standard fixtures (no controlling tty; `$COLUMNS` wins)."""
         return run_tx_detached(argv, home=self.home, tmux=self.tmux, fakes=self.fakes, env=env)
+
+    def non_hex_name(self, prefix: str = "s") -> str:
+        """A session name that can never prefix-match a uuid-named tmux session: `<prefix>x<n>`
+        (`sx1`, `wx2`, …; the `x` is not a hex digit). Q27: the reference resolves a bare name
+        through `show-options -t <name>`, which tmux prefix-matches, so a hex-only name (`a`, `c`,
+        `e1`, `abc`) coexisting with other uuid-named sessions can land on ANOTHER record. Use it
+        (or any name with a non-hex character) whenever two or more uuid sessions are live."""
+        return f"{prefix}x{next(self._names)}"
 
     def live(self, session_id: str, cmd: str = "sleep 1000") -> None:
         """Make a crafted record "live": a private-server session named by its id with `@tx_id`

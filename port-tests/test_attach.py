@@ -416,10 +416,9 @@ class TestAttach(TxCase):
         pane_tty = self.tmux.pane_tty(pane)
         nested = self.wait_until(lambda: self.client_on(pane_tty))
         self.assertEqual(nested["client_session"], record["id"])
-        # Stock config: `automatic-rename` follows `pane_current_command`, and tmux applies it a
-        # beat after the command changes — wait for the name the spec states (`tmux` once nested)
-        # so the two reads below (`tx ls`, `tx show`) see the settled value, not the race.
-        self.wait_until(lambda: self.tmux.display(pane, "#{window_name}") == "tmux")
+        # Stock config: `automatic-rename` follows `pane_current_command` a beat late — wait for the
+        # name the spec states (`tmux` once nested) so `tx ls` / `tx show` see the settled value.
+        self.tmux.wait_for_window_name(pane, "tmux")
         pane_index = self.tmux.display(pane, "#{pane_index}")
         listing = self.tx(["ls"]).out
         self.assertIn(f"  U2                       alive    tmux[{pane_index}]", listing)
