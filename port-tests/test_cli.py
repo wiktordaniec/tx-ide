@@ -439,7 +439,7 @@ class TestCli(TxCase):
     def test_t_cli_08_spawn_view(self):
         cwd = self.root / "v"
         cwd.mkdir()
-        result = self.tx(["spawn-view", "Views", "--cwd", str(cwd)])
+        result = self.tx(["spawn-view", "Views", "--cwd", str(cwd)], env={"SHELL": "/bin/bash"})
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(result.out, f"Spawned view 'Views' (cwd={cwd})\n")
         self.assertEqual(self._record_files(), [])
@@ -471,11 +471,17 @@ class TestCli(TxCase):
         self._live(SH1_ID)
         self._nest_attach(W1_ID)
 
+        [w1_record] = self._record_files()
     def test_t_cli_09_ls_output(self):
         now = time.time()
         self._ls_fixture(now - 600, now - 10)
         vanished = self.records.llm(name="vanished", state="idle")  # no tmux session → reconciled EXITED
         result = self.tx(["ls"])
+        # Edge: `--cmd` defaults to `$SHELL`, else `zsh` (the fake `zsh` on PATH keeps the pane alive).
+        unset = self.tx(["spawn-view", "V3", "--cwd", str(cwd)], env={"SHELL": None})
+        self.assertEqual((unset.code, unset.out), (0, f"Spawned view 'V3' (cwd={cwd})\n"), unset.err)
+        self.assertEqual(self.tmux.display("V3", "#{pane_start_command}"), "zsh")
+        self.assertEqual(self._record_files(), [w1_record])
         self.assertEqual((result.code, result.err), (0, ""))
         self.assertEqual(
             result.out,
