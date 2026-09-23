@@ -118,6 +118,7 @@ before the run:
 - `passthrough=False` — `bwrap` only: do not exec the command after `--` (default: exec it, D13)
 - `sequence=[{...}, {...}]` — per-invocation knobs: the n-th run merges `sequence[n]` (the last entry
   repeats), e.g. `fzf` printing a row once then exiting 130 on every later run
+- `stdin_log=True` — a tty-attached fake logs every raw stdin chunk with a timestamp to `<name>-<key>.stdin.jsonl` (`self.fakes.stdin_log(name, key)`); the Enter key arrives as a literal `\r`, and the pane still echoes the text
 
 The `bwrap` fake is the default on every host (user namespaces are blocked on CI-class hosts); the
 real sandbox is a hand-run smoke check.
