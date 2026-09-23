@@ -22,8 +22,10 @@ python3.14 port-tests/check_coverage.py [--spec PATH] [--tests DIR] [--verbose]
 ```
 
 Every test runs on a private tmux server behind a `tmux` wrapper first on PATH, so the operator's
-live server is never touched. Each test gets a fresh temp root; teardown kills the server and
-removes the tree.
+live server is never touched. `TxCase.setUp` boots that server config-free (`-f /dev/null`, `exit-empty
+off`) from the scrubbed environment, so its global environment — inherited by every pane, popup and
+hook — is the temp home's. Each test gets a fresh temp root; teardown kills the server and removes
+the tree.
 
 ## Safety
 
@@ -66,7 +68,7 @@ Subclass `TxCase`; `setUp` gives you:
 |---|---|---|
 | `self.root` | `Path` | the temp tree everything below lives in |
 | `self.home` | `TxHome` | `$TX_IDE_HOME` with the `ensure_home` dirs, `agents → <repo>/agents`, hook shims for claude + codex, plus `HOME` / `CLAUDE_CONFIG_DIR` / `CODEX_HOME` under the same root |
-| `self.tmux` | `TmuxServer` | private `tmux -L <random> -f /dev/null` (stock config whichever call starts it); `sessions()`, `has_session()`, `option(target, name, scope)`, `display(target, fmt)`, `environment(target)`, `capture(target)`, `new_session(name, cmd, tx_id=None)`, `kill_session()`, `send_keys(target, *keys, literal=)`, `type_line(target, line)`, `clients()`, `panes(target=None)`, `pane_id(target)`, `pane_tty(pane)`, `attach_client(session, env=)`, `nest_attach(pane, session)` |
+| `self.tmux` | `TmuxServer` | private `tmux -L <random> -f /dev/null` (stock config whichever call starts it); `sessions()`, `has_session()`, `option(target, name, scope)`, `display(target, fmt)`, `environment(target)`, `capture(target)`, `new_session(name, cmd, tx_id=None)`, `kill_session()`, `send_keys(target, *keys, literal=)`, `type_line(target, line)`, `clients()`, `panes(target=None)`, `pane_id(target)`, `pane_tty(pane)`, `attach_client(session, env=)`, `nest_attach(pane, session)`, `split_window(target, *flags)` / `new_window(target, *flags)` (explicit `/bin/bash`, return the new pane id) |
 | `self.fakes` | `FakeBins` | PATH dir of recorders for `claude codex agy nvim fzf bwrap brew zsh`; `configure(name, **knobs)`, `dumps(name)`, `wait_dump(name, key)`, `remove(name)`, `add(name)` (a recorder under a new basename, e.g. `ssh`), `write_script(name, body)` (a hand-written executable); `helpers_dir` — after the fakes on PATH — links `tx` → `TX_BIN` and every `<repo>/bin/*` helper so an in-pane `tx`, `tmux-pane-session-name` etc. resolve |
 | `self.records` | `Records` | `llm(...)` / `other(...)` write schema-6 records, `artifact(...)` writes a v2 record + `revs/` + `current.<ext>`; `load(id)`, `path(id)`, `chat_ref(...)` |
 | `self.git` | `GitFixture` (lazy) | repo with one commit on `main`; `with_origin_main()`, `as_linked_worktree()`, `git(...)`, `worktrees()`, `head()` |
