@@ -788,11 +788,14 @@ def run_tx_inside(
     scratch: Path,
 ) -> Result:
     """Run `TX_BIN argv` INSIDE tmux session `target` via `run-shell -t` — synchronous, and the job
-    inherits `$TMUX` + `$TMUX_PANE` from the server so `#S` resolves to `target` (the "harness types
-    the command into s1" recipe of T-MSG-02 / T-ART-21 / T-CLI-12). The environment is rebuilt from
-    `scrubbed_env` under `env -i` (only tmux's own `TMUX`/`TMUX_PANE` pass through); stdout/stderr/exit
-    land in `scratch` (`run-shell` would otherwise paint stdout into a pane)."""
+    inherits `$TMUX` from the server (the "harness types the command into s1" recipe of T-MSG-02 /
+    T-ART-21 / T-CLI-12). `TMUX_PANE` is pinned to `target`'s active pane explicitly: on tmux 3.4
+    `run-shell -t` hands the job the server's stale global `TMUX_PANE`, and `#S` would otherwise
+    resolve to whichever session tmux deems current. The environment is rebuilt from `scrubbed_env`
+    under `env -i`; stdout/stderr/exit land in `scratch` (`run-shell` would otherwise paint stdout
+    into a pane)."""
     scratch.mkdir(parents=True, exist_ok=True)
+    pane_id = tmux.display(target, "#{pane_id}")
     out_path, err_path, code_path = (scratch / name for name in ("out", "err", "code"))
     for path in (out_path, err_path, code_path):
         path.unlink(missing_ok=True)
@@ -801,7 +804,7 @@ def run_tx_inside(
     )
     command = (
         f"cd {shlex.quote(str(cwd if cwd is not None else home.root))} && "
-        f'env -i TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" {assignments} '
+        f'env -i TMUX="$TMUX" TMUX_PANE={shlex.quote(pane_id)} {assignments} '
         f"{shlex.quote(TX_BIN)} {shlex.join(argv)} "
         f">{shlex.quote(str(out_path))} 2>{shlex.quote(str(err_path))}; "
         f"echo $? >{shlex.quote(str(code_path))}"
