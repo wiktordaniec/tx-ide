@@ -320,16 +320,16 @@ class TestSpawn(TxCase):
         self.assertEqual((len(small.encode()), len(big.encode())), (MAX_COMMAND_BYTES, MAX_COMMAND_BYTES + 1))
         self.home.launch_dir.rmdir()
 
-        result = self.tx(["spawn", "s", "--tag", "t", "--cwd", workdir, "--cmd", small])
+        result = self.tx(["spawn", "small", "--tag", "t", "--cwd", workdir, "--cmd", small])
         self.assertEqual(result.code, 0, result.err)
-        small_record = self._show("s")
+        small_record = self._show("small")
         self.assertFalse((self.home.launch_dir / f"{small_record['id']}.sh").exists())
         self.assertEqual(_start_command(self, small_record["id"]), small)
         self.assertEqual(small_record["cmd"], small)
 
-        result = self.tx(["spawn", "b", "--tag", "t", "--cwd", workdir, "--cmd", big])
+        result = self.tx(["spawn", "big", "--tag", "t", "--cwd", workdir, "--cmd", big])
         self.assertEqual(result.code, 0, result.err)
-        big_record = self._show("b")
+        big_record = self._show("big")
         script = self.home.launch_dir / f"{big_record['id']}.sh"
         self.assertEqual(_start_command(self, big_record["id"]), f"/bin/sh {script}")
         self.assertTrue(script.exists())
@@ -350,7 +350,7 @@ class TestSpawn(TxCase):
         utf_record = self._show("u2")
         self.assertEqual(_start_command(self, utf_record["id"]), f"/bin/sh {self.home.launch_dir}/{utf_record['id']}.sh")
 
-        killed = self.tx(["kill", "b"])
+        killed = self.tx(["kill", "big"])
         self.assertEqual(killed.code, 0, killed.err)
         self.assertFalse(script.exists())
 
@@ -363,10 +363,10 @@ class TestSpawn(TxCase):
         self.assertEqual(self._show("s")["cwd"], repo)
         self.assertEqual(self.git.worktrees(), [repo])
 
-        result = self.tx(["spawn", "a", "--tag", "t", "--cwd", repo, "--cmd", "claude"])
+        result = self.tx(["spawn", "agent", "--tag", "t", "--cwd", repo, "--cmd", "claude"])
         self.assertEqual(result.code, 0, result.err)
-        worker = self._show("a")
-        self.assertRegex(worker["cwd"], _worktree_pattern(self, "a"))
+        worker = self._show("agent")
+        self.assertRegex(worker["cwd"], _worktree_pattern(self, "agent"))
         self.assertEqual(self.git.worktrees(), [repo, worker["cwd"]])
 
     # ----- T-SPAWN-12 ------------------------------------------------------------------------
