@@ -1372,6 +1372,15 @@ def assert_golden(case: unittest.TestCase, name: str, actual: str) -> None:
     case.assertEqual(expected, actual, f"golden {name} differs")
 
 
+def assert_golden_raw(case: unittest.TestCase, name: str, actual_raw: str) -> None:
+    """`assert_golden` for the UN-STRIPPED output (`Result.raw_out` / `raw_err`): the golden keeps
+    every escape code, so a port that adds or drops colour where the reference has none (or the
+    reverse) fails. Use it for every "stdout exactly" / colour-pinning case (RENDER, MIGR); the
+    stripped `assert_golden` is for text whose colour the case does not pin. Same file
+    (`golden/<area>/<nn>.txt`), same `TX_UPDATE_GOLDEN=1` capture — re-capture when switching."""
+    assert_golden(case, name, actual_raw)
+
+
 # ----- markers ---------------------------------------------------------------------------------
 
 
@@ -1646,6 +1655,10 @@ class TxCase(unittest.TestCase):
 
     def assert_golden(self, name: str, actual: str) -> None:
         assert_golden(self, name, actual)
+
+    def assert_golden_raw(self, name: str, actual_raw: str) -> None:
+        """Compare the un-stripped output (`result.raw_out`) — see `assert_golden_raw`."""
+        assert_golden_raw(self, name, actual_raw)
 
     def wait_until(self, predicate: Callable[[], object], timeout: float = 10.0, interval: float = 0.05):
         """Poll `predicate` until truthy; returns its value. Fails after `timeout` seconds."""

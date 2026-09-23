@@ -38,3 +38,33 @@ what its spec case says.
 | `test_chat.py::TestChat::test_t_chat_08_finish_idempotent` | waits for the spawned worker's own fake-claude dump (`wait_dump("claude", worker_id)`) before asserting exactly one dump | the pane's fake starts asynchronously after `_chat-op-finish` exits; the immediate count raced it (failed ≈ 1 in 6 alone, every fast run). The assertion is unchanged (exactly one worker, exactly one fake run); only a bounded wait precedes it |
 | `test_spawn.py::TestSpawn::test_t_spawn_19_bare_spawn_is_shell_and_cmd_stamps_engine` | session names `c` → `cw`, `e1` → `ex1`, `e2` → `ex2` | with `s` (and later `z`, `X`) live, `tx show c` prefix-matched another session's uuid on the reference (Q27 shape, ≈ 6 % per pair; seen once in the full run as `KeyError: 'engine'`). Same remedy as 02's 645773f; no assertion changed (the spec's `Spawned 's' …` line is untouched, the worker's record and dump are asserted by id) |
 | `test_attach.py::TestAttach::test_t_attach_07_nest_attach_into_view_pane` | waits until `#{window_name}` of the nested pane is `tmux`, then asserts `tx ls` location `tmux[<pane>]` and `attached_to.window_name == "tmux"` | stock config (`-f /dev/null`) leaves `automatic-rename` on, and tmux applies the rename a beat after `pane_current_command` changes; the test read the name once and `tx ls` read it again later, so the two could straddle the `bash` → `tmux` flip (seen once as `bash[0]` vs `tmux[0]`). The case's rev-4 Then names the settled value (`tmux` once nested), so the assertion is now exact rather than "whatever tmux said a moment ago". Scan: every other window-name/location assertion after a nested attach uses an explicitly named window (`-n main`, `rename-window`), which turns automatic-rename off for that window |
+
+## Phase 5a — kit-level fixes from the five reviews (artifact e0f490c7)
+
+Kit changes only (section fixers follow):
+
+- **K1 entry points.** `TX_HELPERS_DIR`, `TX_INSTALLER`, `TX_UNINSTALLER`, `TX_ENGINE_SETUP`,
+  `TX_STATUSLINE` (defaults = the reference's files). Helpers are COPIED into
+  `<root>/helpers/bin/` beside a `tx → TX_BIN` link, with `shared/` and `tmux/` copied beside them
+  (`fakes.helpers_root`) and a `helpers/lib` link for the Python-only `tmux-session-relabel`
+  under the reference layout — a symlinked helper `readlink -f`'d back into the repo and ran the
+  reference `tx`. `fakes.helper(name)`, `run_script` / `run_helper`, `TxCase.script` /
+  `TxCase.helper`.
+- **K2 marker.** `@python_reference_only` (parity legs of FIX quirks); pairing rule in README.
+- **K3 hermeticity.** `TMUX_TMPDIR=<root>/tmux-tmp`; `XDG_*` / `NVIM*` / `GIT_*` / `TMUX*` /
+  `VIMINIT` / `MYVIMRC` scrubbed; `GitFixture` with `GIT_CONFIG_GLOBAL=/dev/null` +
+  `GIT_CONFIG_NOSYSTEM=1`; `split_window` / `new_window` run `bash --noprofile --norc`
+  (`PANE_SHELL`); `TmuxServer.socket_path`; `kill_home_children` from `TxCase.tearDown` (before
+  every `addCleanup`); `TxCase.tx_popen`.
+- **K4 flakes.** `TmuxServer.wait_for_window_name`, `TxCase.non_hex_name`, `new_session` stamps
+  `@tx_id` with `-t =name`.
+- **K5 assertions.** `assert_golden_raw` / `TxCase.assert_golden_raw`.
+
+Test edits made for the kit changes (case ids, reasons):
+
+| test | edit | reason |
+|---|---|---|
+| `test_smoke.py` | wrapper passthrough probe carries the kit `TMUX_TMPDIR`; new `TestSmokeHelpers` / `TestSmokeHermeticity` | the private socket moved under the root; K1/K3 need a green proof |
+| `test_nvim.py::TestNvim.attach_client` (T-NVIM-15) | local `script(1)` attach with `dict(os.environ)` removed; the kit's `attach_client` (scrubbed pty client) applies | review 05 §4, D15 breach; K3 |
+| `test_nvim.py` crafted `$TMUX` value | `self.tmux.socket_path` instead of a runner-env-derived path | the socket now lives under `<root>/tmux-tmp` |
+| `test_attach.py` T-ATTACH-07 | `self.tmux.wait_for_window_name(pane, "tmux")` replaces the inline wait | K4 helper |

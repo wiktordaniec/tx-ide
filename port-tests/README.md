@@ -103,6 +103,11 @@ python3.14 -m unittest discover port-tests -p 'test_art.py'                     
 A missing golden skips the case rather than failing (H6). Normalise volatile fields (uuids, `ts`)
 before calling `assert_golden`, as each case's spec text describes.
 
+`Result.out` is ANSI-stripped, so `self.assert_golden(name, result.out)` is blind to colour a port
+adds or drops. Cases whose Then says "stdout exactly" or pins colour (RENDER, MIGR, the picker
+chips) compare the raw text: `self.assert_golden_raw(name, result.raw_out)` — same golden file,
+same capture flag; re-capture the golden when switching a case from stripped to raw.
+
 ## Safety
 
 Every `tx` the suite runs is aimed at a temp home on a private tmux server. Four guards enforce it
@@ -198,11 +203,11 @@ creates a plain `agents/` dir).
   session (see Flake rules).
 - `self.attach_client(session, rows=, cols=)` — a real outer `tmux attach` client on a pty (the
   `-c <client_tty>` target for `display-popup` cases); closed at teardown.
-- `self.log_lines()`, `self.log_tail(n)` — parsed `log.jsonl`; `self.assert_golden(name, actual)`;
-  `self.wait_until(predicate, timeout=10, interval=0.05)`.
+- `self.log_lines()`, `self.log_tail(n)` — parsed `log.jsonl`; `self.assert_golden(name, actual)` /
+  `self.assert_golden_raw(name, actual_raw)`; `self.wait_until(predicate, timeout=10, interval=0.05)`.
 - Module level, for tests composing fixtures by hand: `run_script`, `run_tx`, `run_helper`,
   `run_tx_detached`, `run_tx_inside`, `scrubbed_env`, `resolved_home`, `log_lines`, `log_tail`,
-  `wait_until`, `strip_ansi`, `munge`, `assert_golden`, `golden`, `golden_path`, `tmux_version`,
+  `wait_until`, `strip_ansi`, `munge`, `assert_golden`, `assert_golden_raw`, `golden`, `golden_path`, `tmux_version`,
   `is_python_reference`, `kill_home_children`, `REAL_TMUX`, `TX_BIN`, `TX_HELPERS_DIR`,
   `TX_INSTALLER`, `TX_UNINSTALLER`, `TX_ENGINE_SETUP`, `TX_STATUSLINE`, `HELPER_BINS`, `PANE_SHELL`,
   `REPO`, `HOME_DIRS`, `SESSION_RECORD_CMD`, `TMUX_SOCKET_ENV`, `KitSafetyError`.
