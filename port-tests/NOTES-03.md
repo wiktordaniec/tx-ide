@@ -99,3 +99,35 @@ Harness notes (no spec disagreement):
 - The fallback transcript glob (`projects/*/<chat>.jsonl`) is cross-project, so a source whose transcript must be absent (T-CHAT-18 warning edge) carries a chat id no sibling source uses.
 - Every distiller path leaves a detached `_chat-op-watch` (600 s); tests `pkill -f "_chat-op-watch <op_id>"` at cleanup, before the kit tears the server down.
 
+
+## Review pass (Phase 5b, review `rust-port-review-03`, spec rev 5)
+
+Branch `feat/port-tests-fix-03`. Every non-OK row of the review applied; the SPEC rows below record
+what the tests assert now that rev 5 has amended the case text.
+
+| case | class | what changed |
+|---|---|---|
+| T-ENG-01 / 11 | FRAGILE | hex-only names (`c0`–`c5`, `e1`/`e4`/`e5`, `bad`) → `w0`–`w5`, `ez*`, `wbad` (Q27: a bare `show-options -t <name>` prefix-matches a live uuid session; T-ENG-01 flaked in the review run). `a` → `arch` in T-ENG-21/44, `bad` → `wbad` in T-ENG-24 for the same reason |
+| T-ENG-21 | WEAK + SPEC (rev 5) | the git fixture is `proj.git`, so the worktree `proj.git--s` drives munge's `.`→`-` through `tx resume`/`tx show`; the archive leg plants a decoy `c2.jsonl` under `projects/-0decoy/` (sorts first) so a mis-munging port's glob fallback lands on the decoy; the symlink edge plants the real transcript under `munge(realpath(link))` and a decoy under the munge of the LITERAL link path and asserts the bundle holds the real bytes. The kit-only `munge()` check is gone |
+| T-ENG-25 | WEAK | `auth_success` now fires from WORKING (a `working` row precedes it) and must leave WORKING; the missing-`session_id` and re-fire legs assert exit 0 |
+| T-ENG-39 | WEAK | the `outside` variant points `current` at an EXISTING copy of the release tree outside `releases/` (`<label>/outside-release`), so `which codex` resolves to the crafted symlink and the releases guard is the reason for "not detected"; every not-detected variant also asserts the pane ran `<label>/bin/codex`, not the kit's fake |
+| T-ENG-41 | WEAK + FRAGILE | after the 5 h rewrite the log must be exactly `<fresh header>\nok\nUpdate succeeded\n` (an appending port keeps six lines); before each follow-up spawn the test waits until `flock -n update.log` succeeds — the detached child keeps the inherited lock until it exits, so the 4 h-interval skip would otherwise pass for the lock reason; the flock-held edge uses an explicit holder (`flock -x … sleep 600` in its own process group, released by the test) instead of `sleep 10` |
+| T-ENG-42 | WRONG → rev 5 | the failure line is asserted as `Update failed: ` prefix + contains `curl` + contains the exit status `3`; the Python `CalledProcessError` wording is no longer pinned |
+| T-HOOK-01 | WEAK | `tx hook` (no event) also runs with `garbage` stdin, with and without `TX_SESSION_ID` |
+| T-HOOK-05 / T-HIST-09 | WEAK | the crafted record seeds one `attached_to` `Location`, so `attached_to == []` afterwards proves the refresh |
+| T-HOOK-07 / 08 | FRAGILE | the first copy is `shutil.copy2` straight into `transcript.jsonl`, so every "bundle appears" wait is on CONTENT equality, never on existence; the 50 MB latency bound stays 1 s (spec) but `TXKIT_HOOK_LATENCY_S` may widen it on a slow CI host |
+| T-HOOK-09 | SPEC (rev 5) | re-fire edge is growth-based: after the first bundle is byte-equal and stamped, the source gains a line, `idle_prompt` is re-fired, and the bundle's size must stay put for 2 s (mtime cannot detect a second ingest: equal sizes short-circuit and `copy2` carries the source mtime) |
+| T-HIST-07 | FRAGILE | no wall-clock bounds: the lock is held until the test releases it; "coalesced" = `tx hook ingest` returned while the holder was alive; "waits" = `tx archive` (via `tx_popen`) is still running 1 s later, then completes after the release with the grown bundle |
+| T-HIST-08 | FRAGILE + D15 | same explicit holder; the archive runs through `self.tx_popen` (scrubbed env, stdin closed, killed at cleanup); the rename is asserted to land while both the holder and the archive are still alive |
+| T-CHAT-01 | WEAK | the resume leg loops over the same four selecting variants as the fork leg (`[a,b]→b`, `[a,b ended]→a`, `[a ended,b ended]→b`, `[a,null]→a`), asserting `--resume <id>`, `chats[0].id` and `origin.chat_id` |
+| T-CHAT-09 | WEAK → rev 5 | Q39 pair added: `python_reference_only` parity leg (spec without `worker_name` → the reference spawns a worker named `-2`, verified) and `expected_failure_on_python` fixed leg (exit 1, one `tx _chat-op-finish: …` line mentioning the worker name, no `-2` record, no fake launch, no `done`) |
+| T-CHAT-12 | WEAK | the respawn and the spec-dir removal are asserted within 5 s of the lock release (the Then's bounded wait) |
+| T-CHAT-15 | WEAK + FRAGILE | `TX_CHAT_OP_TIMEOUT_S` is 4 s so "≈GRACE" (`GRACE ≤ elapsed < GRACE + POLL + 2.5 s`) never touches the timeout path; leg (c) and the `artifact_path:""` edge assert that band; leg (b) runs the watcher with a 1 s grace and checks `done` exists right after the test's own finish (it won the claim, so the watcher had nothing to re-finish); new leg: a distiller whose cwd is a plain directory keeps it (only linked worktrees are removed); the D-gone edge writes the brief first (≈GRACE instead of TIMEOUT); the watcher runs through `self.tx_popen`. Mechanics verified against the reference with `TX_IMPL=rust`: everything but the Q12 timing assertions passes |
+| T-CHAT-16 | WEAK | the respawned pane's scrollback must hold no `Traceback` and no line starting with `tx ` |
+| T-CHAT-17 | SPEC (rev 5) | the `--as w2` Edge now reads "exists when the verb returns", which is what the test asserts (the shared fake cannot stat at launch) |
+| T-CHAT-08 | D15 | the two racing finishers run through `self.tx_popen` |
+| hygiene | — | the curl stub's interpreter is `sys.executable`; unused `resume()` / `latest_record_named()` removed; T-ENG-21 uses distinct chat ids per record |
+
+Not changed: the `err == ""` over-assertions in T-HOOK-01/12 and T-HIST-10 (low risk, not a review
+row); the teardown hazard of review item 1 is closed by the kit (`kill_home_children` in `tearDown`
+before any cleanup, `TMUX_TMPDIR` under the temp root).
