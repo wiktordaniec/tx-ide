@@ -257,7 +257,7 @@ class TestSync(TxCase):
         for action in ("status", "push"):
             result = self.tx(["sync", action])
             self.assertEqual(result.code, 1, action)
-            self.assertIn("tx sync: unknown sync backend 'ftp' (expected 's3' or 'local')", result.err)
+            self.assertIn("tx sync: unknown sync backend 'ftp' (expected 's3' or 'local')", result.err.splitlines(), action)
             self.assertNotIn("Traceback", result.err)
 
     def test_t_sync_08_status_output(self):
