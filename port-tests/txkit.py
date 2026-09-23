@@ -255,7 +255,9 @@ class TxHome:
 class TmuxServer:
     """A private tmux server (H2). The Python `Tmux` adapter takes only a binary name, so the
     private socket is injected by a `tmux` wrapper script placed first on PATH (Q1); direct
-    inspection from the test goes through the real binary with the same `-L`."""
+    inspection from the test goes through the real binary with the same `-L`. Both pass
+    `-f /dev/null` so the server starts stock (no operator / system tmux.conf) whichever call
+    starts it."""
 
     def __init__(self, root: Path):
         self.socket = f"txkit-{uuid.uuid4().hex[:8]}"
@@ -267,14 +269,14 @@ class TmuxServer:
         wrapper = self.bin_dir / "tmux"
         wrapper.write_text(
             "#!/bin/sh\n"
-            f'[ -n "$TXKIT_TMUX_SOCKET" ] && exec "{REAL_TMUX}" -L "$TXKIT_TMUX_SOCKET" "$@"\n'
+            f'[ -n "$TXKIT_TMUX_SOCKET" ] && exec "{REAL_TMUX}" -L "$TXKIT_TMUX_SOCKET" -f /dev/null "$@"\n'
             f'exec "{REAL_TMUX}" "$@"\n'
         )
         wrapper.chmod(0o755)
 
     def run(self, *args: str, check: bool = False) -> subprocess.CompletedProcess:
         return subprocess.run(
-            [REAL_TMUX, "-L", self.socket, *args],
+            [REAL_TMUX, "-L", self.socket, "-f", "/dev/null", *args],
             capture_output=True,
             text=True,
             check=check,
@@ -379,7 +381,8 @@ class TmuxServer:
         `list-clients` shows it. `TMUX` is dropped from `env`; the caller closes it."""
         client_env = {key: value for key, value in env.items() if key != "TMUX"}
         client_env.setdefault("TERM", "xterm-256color")
-        client = PtyProcess([REAL_TMUX, "-L", self.socket, "attach", "-t", session], env=client_env, rows=rows, cols=cols)
+        client = PtyProcess([REAL_TMUX, "-L", self.socket, "-f", "/dev/null", "attach", "-t", session],
+                            env=client_env, rows=rows, cols=cols)
         wait_until(lambda: any(row["client_tty"] == client.tty for row in self.clients()), timeout,
                    what=f"client on {client.tty} attached to {session}")
         return client
