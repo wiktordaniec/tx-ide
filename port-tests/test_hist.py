@@ -14,7 +14,7 @@ import time
 import uuid
 from pathlib import Path
 
-from txkit import TX_BIN, TxCase, expected_failure_on_python
+from txkit import TxCase, expected_failure_on_python
 
 TRANSCRIPT = b'{"type":"user","text":"one"}\n{"type":"assistant","text":"two"}\n{"type":"user","text":"three"}\n'
 ROLLOUT = b'{"type":"session_meta","payload":{"id":"r1","cwd":"/w"}}\n{"type":"response_item"}\n'
@@ -22,6 +22,8 @@ KIB_200 = bytes(range(256)) * 800  # 204800 bytes — wider than the 65536-byte 
 PREFIX_CHECK_BYTES = 65536
 CHAT_ID = "c1c1c1c1-0000-4000-8000-000000000001"
 FORK_SOURCE_CHAT_ID = "d2d2d2d2-0000-4000-8000-000000000002"
+# A crafted `attached_to` entry (the frozen `Location` shape) — seeded where the Then says `[]`.
+LOCATION = {"host": "Views", "window_index": "1", "window_name": "work", "pane_id": "%99", "pane_index": "0"}
 
 
 def write_bytes(path: Path, data: bytes) -> None:
@@ -136,6 +138,24 @@ class TestHist(TxCase):
             lambda: subprocess.run(["flock", "-n", str(lock_path), "true"]).returncode != 0
         )
         return launched
+
+    def hold_lock_until_released(self, lock_path: Path) -> subprocess.Popen:
+        """Hold `flock -x <lock>` until `release_lock` — no wall clock in the assertion: "returned
+        while the lock was held" is `holder.poll() is None`. The holder runs in its own process
+        group so the `sleep` that inherits the lock dies with it."""
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        holder = subprocess.Popen(["flock", "-x", str(lock_path), "sleep", "600"], start_new_session=True)
+        self.addCleanup(self.release_lock, holder)
+        self.wait_until(
+            lambda: subprocess.run(["flock", "-n", str(lock_path), "true"]).returncode != 0
+        )
+        return holder
+
+    @staticmethod
+    def release_lock(holder: subprocess.Popen) -> None:
+        if holder.poll() is None:
+            os.killpg(holder.pid, 9)
+        holder.wait()
 
     # ----- T-HIST-01 transcript resolution fast path ---------------------------------------
 
@@ -358,25 +378,24 @@ class TestHist(TxCase):
         record["chats"][0]["bundle_path"] = None
         self.records.write(record)
 
-        hold_seconds = 4.0
-        launched = self.hold_lock(bundle_dir / ".ingest.lock", hold_seconds)
+        holder = self.hold_lock_until_released(bundle_dir / ".ingest.lock")
         grown = TRANSCRIPT + b'{"type":"assistant","text":"four"}\n'
         source.write_bytes(grown)
 
-        started = time.monotonic()
         self.ingest(session_id)
-        finished = time.monotonic()
-        self.assertLess(finished - started, 2.0)
-        self.assertLess(finished - launched, hold_seconds)  # returned while the lock was held
+        self.assertIsNone(holder.poll())  # returned while the lock was still held (coalesced)
         self.assertEqual(bundle.read_bytes(), TRANSCRIPT)  # NOT updated (≠ source)
         self.assertEqual(self.chat(session_id)["bundle_path"], str(bundle_dir))
 
-        result = self.tx(["archive", "w1"])
-        returned = time.monotonic()
-        self.assertEqual(result.code, 0, result.err)
-        self.assertGreaterEqual(returned - launched, hold_seconds)  # blocked until release
+        archive = self.tx_popen(["archive", "w1"])
+        with self.assertRaises(subprocess.TimeoutExpired):
+            archive.wait(timeout=1.0)  # still blocked on the held lock
+        self.assertEqual(bundle.read_bytes(), TRANSCRIPT)
+        self.release_lock(holder)
+        out, err = archive.communicate(timeout=60)
+        self.assertEqual(archive.returncode, 0, err)
         self.assertEqual(bundle.read_bytes(), grown)
-        self.assertEqual(result.out, "Archived 'w1' (ingested 1 chat bundle(s))\n")
+        self.assertEqual(out, "Archived 'w1' (ingested 1 chat bundle(s))\n")
 
     # ----- T-HIST-08 stamp only on change, on a fresh reload ------------------------------
 
@@ -393,25 +412,18 @@ class TestHist(TxCase):
         cwd = self.workdir()
         session_id = self.claude_record(name="w1", cwd=cwd)
         bundle_dir = self.bundle_dir(session_id, "c1")
-        hold_seconds = 4.0
-        launched = self.hold_lock(bundle_dir / ".ingest.lock", hold_seconds)
+        holder = self.hold_lock_until_released(bundle_dir / ".ingest.lock")
 
-        archive = subprocess.Popen(
-            [TX_BIN, "archive", "w1"],
-            env=self.tx_env(),
-            cwd=self.root,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        self.addCleanup(archive.kill)
+        archive = self.tx_popen(["archive", "w1"])
         # archive() saves ARCHIVED first, then the forced ingest blocks on the held lock.
         self.wait_until(lambda: self.records.load(session_id)["state"] == "archived")
         record = self.records.load(session_id)
         self.assertIsNone(record["chats"][0]["bundle_path"])
         record["name"] = "renamed"
         self.records.write(record)
-        self.assertLess(time.monotonic() - launched, hold_seconds)  # rewritten while blocked
+        self.assertIsNone(holder.poll())  # rewritten while the lock was still held
+        self.assertIsNone(archive.poll())  # … and archive was still blocked on it
+        self.release_lock(holder)
 
         out, err = archive.communicate(timeout=60)
         self.assertEqual(archive.returncode, 0, err)
@@ -430,6 +442,7 @@ class TestHist(TxCase):
             id=session_id,
             name="w1",
             cwd=cwd_a,
+            attached_to=(LOCATION,),
             chats=[
                 self.records.chat_ref(session_id=session_id, id="c1", cwd=cwd_a),
                 self.records.chat_ref(session_id=session_id, id="c2", cwd=cwd_b, role="rollover", how="rollover", chat_id="c1"),
