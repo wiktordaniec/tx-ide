@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -22,7 +23,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from txkit import TX_BIN, TxCase, expected_failure_on_python
+from txkit import TX_BIN, TxCase, expected_failure_on_python, python_reference_only
 
 SKIP = "--dangerously-skip-permissions"
 PERSONA = ["--model", "opus", "--effort", "high", "--no-chrome", "--append-system-prompt", "P"]
@@ -49,10 +50,16 @@ TRANSCRIPT = (
 ROLLOUT = '{"type":"session_meta","payload":{"id":"r1"}}\n{"type":"response_item"}\n'
 INSIDE_TMUX = "/tmp/txkit-nonexistent-socket,1,0"
 
-WATCH_ENV = {"TX_CHAT_OP_POLL_S": "0.05", "TX_CHAT_OP_GRACE_S": "0.2", "TX_CHAT_OP_TIMEOUT_S": "2"}
+# T-CHAT-15 timings (Q12 FIX, D11): the watcher's poll / grace / timeout via env. TIMEOUT is wide
+# enough that "≈GRACE" (GRACE + a poll + the finish itself, WATCH_SLACK) never touches it; leg (b)
+# uses the longer grace so the test's own finish provably lands inside the window.
 WATCH_POLL = 0.05
 WATCH_GRACE = 0.2
-WATCH_TIMEOUT = 2.0
+WATCH_LONG_GRACE = 1.0
+WATCH_TIMEOUT = 4.0
+WATCH_SLACK = 2.5
+WATCH_ENV = {"TX_CHAT_OP_POLL_S": str(WATCH_POLL), "TX_CHAT_OP_GRACE_S": str(WATCH_GRACE), "TX_CHAT_OP_TIMEOUT_S": str(WATCH_TIMEOUT)}
+WATCH_ENV_LONG_GRACE = {**WATCH_ENV, "TX_CHAT_OP_GRACE_S": str(WATCH_LONG_GRACE)}
 
 
 @dataclass
@@ -379,13 +386,22 @@ class TestChat(TxCase):
             self.assertEqual(result.code, 1)
             self.assertEqual(result.err, f"tx resume: '{name}' has no chat to resume — use `tx spawn` for a fresh session\n")
             self.assertEqual(self._record_ids(), before)
-        self._variant("r4", [("a", None), ("b", ended)])
-        before = self._record_ids()
-        result = self.tx(["resume", "r4"])
-        self.assertEqual(result.code, 0, result.err)
-        new = self._new_record(before)
-        dump = self.fakes.wait_dump("claude", new["id"])
-        self.assertEqual(dump["argv"][1:3], ["--resume", "a"])
+        selecting = {
+            "r3": ([("a", None), ("b", None)], "b"),
+            "r4": ([("a", None), ("b", ended)], "a"),
+            "r5": ([("a", ended), ("b", ended)], "b"),
+            "r6": ([("a", None), (None, None)], "a"),
+        }
+        for name, (shape, expected) in selecting.items():
+            self._variant(name, shape)
+            before = self._record_ids()
+            result = self.tx(["resume", name])
+            self.assertEqual(result.code, 0, result.err)
+            new = self._new_record(before)
+            dump = self.fakes.wait_dump("claude", new["id"])
+            self.assertEqual(dump["argv"][1:3], ["--resume", expected], name)
+            self.assertEqual(new["chats"][0]["id"], expected, name)
+            self.assertEqual(new["chats"][0]["origin"]["chat_id"], expected, name)
 
     # ----- T-CHAT-02 fork happy path --------------------------------------------------------
 
@@ -645,14 +661,7 @@ class TestChat(TxCase):
     def test_t_chat_08_finish_idempotent(self):
         source = self._source()
         op_id = self._craft_spec(source)
-        environment = self.tx_env()
-        racers = [
-            subprocess.Popen(
-                [TX_BIN, "_chat-op-finish", op_id], env=environment, cwd=self.root,
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            )
-            for _ in range(2)
-        ]
+        racers = [self.tx_popen(["_chat-op-finish", op_id]) for _ in range(2)]
         outputs = [racer.communicate(timeout=60) for racer in racers]
         self.assertEqual([racer.returncode for racer in racers], [0, 0], outputs)
         workers = self._named("w1-handover")
@@ -708,6 +717,34 @@ class TestChat(TxCase):
         retry = self.tx(["_chat-op-finish", op_id])
         self.assertEqual(retry.code, 1)
         self.assertEqual(self._named("w1-handover"), [])
+
+    @python_reference_only
+    def test_t_chat_09_parity_missing_worker_name_spawns_dash_2(self):
+        # Q39 (reference): `worker_name` defaults to "" and `next_name("")` yields `-2`.
+        source = self._source()
+        op_id = self._craft_spec(source, omit=("worker_name",))
+        result = self.tx(["_chat-op-finish", op_id])
+        self.assertEqual(result.code, 0, result.err)
+        workers = self._named("-2")
+        self.assertEqual(len(workers), 1)
+        self.fakes.wait_dump("claude", workers[0]["id"])
+        self.assertTrue((self.home.chat_ops_dir / op_id / "done").is_file())
+
+    @expected_failure_on_python
+    def test_t_chat_09_fixed_missing_worker_name_refused(self):
+        # Q39 FIX (folds into Q25): an empty worker name is refused, nothing is spawned.
+        source = self._source()
+        op_id = self._craft_spec(source, omit=("worker_name",))
+        before = self._record_ids()
+        result = self.tx(["_chat-op-finish", op_id])
+        self.assertEqual(result.code, 1)
+        self.assertNotIn("Traceback", result.err)
+        self.assertTrue(result.err.startswith("tx _chat-op-finish: "), result.err)
+        self.assertRegex(result.err, r"worker[ _]name")
+        self.assertEqual(self._named("-2"), [])
+        self.assertEqual(self._record_ids(), before)
+        self.assertEqual(self.fakes.dumps("claude"), [])
+        self.assertFalse((self.home.chat_ops_dir / op_id / "done").exists())
 
     # ----- T-CHAT-10 rollover pane resolution -----------------------------------------------
 
@@ -805,12 +842,14 @@ class TestChat(TxCase):
         op_id = self._only_op()
         spec = self._spec(op_id)
         self.assertEqual((spec["kind"], spec["artifact_path"], spec["self_catch_up"], spec["distiller_name"], spec["pane"]), ("rollover", "", True, "", pane))
+        released_at = time.monotonic()
         self._release(holder)
         seed = self._rollover_bundle_seed(source)
         dump = self._wait_respawn(source, seed)
         self.assertEqual(dump["env"]["TX_SESSION_ID"], source.id)
         self.assertEqual(self.tmux.display(source.id, "#{pane_id}"), pane)
         self.wait_until(lambda: not (self.home.chat_ops_dir / op_id).exists())
+        self.assertLessEqual(time.monotonic() - released_at, 5.0)  # the Then's bounded wait
         record = self._show(source.id)
         self.assertEqual(record["state"], "waiting")
         self.assertEqual(len(record["chats"]), 2)
@@ -955,6 +994,7 @@ class TestChat(TxCase):
 
     def _watched_handover(self, source: Source, *, worker: str = "w1-handover", artifact_path: str | None = None) -> tuple[str, dict, Path]:
         brief = self.home.history_dir / source.id / f"handover-{worker}.md"
+        brief.parent.mkdir(parents=True, exist_ok=True)
         op_id = self._craft_spec(
             source, artifact_path=str(brief) if artifact_path is None else artifact_path,
             worker_name=worker, distiller_name=f"{worker}-distill",
@@ -965,11 +1005,14 @@ class TestChat(TxCase):
         self.fakes.wait_dump("claude", distiller["id"])
         return op_id, distiller, brief
 
-    def _watch(self, op_id: str) -> subprocess.Popen:
-        return subprocess.Popen(
-            [TX_BIN, "_chat-op-watch", op_id], env=self.tx_env(WATCH_ENV), cwd=self.root,
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        )
+    def _watch(self, op_id: str, env: dict[str, str] = WATCH_ENV) -> subprocess.Popen:
+        return self.tx_popen(["_chat-op-watch", op_id], env=env)
+
+    def _assert_about_grace(self, elapsed: float, grace: float = WATCH_GRACE) -> None:
+        """`≈GRACE`: at least the grace window, and well short of the timeout path."""
+        self.assertGreaterEqual(elapsed, grace)
+        self.assertLess(elapsed, grace + WATCH_POLL + WATCH_SLACK)
+        self.assertLess(grace + WATCH_POLL + WATCH_SLACK, WATCH_TIMEOUT)
 
     def _assert_torn_down(self, op_id: str, distiller: dict, worker: str) -> None:
         ended = self._show(distiller["id"])
@@ -997,23 +1040,29 @@ class TestChat(TxCase):
 
     @expected_failure_on_python
     def test_t_chat_15_fixed_distiller_finishes_within_grace(self):
+        # (b) the "distiller" (the test) writes the artifact, then runs the finish itself inside the
+        # grace window — the long grace makes that ordering certain; `done` right after the test's
+        # finish proves it won the claim, so the watcher had nothing left to re-finish.
         source = self._source()
         op_id, distiller, brief = self._watched_handover(source)
-        watcher = self._watch(op_id)
+        watcher = self._watch(op_id, WATCH_ENV_LONG_GRACE)
         time.sleep(1.0)
         brief.write_text("# brief\n")
         time.sleep(0.1)
         finish = self.tx(["_chat-op-finish", op_id])
         self.assertEqual(finish.code, 0, finish.err)
         finished_at = time.monotonic()
+        self.assertTrue((self.home.chat_ops_dir / op_id / "done").is_file())
         _, err = watcher.communicate(timeout=30)
+        returned_after = time.monotonic() - finished_at
         self.assertEqual(watcher.returncode, 0, err)
-        self.assertLess(time.monotonic() - finished_at, WATCH_GRACE + WATCH_POLL + 1.0)
         self.assertEqual(len(self._named("w1-handover")), 1)
         self._assert_torn_down(op_id, distiller, "w1-handover")
+        self.assertLess(returned_after, WATCH_LONG_GRACE + WATCH_POLL + WATCH_SLACK)
 
     @expected_failure_on_python
     def test_t_chat_15_fixed_artifact_without_finish(self):
+        # (c) the artifact appears and nobody finishes: the watcher finishes ≈GRACE later.
         source = self._source()
         op_id, distiller, brief = self._watched_handover(source)
         watcher = self._watch(op_id)
@@ -1021,31 +1070,63 @@ class TestChat(TxCase):
         brief.write_text("# brief\n")
         written_at = time.monotonic()
         _, err = watcher.communicate(timeout=30)
+        elapsed = time.monotonic() - written_at
         self.assertEqual(watcher.returncode, 0, err)
-        self.assertLess(time.monotonic() - written_at, WATCH_TIMEOUT)
         workers = self._named("w1-handover")
         self.assertEqual(len(workers), 1)
         self.assertEqual(self.fakes.wait_dump("claude", workers[0]["id"])["argv"][-1], self._brief_seed(source, str(brief)))
         self._assert_torn_down(op_id, distiller, "w1-handover")
+        self._assert_about_grace(elapsed)
 
     @expected_failure_on_python
     def test_t_chat_15_fixed_edges_distiller_gone_and_no_artifact(self):
         source = self._source()
-        op_id, distiller, _ = self._watched_handover(source, worker="w1-a")
+        op_id, distiller, brief = self._watched_handover(source, worker="w1-a")
         kill = self.tx(["kill", distiller["name"]])
         self.assertEqual(kill.code, 0, kill.err)
+        brief.write_text("# brief\n")
         result = self.tx(["_chat-op-watch", op_id], env=WATCH_ENV)
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(len(self._named("w1-a")), 1)
         self.assertFalse((self.home.chat_ops_dir / op_id).exists())
+        # spec `artifact_path:""` → no artifact wait: finish after GRACE, not TIMEOUT
         op_id, distiller, _ = self._watched_handover(source, worker="w1-b", artifact_path="")
         start = time.monotonic()
         result = self.tx(["_chat-op-watch", op_id], env=WATCH_ENV)
         elapsed = time.monotonic() - start
         self.assertEqual(result.code, 0, result.err)
-        self.assertLess(elapsed, WATCH_TIMEOUT)
         self.assertEqual(len(self._named("w1-b")), 1)
         self._assert_torn_down(op_id, distiller, "w1-b")
+        self._assert_about_grace(elapsed)
+
+    @expected_failure_on_python
+    def test_t_chat_15_fixed_non_linked_distiller_cwd_is_left_untouched(self):
+        # Teardown removes only a LINKED worktree; a distiller whose cwd is a plain directory keeps
+        # it (the record is still killed and the spec dir removed).
+        source = self._source()
+        plain = self.root / "plain-distill-cwd"
+        plain.mkdir()
+        (plain / "keep.txt").write_text("keep\n")
+        distiller_id = self.records.llm(
+            name="w1-plain-distill", state="working", cwd=str(plain), tags=("temporary", "handover"),
+        )
+        self.live(distiller_id)
+        brief = self.home.history_dir / source.id / "handover-w1-plain.md"
+        brief.parent.mkdir(parents=True, exist_ok=True)
+        op_id = self._craft_spec(
+            source, artifact_path=str(brief), worker_name="w1-plain", distiller_name="w1-plain-distill",
+        )
+        brief.write_text("# brief\n")
+        result = self.tx(["_chat-op-watch", op_id], env=WATCH_ENV)
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(len(self._named("w1-plain")), 1)
+        ended = self._show(distiller_id)
+        self.assertEqual(ended["state"], "exited")
+        self.assertIsNotNone(ended["ended_at"])
+        self.assertNotIn(distiller_id, self.tmux.sessions())
+        self.assertFalse((self.home.chat_ops_dir / op_id).exists())
+        self.assertTrue(plain.is_dir())
+        self.assertEqual((plain / "keep.txt").read_text(), "keep\n")
 
     # ----- T-CHAT-16 detached finish survives its caller's pane -----------------------------
 
@@ -1070,7 +1151,10 @@ class TestChat(TxCase):
         record["chats"][1].pop("started_at")
         self.assertEqual(record["chats"][1], self._pending("rollover", source.cwd, source.id, "c1"))
         self.assertEqual(self._log(1), [("rollover-finish", "w1 (chat pending)")])
-        self.assertNotIn("Rollover scheduled", self._screen(pane, scrollback=True))
+        scrollback = self._screen(pane, scrollback=True)
+        self.assertNotIn("Rollover scheduled", scrollback)
+        self.assertNotIn("Traceback", scrollback)
+        self.assertEqual([line for line in scrollback.splitlines() if line.startswith("tx ")], [])
 
     @expected_failure_on_python
     def test_t_chat_16_fixed_handover_watchdog_outlives_killed_pane(self):

@@ -20,6 +20,12 @@ THREE_LINES = '{"type":"user","n":1}\n{"type":"assistant","n":2}\n{"type":"user"
 # A far-past mtime for "no save happened across a >1 s gap" checks (backdated, never slept).
 OLD = 1000.0
 YIELD_SUBTYPES = ("idle_prompt", "permission_prompt", "elicitation_dialog")
+# A crafted `attached_to` entry (the frozen `Location` shape): seeded so a `[]` after the hook
+# proves a refresh happened rather than the fixture's default.
+LOCATION = {"host": "Views", "window_index": "1", "window_name": "work", "pane_id": "%99", "pane_index": "0"}
+# T-HOOK-07's latency edge is the area's one wall-clock bound; the spec pins 1 s. A slow CI host
+# may widen it (never the suite's default).
+HOOK_LATENCY_BOUND_S = float(os.environ.get("TXKIT_HOOK_LATENCY_S", "1.0"))
 
 
 class TestHook(TxCase):
@@ -99,6 +105,8 @@ class TestHook(TxCase):
             self.hook("prompt-submit", "no-such-id", PAYLOAD_C1),  # unknown id
             self.tx(["hook"]),  # no event, no id
             self.tx(["hook"], env={"TX_SESSION_ID": session_id}),  # no event, our id
+            self.tx(["hook"], stdin="garbage"),  # no event, garbage stdin, no id
+            self.tx(["hook"], env={"TX_SESSION_ID": session_id}, stdin="garbage"),  # no event, garbage, our id
             self.hook("bogus", session_id, PAYLOAD_C1),  # unknown event
             self.hook("bogus", session_id, "garbage"),  # unknown event + garbage stdin
             self.tx(["hook", "prompt-submit"], stdin="garbage"),  # garbage stdin, id-less
@@ -155,7 +163,8 @@ class TestHook(TxCase):
 
     def test_t_hook_05_prompt_submit_arms_turn_clock(self):
         session_id = self.records.llm(
-            name="r5", state="idle", created_at=OLD, last_activity=OLD, turn_started_at=OLD
+            name="r5", state="idle", created_at=OLD, last_activity=OLD, turn_started_at=OLD,
+            attached_to=(LOCATION,),
         )
         t0 = time.time()
         result = self.hook("prompt-submit", session_id, "{}")
@@ -216,8 +225,8 @@ class TestHook(TxCase):
         self.assertEqual(self.records.load(idle)["state"], "waiting")
         self.assertEqual(len(self.state_lines("r7i")), 1)
         bundle = self.bundle_transcript(idle, "c2")
-        self.wait_until(bundle.exists, timeout=5)
-        self.assertEqual(bundle.read_text(), THREE_LINES)
+        # the first copy lands straight at the destination path — wait on content, not existence
+        self.wait_until(lambda: bundle.exists() and bundle.read_text() == THREE_LINES, timeout=5)
 
     def test_t_hook_07_hook_returns_before_large_copy(self):
         # Edge: hook latency — a 50 MB transcript, `tx hook stop` returns in < 1 s, the copy lands later.
@@ -231,7 +240,7 @@ class TestHook(TxCase):
         result = self.hook("stop", session_id)
         elapsed = time.monotonic() - started
         self.assert_ok_silent(result)
-        self.assertLess(elapsed, 1.0)
+        self.assertLess(elapsed, HOOK_LATENCY_BOUND_S)
         bundle = self.bundle_transcript(session_id)
         self.wait_until(
             lambda: bundle.exists() and bundle.stat().st_size == source.stat().st_size, timeout=30
@@ -248,8 +257,7 @@ class TestHook(TxCase):
         tail = self.log_tail()[0]
         self.assertEqual((tail["type"], tail["msg"]), ("state", "r8 → idle"))
         bundle = self.bundle_transcript(session_id)
-        self.wait_until(bundle.exists, timeout=5)
-        self.assertEqual(bundle.read_text(), THREE_LINES)
+        self.wait_until(lambda: bundle.exists() and bundle.read_text() == THREE_LINES, timeout=5)
         # Edge: already IDLE → no `state` line, record mtime unchanged, no ingest.
         idle = self.captured_record("idle", name="r8i", chat_id="c2")
         path = self.records.path(idle)
@@ -294,19 +302,25 @@ class TestHook(TxCase):
                 self.assertEqual(path.stat().st_mtime_ns, mtime)
 
     def test_t_hook_09_refired_idle_prompt_no_second_ingest(self):
+        # rev 5: an unchanged source cannot reveal a second ingest (equal sizes short-circuit, and
+        # the first copy carries the source mtime), so the source GROWS before the re-fire and the
+        # bundle's SIZE must stay put — a port that ingests on every yield grows it.
         session_id = self.captured_record("working", name="refire")
+        source = self.home.claude_transcript_path(self.workdir(), "c1")
         payload = json.dumps({"notification_type": "idle_prompt"})
         self.assert_ok_silent(self.hook("notification", session_id, payload))
         bundle = self.bundle_transcript(session_id)
-        self.wait_until(bundle.exists, timeout=5)
+        self.wait_until(lambda: bundle.exists() and bundle.read_bytes() == source.read_bytes(), timeout=5)
         self.wait_until(
             lambda: self.records.load(session_id)["chats"][0]["bundle_path"] is not None, timeout=5
         )
-        bundle_mtime = bundle.stat().st_mtime_ns
+        size_before = bundle.stat().st_size
+        with source.open("a") as handle:
+            handle.write('{"type":"assistant","n":4}\n')
         self.assert_ok_silent(self.hook("notification", session_id, payload))
         self.assertEqual(len(self.state_lines("refire")), 1)
         self.assertEqual(self.records.load(session_id)["state"], "waiting")
-        self.assertTrue(self.holds_for(lambda: bundle.stat().st_mtime_ns == bundle_mtime, 2.0))
+        self.assertTrue(self.holds_for(lambda: bundle.stat().st_size == size_before, 2.0))
 
     # ----- T-HOOK-10 … 12: the id-less arms + argv shape ------------------------------------
 
