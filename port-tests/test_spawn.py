@@ -18,6 +18,7 @@ import re
 import time
 import uuid
 
+from test_ro import path_without_binary
 from txkit import FakeBins, TxCase, expected_failure_on_python
 
 WORKER_CMD = "claude --effort high --no-chrome --dangerously-skip-permissions"
@@ -99,7 +100,9 @@ class TestSpawn(TxCase):
                 self.assertEqual(record["engine"], engine, command)
                 self.assertRegex(record["cwd"], _worktree_pattern(self, name))
         worktrees_before = self.git.worktrees()
-        for name, command in (("e1", "claude-foo"), ("e2", "gemini")):
+        # Non-hex names: with ~10 uuid sessions live, `e1`/`e2` could prefix-match another
+        # session's uuid through `tx show` on the reference (Q27; see the kit's Flake rules).
+        for name, command in (("ex1", "claude-foo"), ("ex2", "gemini")):
             result = self.tx(["spawn", name, "--tag", "t", "--cwd", repo, "--cmd", command])
             self.assertEqual(result.code, 0, result.err)
             record = self._show(name)
@@ -475,15 +478,19 @@ class TestSpawn(TxCase):
     def test_t_spawn_16_bwrap_absent_refused(self):
         repo = str(self.git.path)
         self.fakes.remove("bwrap")
-        path = os.pathsep.join([str(self.tmux.bin_dir), str(self.fakes.bin_dir), str(self.fakes.helpers_dir), "/usr/bin", "/bin"])
+        # A PATH with NO bwrap anywhere (a hand-built one that lists `/usr/bin` still finds the
+        # apt-installed `/usr/bin/bwrap`; see `path_without_binary`).
+        path = path_without_binary(self, "bwrap")
         result = self.tx(["spawn", "ro", "--tag", "t", "--cwd", repo, "--engine", "claude", "--read-only"], env={"PATH": path})
-        self.assertEqual(result.code, 1)
+        self.assertEqual((result.code, result.out), (1, ""))
         self.assertEqual(
             result.err,
             "tx spawn: could not enforce read-only process sandbox: Linux read-only sessions require bubblewrap (bwrap)\n",
         )
         self.assertEqual(self.git.worktrees(), [repo])
         self.assertEqual(list(self.home.sessions_dir.iterdir()), [])
+        self.assertEqual(self.tmux.sessions(), [])
+        self.assertEqual(self.log_lines(), [])
 
     # ----- T-SPAWN-18 ------------------------------------------------------------------------
 
@@ -499,18 +506,26 @@ class TestSpawn(TxCase):
             (["spawn", "n", "--tag", "t", "--cmd", "zsh", "--read-only"], "--read-only requires an engine-built launch; it cannot enforce --cmd"),
             (["spawn", "n", "--tag", "t", "--cmd", "zsh", "--chrome"], "--chrome requires an engine-built launch; put the engine's own flag in --cmd"),
             (["spawn", "n", "--tag", "t", "--read-only"], "--read-only requires an agent launch"),
-            (["spawn", "n", "--tag", "t", "--env", "NOEQ"], "--env expects KEY=VALUE, got 'NOEQ'"),
-            (["spawn", "n", "--tag", "t", "--group", ""], "a group cannot be empty"),
+            # `--env` / `--group` are argparse `type=` converters, so their lines carry argparse's
+            # `argument --<flag>: ` prefix in front of the spec's message.
+            (["spawn", "n", "--tag", "t", "--env", "NOEQ"], "argument --env: --env expects KEY=VALUE, got 'NOEQ'"),
+            (["spawn", "n", "--tag", "t", "--group", ""], "argument --group: a group cannot be empty"),
             (["spawn", "n", "--tag", "t", "--effort", "6"], "argument --effort: invalid choice"),
         ]
         for argv, message in expectations:
             result = self.tx(argv)
             self.assertEqual(result.code, 2, argv)
             self.assertTrue(result.err.startswith("usage: tx spawn"), result.err)
-            self.assertIn(f"tx spawn: error: ", result.err)
-            self.assertIn(message, result.err)
+            if argv[-2:] == ["--effort", "6"]:
+                # argparse's own `invalid choice: '6' (choose from …)` line — the choice list is
+                # the engine registry's, not the spec's; the prefix is what the case pins.
+                self.assertRegex(result.err, r"\ntx spawn: error: argument --effort: invalid choice: '6' \(choose from .*\)\n$")
+            else:
+                self.assertTrue(result.err.endswith(f"\ntx spawn: error: {message}\n"), result.err)
             self.assertEqual(result.out, "")
         self.assertEqual(list(self.home.sessions_dir.iterdir()), [])
+        self.assertEqual(self.tmux.sessions(), [])
+        self.assertEqual(self.log_lines(), [])
 
     # ----- T-SPAWN-19 ------------------------------------------------------------------------
 
@@ -551,12 +566,14 @@ class TestSpawn(TxCase):
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(self._show("ex2")["cwd"], workdir)
 
-        result = self.tx(["spawn", "m", "--tag", "t", "--cwd", repo, "--cmd", "mytool"])
+        worktrees_before = self.git.worktrees()
+        result = self.tx(["spawn", "mx", "--tag", "t", "--cwd", repo, "--cmd", "mytool"])
         self.assertEqual(result.code, 0, result.err)
-        tool = self._show("m")
+        tool = self._show("mx")
         self.assertNotIn("engine", tool)
         self.assertEqual((tool["role"], tool["cwd"]), ("other", repo))
-        self.assertNotIn(tool["cwd"], self.git.worktrees()[1:])
+        self.assertEqual(self.git.worktrees(), worktrees_before)  # a direct spawn adds no worktree
+        self.assertEqual(self.fakes.wait_dump("mytool", tool["id"])["argv"][1:], [])
 
     @expected_failure_on_python
     def test_t_spawn_19_fixed_outside_tmux_with_live_server_uses_caller_cwd(self):
@@ -674,19 +691,29 @@ class TestSpawnCodexHooksMissing(TxCase):
     # ----- T-SPAWN-17 ------------------------------------------------------------------------
 
     def test_t_spawn_17_worker_name_resolution_and_worktree_removal(self):
+        """Spec rev 5 order: live `w` (+ the `w-2` the first leg creates), THEN the refused codex
+        spawn — whose own pre-created worktree is the only one removed (`spawn_worker` removes
+        `worktree_directory`), so the listing keeps main + `r--w` + `r--w-2` and has no `r--c`."""
         repo = str(self.git.path)
-        result = self.tx(["spawn", "c", "--tag", "t", "--cwd", repo, "--cmd", "codex"])
-        self.assertEqual(result.code, 1)
-        self.assertTrue(result.err.startswith("tx spawn: codex hooks are not installed in "), result.err)
-        self.assertEqual(self.git.worktrees(), [repo])
-
         first = self.tx(["spawn", "w", "--tag", "t", "--cwd", repo, "--engine", "claude"])
         self.assertEqual(first.code, 0, first.err)
+        worker = self._show("w")
         second = self.tx(["spawn", "w", "--tag", "t", "--cwd", repo, "--engine", "claude"])
         self.assertEqual(second.code, 0, second.err)
         bumped = self._show("w-2")
         self.assertRegex(bumped["cwd"], _worktree_pattern(self, "w-2"))
         self.assertEqual(second.out, f"Spawned 'w-2' (cwd={bumped['cwd']}, tag=t)\n")
+        self.assertEqual(self.git.worktrees(), [repo, worker["cwd"], bumped["cwd"]])
+        files_before = sorted(self.home.sessions_dir.iterdir())
+        log_before = self.log_lines()
+
+        result = self.tx(["spawn", "c", "--tag", "t", "--cwd", repo, "--cmd", "codex"])
+        self.assertEqual((result.code, result.out), (1, ""))
+        self.assertTrue(result.err.startswith("tx spawn: codex hooks are not installed in "), result.err)
+        self.assertEqual(self.git.worktrees(), [repo, worker["cwd"], bumped["cwd"]])
+        self.assertFalse((self.home.worktrees_dir / os.path.basename(os.path.dirname(worker["cwd"])) / "repo--c").exists())
+        self.assertEqual(sorted(self.home.sessions_dir.iterdir()), files_before)
+        self.assertEqual(self.log_lines(), log_before)
 
 
 class TestSpawnCustomAgents(TxCase):

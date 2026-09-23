@@ -20,8 +20,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 
-from txkit import REAL_TMUX, TxCase, expected_failure_on_python
+from txkit import REAL_TMUX, TxCase, expected_failure_on_python, python_reference_only, tmux_version
 
 NOT_FOUND = "tx kill: session '{name}' not found (no live @tx_id, no store record)\n"
 SET_OPTION_DEAD = re.compile(
@@ -117,14 +118,25 @@ class TestTmux(TxCase):
         self.assertEqual(environment["COLORTERM"], "truecolor")
 
     def test_t_tmux_01_nonexistent_cwd_falls_back_to_home(self):
-        """Q21 PARITY: tmux 3.4 tolerates a bad `-c` (the pane starts in the server's `$HOME`), so
-        the argv-level TmuxError never fires. Version-sensitive: a tmux that rejects the cwd would
-        surface `tx spawn: tmux new-session … failed` instead."""
+        """Q21 PARITY, gated on the tmux version (spec): tmux 3.4 tolerates a bad `-c` (the pane
+        starts in the server's `$HOME`), so the argv-level TmuxError never fires — verified on 3.4
+        only. On a newer tmux the tolerance is unverified (the changelog is silent), so the leg
+        accepts either documented outcome, each asserted in full: the fallback, or the refusal
+        surfacing as `tx spawn: tmux new-session … failed: …` with nothing persisted."""
         result = self.tx(["spawn", "s1", "--tag", "t", "--cwd", "/nope", "--cmd", "sleep 30"])
-        self.assertEqual((result.code, result.out), (0, "Spawned 's1' (cwd=/nope, tag=t)\n"))
-        record = json.loads(self.tx(["show", "s1"]).out)
-        self.assertEqual(record["cwd"], "/nope")
-        self.assertEqual(self.tmux.display(record["id"], "#{pane_current_path}"), str(self.home.user_home))
+        tolerant = tmux_version() < (3, 5) or result.code == 0
+        if tolerant:
+            self.assertEqual((result.code, result.out, result.err), (0, "Spawned 's1' (cwd=/nope, tag=t)\n", ""))
+            record = json.loads(self.tx(["show", "s1"]).out)
+            self.assertEqual(record["cwd"], "/nope")
+            self.assertEqual(self.tmux.display(record["id"], "#{pane_current_path}"), str(self.home.user_home))
+            self.assertEqual([line["msg"] for line in self.log_lines()], ["s1 [other] /nope"])
+            return
+        self.assertEqual((result.code, result.out), (1, ""))
+        self.assertRegex(result.err, r"^tx spawn: tmux new-session .* failed: .+\n$")
+        self.assertEqual(list(self.home.sessions_dir.iterdir()), [])
+        self.assertEqual(self.log_lines(), [])
+        self.assertEqual(self.tmux.sessions(), [])
 
     def test_t_tmux_01_command_exits_before_tx_id_stamp(self):
         """With `s1` live the server survives the dead pane and tmux reports `no such session`;
@@ -153,13 +165,17 @@ class TestTmux(TxCase):
         self.assertEqual([line["type"] for line in self.log_lines()], ["spawn-view", "spawn-view"])
 
     def test_t_tmux_02_no_server(self):
-        self.assertEqual(self.tmux.sessions(), [])
+        # The kit's server is always up (`exit-empty off`): take it down so "no server" is real.
+        self.tmux.run("kill-server", check=True)
+        self.assertNotEqual(self.tmux.run("list-sessions").returncode, 0)
         killed = self.tx(["kill", "work"])
         self.assertEqual((killed.code, killed.out, killed.err), (1, "", NOT_FOUND.format(name="work")))
         self.assertNotIn("Traceback", killed.err)
+        self.assertEqual(self.log_lines(), [])
         view = self.tx(["spawn-view", "work", "--cwd", str(self.workdir)])
-        self.assertEqual(view.code, 0, view.err)
+        self.assertEqual((view.code, view.out, view.err), (0, f"Spawned view 'work' (cwd={self.workdir})\n", ""))
         self.assertEqual(self.tmux.sessions(), ["work"])
+        self.assertEqual([line["type"] for line in self.log_lines()], ["spawn-view"])
 
     # ----- T-TMUX-03 kill-session quiet; no tmux rename ----------------------------------------
 
@@ -399,7 +415,9 @@ class TestTmux(TxCase):
     def test_t_tmux_09_pane_path_not_gated(self):
         elsewhere = self.root / "elsewhere"
         elsewhere.mkdir()
-        # outside tmux with NO server: the caller's cwd
+        # outside tmux with NO server (the kit's is taken down first): the caller's cwd
+        self.tmux.run("kill-server", check=True)
+        self.assertNotEqual(self.tmux.run("list-sessions").returncode, 0)
         no_server = self.tx(["spawn", "n0", "--tag", "t", "--cmd", "sleep 30"], cwd=elsewhere)
         self.assertEqual(no_server.code, 0, no_server.err)
         self.assertEqual(json.loads(self.tx(["show", "n0"]).out)["cwd"], str(elsewhere))
@@ -459,10 +477,12 @@ class TestTmux(TxCase):
         self._view("Views")
         self._view("Alt")
         record = self.spawn_process("U", cwd=self.workdir)
-        self.tmux.run("new-window", "-t", "Views:10", check=True)
-        self.tmux.run("split-window", "-t", "Views:10", check=True)
-        self.tmux.run("split-window", "-t", "Views:10", check=True)
-        self.tmux.run("new-window", "-t", "Views:2", check=True)
+        # Kit panes (non-login bash): a command-less split's login shell could reorder PATH ahead
+        # of the wrapper and aim the nested `TMUX= tmux attach` at the operator's server (D15).
+        self.tmux.new_window("Views:10")
+        self.tmux.split_window("Views:10")
+        self.tmux.split_window("Views:10")
+        self.tmux.new_window("Views:2")
         self.tmux.run("rename-window", "-t", "Views:10", "w10", check=True)
         self.tmux.run("rename-window", "-t", "Views:2", "w2", check=True)
         self.tmux.run("rename-window", "-t", "Alt:0", "alt0", check=True)
@@ -489,10 +509,10 @@ class TestTmux(TxCase):
         self._view("Views")
         self._view("Alt")
         record = self.spawn_process("U", cwd=self.workdir)
-        self.tmux.run("split-window", "-t", "Views:0", check=True)
+        self.tmux.split_window("Views:0")
         self._nest(self.tmux.pane_id("Views:0.1"), record["id"])
         self._nest(self.tmux.pane_id("Alt:0.0"), record["id"])
-        self.tmux.run("new-window", "-t", "Views:1", check=True)
+        self.tmux.new_window("Views:1")
         return record
 
     def test_t_tmux_12_jump_prefers_current_view(self):
@@ -507,8 +527,7 @@ class TestTmux(TxCase):
 
     def test_t_tmux_12_jump_from_other_host_takes_first_sorted(self):
         record = self._nested_in_views_and_alt()
-        self.tmux.run("new-window", "-t", "Alt:1", check=True)
-        picker_pane = self.tmux.pane_id("Alt:1")
+        picker_pane = self.tmux.new_window("Alt:1")
         self.assertEqual(self.tmux.display("Alt", "#{window_index}.#{pane_index}"), "1.0")
         _fzf_accepts(self, "U", record["id"])
         result = self.run_in_pane(picker_pane, "tx attach --jump -f U")
@@ -519,13 +538,12 @@ class TestTmux(TxCase):
     def test_t_tmux_12_jump_remote_session_pane_fallback(self):
         self._view("Views")
         record = self.spawn_process("U", cwd=self.workdir)
-        self.tmux.run("new-window", "-t", "Views:1", check=True)
+        self.tmux.new_window("Views:1")
         for _ in range(3):
-            self.tmux.run("split-window", "-t", "Views:1", check=True)
+            self.tmux.split_window("Views:1")
         remote_pane = self.tmux.pane_id("Views:1.3")
         self.tmux.run("set-option", "-p", "-t", remote_pane, "@remote-session", record["id"], check=True)
-        self.tmux.run("new-window", "-t", "Views:2", check=True)
-        picker_pane = self.tmux.pane_id("Views:2")
+        picker_pane = self.tmux.new_window("Views:2")
         _fzf_accepts(self, "U", record["id"])
         result = self.run_in_pane(picker_pane, "tx attach --jump -f U")
         self.assertEqual((result.code, result.err), (0, ""))
@@ -546,8 +564,7 @@ class TestTmux(TxCase):
         nested_pane = self._view("Views")
         record = self.spawn_process("U", cwd=self.workdir)
         self._nest(nested_pane, record["id"])
-        self.tmux.run("split-window", "-t", "Views:0", check=True)
-        plain_pane = self.tmux.pane_id("Views:0.1")
+        plain_pane = self.tmux.split_window("Views:0")
         nested = self.tx(["focus-envelope", nested_pane])
         self.assertIn(f"inner-session-name='{record['id']}'", nested.out)
         plain = self.tx(["focus-envelope", plain_pane])
@@ -594,9 +611,12 @@ class TestTmux(TxCase):
             f"inner-remote='1' inner-session-name='host1' session-kind='view'/>"
         )
 
+    @python_reference_only
     def test_t_tmux_15_parity_remote_session_read_at_session_scope(self):
-        """The reference reads `@remote-session` without `-p`, so the host SESSION's option drives
-        the `inner-remote` shape and the pane-scoped stamp of `tx attach --host` is not seen."""
+        """Q30 parity twin (D17): the reference reads `@remote-session` without `-p`, so the host
+        SESSION's option drives the `inner-remote` shape and the pane-scoped stamp of
+        `tx attach --host` is not seen. A Q30-fixed port reads pane scope only (rev 5), so this leg
+        and `…_15_fixed_…` are mutually exclusive — reference-only."""
         pane, record = self._titled_nested_pane()
         self.tmux.run("set-option", "-p", "-t", pane, "@remote-session", "host1", check=True)
         pane_scoped = self.tx(["focus-envelope", pane])
@@ -632,15 +652,15 @@ class TestTmux(TxCase):
 
     def test_t_tmux_16_xml_escaping(self):
         first = self._view("Views")
-        self.tmux.run("split-window", "-t", "Views:0", check=True)
-        second = self.tmux.pane_id("Views:0.1")
+        second = self.tmux.split_window("Views:0")
         self.tmux.run("select-pane", "-t", first, "-T", "it's <b>&x", check=True)
         self.tmux.run("select-pane", "-t", second, "-T", 'a"b', check=True)
         escaped = self.tx(["focus-envelope", first])
-        self.assertEqual(escaped.code, 0, escaped.err)
+        self.assertEqual((escaped.code, escaped.err), (0, ""))
         self.assertIn("pane-title='it&apos;s &lt;b&gt;&amp;x'", escaped.out)
         self.assertTrue(escaped.raw_out.endswith("/>"))
         quoted = self.tx(["focus-envelope", second])
+        self.assertEqual((quoted.code, quoted.err), (0, ""))
         self.assertIn("pane-title='a\"b'", quoted.out)
         self.assertTrue(quoted.raw_out.endswith("/>"))
         gone = self.tx(["focus-envelope", "%gone"])
@@ -653,13 +673,18 @@ class TestTmux(TxCase):
         record = self.spawn_process("U", cwd=self.workdir)
         argv_dump = self.root / "attach-argv"
         tmux_dump = self.root / "attach-tmux"
-        (self.tmux.bin_dir / "tmux").write_text(
+        # A recording `tmux` AHEAD of the kit wrapper (never overwriting it): `attach` is recorded
+        # and refused with 3, anything else is handed to the kit wrapper (still the private socket).
+        recorder_dir = self.root / "attach-recorder"
+        recorder_dir.mkdir()
+        (recorder_dir / "tmux").write_text(
             "#!/bin/sh\n"
             f'if [ "$1" = attach ]; then printf \'%s\\n\' "$@" >{argv_dump}; printf \'%s\' "${{TMUX-<unset>}}" >{tmux_dump}; exit 3; fi\n'
-            f'exec "{REAL_TMUX}" -L "{self.tmux.socket}" -f /dev/null "$@"\n'
+            f'exec "{self.tmux.bin_dir / "tmux"}" "$@"\n'
         )
+        (recorder_dir / "tmux").chmod(0o755)
         _fzf_accepts(self, "U", record["id"])
-        picker = self.tx_pty(["attach", "-f", "U"])
+        picker = self.tx_pty(["attach", "-f", "U"], env={"PATH": f"{recorder_dir}{os.pathsep}{self.env()['PATH']}"})
         self.assertEqual(picker.wait(), 0, picker.output)
         self.assertEqual(argv_dump.read_text(), f"attach\n-t\n{record['id']}\n")
         self.assertEqual(tmux_dump.read_text(), "<unset>")
@@ -673,8 +698,15 @@ class TestTmux(TxCase):
         client = self.attach_client("Views")
         old_pid = int(self.tmux.display(pane, "#{pane_pid}"))
         _fzf_accepts(self, "U", record["id"])
-        popup = self.tmux.run("display-popup", "-E", "-c", client.tty, "-t", "Views", "tx attach -f U")
-        self.assertEqual(popup.returncode, 0, popup.stderr)
+        # `display-popup -E` blocks the invoking tmux until the popup closes: run it detached with
+        # a bounded wait, so a port that hangs in the picker fails the case instead of the suite.
+        popup = subprocess.Popen(
+            [REAL_TMUX, "-L", self.tmux.socket, "-f", "/dev/null", "display-popup", "-E", "-c", client.tty,
+             "-t", "Views", "tx attach -f U"],
+            env=self.env(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(popup.kill)
+        self.assertEqual(popup.wait(timeout=15), 0)
         self.wait_until(lambda: int(self.tmux.display(pane, "#{pane_pid}")) != old_pid)
         self.assertEqual(
             _start_command(self, pane),
@@ -713,8 +745,7 @@ class TestTmux(TxCase):
         pane = self._view("Views")
         record = self.spawn_process("U", cwd=self.workdir)
         self._nest(pane, record["id"])
-        self.tmux.run("new-window", "-t", "Views:1", check=True)
-        picker_pane = self.tmux.pane_id("Views:1")
+        picker_pane = self.tmux.new_window("Views:1")
         self.assertEqual(self.tmux.display("Views", "#{window_index}"), "1")
         _fzf_accepts(self, "U", record["id"])
         result = self.run_in_pane(picker_pane, "tx attach --jump -f U")
@@ -732,14 +763,31 @@ class TestTmux(TxCase):
         self.assertEqual(self.tmux.clients(), [])
 
     def test_t_tmux_19_start_switch_client_failure_surfaces(self):
+        """`tx start` warms the assistant through `bin/tx-assistant --warm`, which would spawn a
+        worker with `--cwd <its own checkout>` — a worktree of the REAL repo. Two guards: the
+        pre-seeded live `tx-assistant` record (the reference resolves the helper repo-relative and
+        skips the warm-up when the record is live), and an inert `tx-assistant` first on PATH for a
+        port that resolves the helper through PATH. Both leave the stdout the spec states."""
         process = self.spawn_process("X", cmd="bash", cwd=self.workdir)
         assistant = self.records.llm(name="tx-assistant", tags=("tx-system",))
         self.tmux.new_session(assistant, "sleep 300", tx_id=assistant)
+        stub_dir = self.root / "assistant-stub"
+        stub_dir.mkdir()
+        stub = stub_dir / "tx-assistant"
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(0o755)
+        self.tmux.type_line(process["id"], f"export PATH={stub_dir}{os.pathsep}$PATH")
         result = self.run_in_pane(process["id"], "tx start")
         self.assertEqual(result.code, 1)
         self.assertEqual(result.out, "tx-assistant already running.\nViews session created.\n")
         self.assertRegex(result.err, r"^tx start: tmux switch-client -t Views failed: .+\n$")
         self.assertTrue(self.tmux.has_session("Views"))
+        self.assertEqual(self.tmux.option("Views", "@tx_view"), "1")
+        self.assertEqual(
+            sorted(entry.name for entry in self.home.sessions_dir.iterdir()),
+            sorted([f"{process['id']}.json", f"{assistant}.json"]),
+        )
+        self.assertEqual([line["type"] for line in self.log_lines()], ["spawn", "spawn-view"])
 
     # ----- T-TMUX-20 command-size threshold ----------------------------------------------------
 

@@ -52,9 +52,24 @@ def ro_bind_pairs(argv: list[str]) -> list[tuple[str, str]]:
     return [(argv[index + 1], argv[index + 2]) for index, token in enumerate(argv) if token == "--ro-bind"]
 
 
-def path_without(path: str, binary: str) -> str:
-    """`path` minus every directory that carries `binary` (so `shutil.which` cannot find it)."""
-    return os.pathsep.join(entry for entry in path.split(os.pathsep) if not (Path(entry) / binary).exists())
+def path_without_binary(case: TxCase, binary: str) -> str:
+    """The kit's PATH (wrapper, fakes, helper copies first) with the inherited tail replaced by ONE
+    symlink dir holding every executable of the inherited PATH except `binary` — first hit wins,
+    as PATH lookup would. `shutil.which(binary)` then fails wherever the host keeps it
+    (`/usr/bin/bwrap` on an apt host, linuxbrew, `/usr/bin/sandbox-exec`) while bash, git, python
+    and everything else stay reachable; dropping whole PATH dirs would take those with it. (Kit
+    candidate — T-SPAWN-16 imports it from here.)"""
+    tools = case.root / f"path-without-{binary}"
+    tools.mkdir()
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory or not os.path.isdir(directory):
+            continue
+        for entry in os.scandir(directory):
+            link = tools / entry.name
+            if entry.name == binary or os.path.lexists(link) or entry.is_dir() or not os.access(entry.path, os.X_OK):
+                continue
+            link.symlink_to(entry.path)
+    return os.pathsep.join([str(case.tmux.bin_dir), str(case.fakes.bin_dir), str(case.fakes.helpers_dir), str(tools)])
 
 
 class TestRo(TxCase):
@@ -152,7 +167,7 @@ class TestRo(TxCase):
     def test_t_ro_02_no_bwrap_refused_and_worktree_removed(self):
         checkout = GitFixture(self.root, name="r")
         self.fakes.remove("bwrap")
-        result = self.spawn_read_only("w", checkout.path, env={"PATH": path_without(self.env()["PATH"], "bwrap")})
+        result = self.spawn_read_only("w", checkout.path, env={"PATH": path_without_binary(self, "bwrap")})
         self.assert_refused_and_cleaned(result, NO_BWRAP, checkout)
 
     # ----- T-RO-03 macOS sandbox-exec profile (D13: run by hand on Darwin) ------------------
@@ -181,7 +196,5 @@ class TestRo(TxCase):
     @platform_only("darwin")
     def test_t_ro_03_no_sandbox_exec_refused_and_worktree_removed(self):
         checkout = GitFixture(self.root, name="r")
-        result = self.spawn_read_only(
-            "w", checkout.path, env={"PATH": path_without(self.env()["PATH"], "sandbox-exec")}
-        )
+        result = self.spawn_read_only("w", checkout.path, env={"PATH": path_without_binary(self, "sandbox-exec")})
         self.assert_refused_and_cleaned(result, NO_SANDBOX_EXEC, checkout)

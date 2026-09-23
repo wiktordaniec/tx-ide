@@ -10,32 +10,26 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import time
 
-from txkit import REAL_TMUX, TxCase, expected_failure_on_python
+from txkit import TxCase, expected_failure_on_python
 
 NOT_FOUND = "not found (no live @tx_id, no store record)"
+# A stale Location seeded on every crafted live record: the builders default `attached_to` to `[]`,
+# so "cleared / re-snapshotted to []" would otherwise pass without tx writing anything.
+STALE_LOCATION = {"host": "stale", "window_index": "9", "window_name": "x", "pane_id": "%99", "pane_index": "9"}
 
 
 class TestLife(TxCase):
     # ----- fixtures -----------------------------------------------------------------------
 
     def live_shell(self, session_id: str = "U", name: str = "w", **fields) -> str:
-        """A crafted alive shell record whose tmux session (named by its id) is live with `@tx_id`."""
+        """A crafted alive shell record whose tmux session (named by its id) is live with `@tx_id`;
+        `attached_to` starts stale (see `STALE_LOCATION`) unless the caller passes its own."""
+        fields.setdefault("attached_to", (STALE_LOCATION,))
         self.records.other(id=session_id, name=name, state="alive", **fields)
         self.tmux.new_session(session_id, "sleep 300", tx_id=session_id)
         return session_id
-
-    def split_window(self, target: str) -> None:
-        """`split-window` issued under the scrubbed env: tmux copies an unattached command client's
-        PATH into the new pane, so a raw call from the test process would give the pane the
-        operator's PATH and its in-pane `tmux attach` would reach the live server. (Kit candidate.)"""
-        subprocess.run(
-            [REAL_TMUX, "-L", self.tmux.socket, "-f", "/dev/null", "split-window", "-t", target, "/bin/bash"],
-            env=self.env(),
-            check=True,
-        )
 
     def log_entries(self) -> list[tuple[str, str, str]]:
         return [(line["actor"], line["type"], line["msg"]) for line in self.log_lines()]
@@ -57,27 +51,40 @@ class TestLife(TxCase):
         record = self.records.load("U")
         self.assertEqual(record["state"], "exited")
         self.assertAlmostEqual(record["ended_at"], time.time(), delta=5)
-        self.assertEqual(record["attached_to"], [])
+        self.assertEqual(record["attached_to"], [])  # the stale Location was cleared
         self.assertEqual(self.log_entries()[before:], [("", "kill", "w")])
 
     def test_t_life_01_kill_by_id(self):
         self.live_shell()
+        self.home.launch_dir.mkdir(exist_ok=True)
+        launch_script = self.home.launch_dir / "U.sh"
+        launch_script.write_text("sleep 300\n")
+        before = len(self.log_lines())
+
         result = self.tx(["kill", "U"])
-        self.assertEqual((result.code, result.out), (0, "Killed 'w'\n"))
+
+        self.assertEqual((result.code, result.out, result.err), (0, "Killed 'w'\n", ""))
         self.assertFalse(self.tmux.has_session("U"))
-        self.assertEqual(self.records.load("U")["state"], "exited")
-        self.assertEqual(self.log_entries()[-1], ("", "kill", "w"))
+        self.assertFalse(launch_script.exists())
+        record = self.records.load("U")
+        self.assertEqual(record["state"], "exited")
+        self.assertAlmostEqual(record["ended_at"], time.time(), delta=5)
+        self.assertEqual(record["attached_to"], [])
+        self.assertEqual(self.log_entries()[before:], [("", "kill", "w")])
 
     def test_t_life_01_kill_is_idempotent_and_tolerates_missing_launch_script(self):
         self.records.other(id="U", name="w", state="exited", ended_at=1234.5)
         self.assertFalse((self.home.launch_dir / "U.sh").exists())
         before = len(self.log_lines())
+        path = self.records.path("U")
+        modified_before = path.stat().st_mtime_ns
 
         result = self.tx(["kill", "w"])
 
         self.assertEqual((result.code, result.out, result.err), (0, "Killed 'w'\n", ""))
         record = self.records.load("U")
         self.assertEqual((record["state"], record["ended_at"]), ("exited", 1234.5))
+        self.assertNotEqual(path.stat().st_mtime_ns, modified_before)  # rewritten
         self.assertEqual(self.log_entries()[before:], [("", "kill", "w")])
 
     def test_t_life_01_kill_actor_is_the_invoker(self):
@@ -130,7 +137,7 @@ class TestLife(TxCase):
 
         result = self.tx(["archive", "w"])
 
-        self.assertEqual((result.code, result.out), (0, "Archived 'w'\n"))
+        self.assertEqual((result.code, result.out, result.err), (0, "Archived 'w'\n", ""))
         record = self.records.load("U")
         self.assertEqual((record["state"], record["ended_at"]), ("exited", 1234.5))
         self.assertNotEqual(path.stat().st_mtime_ns, modified_before)  # rewritten
@@ -165,8 +172,8 @@ class TestLife(TxCase):
         self.spawn_view("Views")
         self.live_shell(tags=("a",))
         self.tmux.run("rename-window", "-t", "Views:0", "w0", check=True)
-        self.split_window("Views:0")
-        nested_pane = self.tmux.pane_id("Views:0.1")
+        nested_pane = self.tmux.split_window("Views:0")
+        self.assertEqual(self.tmux.display(nested_pane, "#{pane_index}"), "1")
         self.tmux.nest_attach(nested_pane, "U")
         before = len(self.log_lines())
 
@@ -210,7 +217,7 @@ class TestLife(TxCase):
     # ----- T-LIFE-06 ----------------------------------------------------------------------
 
     def test_t_life_06_set_group(self):
-        self.live_shell(attached_to=({"host": "stale", "window_index": "9", "window_name": "x", "pane_id": "%99", "pane_index": "9"},))
+        self.live_shell()
         before = len(self.log_lines())
 
         result = self.tx(["group", "w", "g1"])
@@ -236,7 +243,10 @@ class TestLife(TxCase):
 
         self.assertEqual((result.code, result.out), (2, ""))
         self.assertTrue(result.err.startswith("usage: tx group"), result.err)
-        self.assertIn("tx group: error: a group cannot be empty", result.err)
+        self.assertTrue(
+            result.err.endswith("\ntx group: error: a group cannot be empty — use --clear to drop the override\n"),
+            result.err,
+        )
         self.assertEqual(path.stat().st_mtime_ns, modified_before)
         self.assertEqual(self.records.load("U")["group"], "keep")
         self.assertEqual(len(self.log_lines()), before)
@@ -330,7 +340,8 @@ class TestLife(TxCase):
     # ----- T-LIFE-09 ----------------------------------------------------------------------
 
     def live_llm(self) -> None:
-        self.records.llm(id="U", name="w", state="idle", last_activity=900.0, turn_started_at=None)
+        self.records.llm(id="U", name="w", state="idle", last_activity=900.0, turn_started_at=None,
+                         attached_to=(STALE_LOCATION,))
         self.tmux.new_session("U", "sleep 300", tx_id="U")
 
     def test_t_life_09_record_state_transitions(self):
@@ -460,8 +471,7 @@ class TestLife(TxCase):
     @expected_failure_on_python
     def test_t_life_12_revive_exited_record_whose_tx_id_session_is_alive(self):
         # The Q32 shape: `w` was exited while its session lived on (server unreachable / hand edit).
-        stale = {"host": "stale", "window_index": "9", "window_name": "x", "pane_id": "%99", "pane_index": "9"}
-        self.records.llm(id="U", name="w", state="exited", ended_at=1234.5, attached_to=(stale,))
+        self.records.llm(id="U", name="w", state="exited", ended_at=1234.5, attached_to=(STALE_LOCATION,))
         self.tmux.new_session("U", "sleep 300", tx_id="U")
         self.records.other(id="U2", name="x", state="exited", ended_at=1234.5)
         self.records.other(id="U3", name="z", state="archived", ended_at=1234.5)
@@ -506,6 +516,28 @@ class TestLife(TxCase):
         self.assertEqual((result.code, result.out, result.err), (0, "'w' is already live\n", ""))
         self.assertEqual(self.records.path("U").stat().st_mtime_ns, modified_before)  # no write
         self.assertEqual(self.records.path("U").read_bytes(), revived)
+        self.assertEqual(len(self.log_lines()), before + 1)
+
+    @expected_failure_on_python
+    def test_t_life_12_revive_non_llm_record_to_alive(self):
+        """D14: a non-llm record revives to `alive` (llm → `idle`, the leg above)."""
+        self.records.other(id="U4", name="sh", state="exited", ended_at=1234.5, attached_to=(STALE_LOCATION,))
+        self.tmux.new_session("U4", "sleep 300", tx_id="U4")
+        self.assertEqual(self.tx(["ls"]).code, 0)
+        self.assertEqual(self.records.load("U4")["state"], "exited")  # reconcile-on-read never revives
+        before = len(self.log_lines())
+
+        result = self.tx(["revive", "sh"])
+
+        self.assertEqual((result.code, result.out, result.err), (0, "Revived 'sh'\n", ""))
+        record = self.records.load("U4")
+        self.assertEqual((record["state"], record["ended_at"], record["attached_to"]), ("alive", None, []))
+        self.assertEqual(self.log_entries()[before:], [("", "revive", "sh (U4)")])
+        revived = self.records.path("U4").read_bytes()
+        listing = self.tx(["ls"])
+        self.assertEqual(listing.code, 0, listing.err)
+        self.assertTrue(any(re.match(r"\s+sh\s+alive\b", line) for line in listing.lines[1:]), listing.out)
+        self.assertEqual(self.records.path("U4").read_bytes(), revived)  # not re-exited
         self.assertEqual(len(self.log_lines()), before + 1)
 
     @expected_failure_on_python
