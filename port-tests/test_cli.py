@@ -962,10 +962,24 @@ class TestCli(TxCase):
 
     def _assert_refused(self, argv: list[str], message: str, *, code: int = 1) -> None:
         records, sessions = self._record_files(), self.tmux.sessions()
+        views_before = self.tmux.display("Views", "#{session_id} #{session_created} #{pane_id} #{pane_pid}")
         result = self.tx(argv)
         self.assertEqual((result.code, result.out, result.err), (code, "", message), argv)
+        self.assertIn("open terminal failed", again.err)
         self.assertEqual(self._record_files(), records)
         self.assertEqual(self.tmux.sessions(), sessions)
+        self.assertEqual(self.tmux.display("Views", "#{session_id} #{session_created} #{pane_id} #{pane_pid}"), views_before)
+        # Edge: with `$TMUX` set the trailing step is `switch-client -t Views`, not `attach`: the
+        # outer client attached to `raw` is moved onto `Views` and no attach error is printed.
+        self.tmux.new_session("raw", "sleep 1000")
+        client = self.attach_client("raw")
+        self.assertEqual([row["client_session"] for row in self.tmux.clients()], ["raw"])
+        inside = self.tx_inside("raw", ["start"])
+        self.assertEqual((inside.code, inside.out, inside.err), (0, "tx-assistant already running.\n", ""))
+        self.wait_until(lambda: [row["client_session"] for row in self.tmux.clients()] == ["Views"])
+        self.assertEqual(self.log_lines(), log)
+        self.assertEqual(self.tmux.display("Views", "#{session_id} #{session_created} #{pane_id} #{pane_pid}"), views_before)
+        client.close()
 
     def test_t_cli_26_parity_chat_ls_and_resume_guards(self):
         self._resume_fixture()
