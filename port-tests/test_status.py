@@ -15,9 +15,10 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from txkit import REPO, GitFixture, TxCase, scrubbed_env
+from txkit import TX_STATUSLINE, GitFixture, TxCase, scrubbed_env
 
-STATUSLINE = REPO / "claude" / "statusline.sh"
+# Entry point (H9 / D16): the reference's `claude/statusline.sh` by default, a port's own seam otherwise.
+STATUSLINE = Path(TX_STATUSLINE)
 
 DIM = "\x1b[38;2;169;177;214m"
 DIR = "\x1b[38;5;31m"
@@ -38,14 +39,22 @@ class RecordedRequest:
 
 class UsageListener:
     """A local HTTP listener that records every request. With `hold=True` the handler blocks after
-    recording until `release()` (or `close()`), never answering — the "listener hangs" shape."""
+    recording until `release()` (or `close()`), never answering — the "listener hangs" shape.
+    `accepted` counts every connection the server accepted (a bare connect or a GET too), so
+    "no connection attempted" is a real check rather than "no completed POST recorded"."""
 
     def __init__(self, hold: bool = False):
         self.hold = hold
         self.requests: list[RecordedRequest] = []
+        self.accepted = 0
         self.release_event = threading.Event()
         self.completed_event = threading.Event()
         listener = self
+
+        class Server(HTTPServer):
+            def verify_request(self, request, client_address) -> bool:
+                listener.accepted += 1
+                return True
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:
@@ -69,7 +78,7 @@ class UsageListener:
             def log_message(self, format: str, *args: object) -> None:
                 pass
 
-        self.server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.server = Server(("127.0.0.1", 0), Handler)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -116,6 +125,28 @@ class TestStatus(TxCase):
     def wait_for_request(self, listener: UsageListener, timeout: float = 3.0) -> RecordedRequest:
         self.wait_until(lambda: listener.requests, timeout=timeout, interval=0.02)
         return listener.requests[0]
+
+    def curl_processes(self, port: int) -> list[int]:
+        """Pids of the live `curl` processes whose argv names this listener's endpoint (/proc)."""
+        needle = f"http://127.0.0.1:{port}/api/anthropic-usage".encode()
+        pids = []
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                cmdline = (entry / "cmdline").read_bytes()
+            except OSError:
+                continue
+            if cmdline.split(b"\0", 1)[0].endswith(b"curl") and needle in cmdline:
+                pids.append(int(entry.name))
+        return pids
+
+    def assert_no_connection(self, listener: UsageListener, port: int | None = None) -> None:
+        """Nothing reached the listener, and no curl aimed at it is (still) around."""
+        time.sleep(0.5)
+        self.assertEqual(listener.accepted, 0)
+        self.assertEqual(listener.requests, [])
+        self.assertEqual(self.curl_processes(port or listener.port), [])
 
     # --- T-STATUS-01 -------------------------------------------------------------------------
 
@@ -207,8 +238,12 @@ class TestStatus(TxCase):
         self.assertEqual(result.stdout, line2)
 
     def test_t_status_03_linked_worktree_uses_its_own_basename(self):
+        # A subdir of the worktree: `basename $cwd` would say `src`, the main checkout's toplevel
+        # would say `repo`; only `--show-toplevel` of the linked worktree gives `repo-linked`.
         linked = self.git.as_linked_worktree()
-        result = self.run_statusline({"cwd": str(linked), "model": {"display_name": "Sonnet"}})
+        inside = linked / "src"
+        inside.mkdir()
+        result = self.run_statusline({"cwd": str(inside), "model": {"display_name": "Sonnet"}})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, f"{B}{DIR}repo-linked{R}\n{DIM}Sonnet{R}")
 
@@ -241,10 +276,14 @@ class TestStatus(TxCase):
                 result = self.run_statusline({"effort": {"level": level}})
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, f"{DIM}effort:{B}{expected}{R}")
-        with self.subTest(level="absent"):
-            result = self.run_statusline({"model": {"display_name": "Sonnet"}, "effort": {}})
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout, f"{DIM}Sonnet{R}")
+        for label, payload in (
+            ("level absent", {"model": {"display_name": "Sonnet"}, "effort": {}}),
+            ("effort key absent", {"model": {"display_name": "Sonnet"}}),
+        ):
+            with self.subTest(level=label):
+                result = self.run_statusline(payload)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, f"{DIM}Sonnet{R}")
 
     # --- T-STATUS-06 -------------------------------------------------------------------------
 
@@ -380,26 +419,37 @@ class TestStatus(TxCase):
         self.write_port_file(listener.port)
         payload, body = self.usage_payload()
 
-        result = self.run_statusline(payload)
-        returned_at = time.monotonic()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, f"{DIM}Sonnet{R} {DIM}7d:{B}42%{R} {DIM}1d1h↺{R}")
+        process = subprocess.Popen(
+            ["bash", str(STATUSLINE)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            env=scrubbed_env(self.home),
+            cwd=str(self.root),
+        )
+        stdout, stderr = process.communicate(json.dumps(payload), timeout=30)
+        # stdout EOF seen. The held listener never answers, so a curl that has connected stays alive
+        # until its own `-m 0.3`; a script that kept the pipe open until curl gave up would hand us
+        # EOF only AFTER that — with the request long recorded and curl gone.
+        request_pending = not listener.requests or self.curl_processes(listener.port)
+        self.assertEqual(process.returncode, 0, stderr)
+        self.assertEqual(stdout, f"{DIM}Sonnet{R} {DIM}7d:{B}42%{R} {DIM}1d1h↺{R}")
+        self.assertTrue(request_pending, "the POST had already completed when the script's stdout closed")
 
         request = self.wait_for_request(listener)
-        # The handler is still blocked: the script's stdout pipe closed while the POST was pending.
-        self.assertFalse(listener.completed_event.is_set())
-        # And it closed without waiting out curl's own timeout: with the pipe closed the script returns
-        # before or within milliseconds of the request's arrival; a held pipe would delay the return
-        # until curl gave up, a full CURL_TIMEOUT after the request arrived.
-        self.assertLess(returned_at - request.received_at, CURL_TIMEOUT / 2)
         self.assertEqual(request.method, "POST")
         self.assertEqual(request.path, "/api/anthropic-usage")
         self.assertEqual(request.content_type, "application/json")
         self.assertEqual(request.body, body)
         self.assertEqual(len(listener.requests), 1)
+        self.assertEqual(listener.accepted, 1)
 
         listener.release()
         self.assertTrue(listener.completed_event.wait(3.0))
+        # positive control on the /proc probe: once answered (or timed out) the curl is gone
+        self.wait_until(lambda: not self.curl_processes(listener.port), timeout=3.0)
 
     def test_t_status_10_missing_limit_posts_null(self):
         listener = self.listener()
@@ -416,31 +466,39 @@ class TestStatus(TxCase):
         )
 
     def test_t_status_10_no_connection_without_port_or_rate_limits(self):
-        listener = self.listener()
         payload, _ = self.usage_payload()
         port_file = self.home.path / "sessions-graph.port"
 
         with self.subTest(edge="port file absent"):
+            listener = self.listener()
             self.assertFalse(port_file.exists())
             result = self.run_statusline(payload)
             self.assertEqual(result.returncode, 0, result.stderr)
-            time.sleep(0.5)
-            self.assertEqual(listener.requests, [])
+            self.assert_no_connection(listener)
 
         with self.subTest(edge="port file empty"):
+            listener = self.listener()
             port_file.write_text("")
             result = self.run_statusline(payload)
             self.assertEqual(result.returncode, 0, result.stderr)
-            time.sleep(0.5)
-            self.assertEqual(listener.requests, [])
+            self.assert_no_connection(listener)
 
         with self.subTest(edge="no rate_limits"):
+            listener = self.listener()
             port_file.write_text(str(listener.port))
             result = self.run_statusline({"model": {"display_name": "Sonnet"}, "effort": {"level": "high"}})
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout, f"{DIM}Sonnet{R} {DIM}effort:{B}3{R}")
-            time.sleep(0.5)
-            self.assertEqual(listener.requests, [])
+            self.assert_no_connection(listener)
+
+        with self.subTest(edge="positive control"):
+            # the same listener shape, port file and wait DO see a connection once rate_limits exist
+            listener = self.listener()
+            port_file.write_text(str(listener.port))
+            result = self.run_statusline(payload)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.wait_for_request(listener)
+            self.assertEqual(listener.accepted, 1)
 
     def test_t_status_10_listener_hangs_script_returns_promptly(self):
         listener = self.listener(hold=True)
@@ -454,7 +512,9 @@ class TestStatus(TxCase):
         self.assertLess(elapsed, 2.0)
         request = self.wait_for_request(listener)
         self.assertEqual(request.body, body)
+        self.assertEqual(listener.accepted, 1)
         # The handler never answers; curl gives up on its own (-m 0.3) and the script is long gone.
+        self.wait_until(lambda: not self.curl_processes(listener.port), timeout=3.0)
         self.assertFalse(listener.completed_event.is_set())
 
     def test_t_status_10_tx_ide_home_unset_uses_home_dot_tx_ide(self):

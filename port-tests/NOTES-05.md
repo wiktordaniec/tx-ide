@@ -226,3 +226,94 @@ written, and what `test_nvim.py` asserts instead.
 Skips on this host: none beyond the four `expected_failure_on_python` legs (09 ×2, 20 ×2).
 `nvim` (v0.12.3) and `lsof` are present, so 16–19 run for real.
 
+
+## Review pass (2026-09-23) — review artifact 90c3c7d1-6c52-4520-af2b-35e81de797b8, spec rev 5
+
+Branch `feat/port-tests-fix-05`. Every non-OK row of the review was applied; the section is green on
+the reference (tmux 3.4 host) and `check_coverage.py` reports 0 MISSING for INST / STATUS / NVIM.
+Corrections to the earlier notes above: the rev-4 FIX legs for Q31 (T-INST-01), Q33 (T-INST-18),
+Q29 (T-INST-31/33) and Q28 (T-INST-35/36) did NOT exist before this pass ("Not implemented: None"
+was wrong on that count), and `test_inst_engines.py` was merged into `test_inst.py` at integration.
+
+### Entry points (H9 / D16)
+
+`test_inst.py` runs `TX_INSTALLER`, `TX_UNINSTALLER` and `<TX_ENGINE_SETUP dir>/{install,claude,codex}.sh`
+(the kit's `TX_ENGINE_SETUP` names `install.sh`; `claude.sh` / `codex.sh` sit beside it);
+`test_status.py` runs `bash $TX_STATUSLINE`; `test_nvim.py` drives `tmux-nav` through the kit's
+`TX_HELPERS_DIR` copy (`self.helper("tmux-nav", …)`). `REPO` survives only in expected strings
+(`readlink == <REPO>/bin/<tool>`, the `PYTHONPATH=<REPO>/lib` exec line the reference bakes into
+shims / the tmux hook, `tmux/tmux.conf`, the code-tour skill script).
+
+### Marker pairs (H9b / D17)
+
+Parity legs of FIX quirks now carry `@python_reference_only`: T-INST-09/15 (Q22), 21 (Q10), 34 (Q9),
+plus the new pairs 01 (Q31), 18 (Q33), 31 and 33 (Q29), 35 and 36 (Q28). Shared assertions were
+moved out of the marked legs: T-INST-31's main leg and T-INST-33's restore/strip leg compare the
+settings subtree EXCLUDING `permissions` (and assert `permissions.deny` gone); the plain
+`_33_hooks_dropped_when_empty` asserts only `hooks` absent and nothing but `permissions` left.
+
+### How the fixed legs were validated
+
+Not against a port (none exists yet): against scratch copies of the reference scripts patched to
+the Appendix-B decisions, placed inside the worktree so `REPO_ROOT` / `LIB_DIR` resolve unchanged
+and selected with `TX_IMPL=rust TX_INSTALLER=… TX_UNINSTALLER=… TX_ENGINE_SETUP=…`:
+`install` with `\$(tx)` / `\$(tx start)` escaped (Q31); `claude.sh` with `tmux_cmd list-sessions`
+as the liveness probe (Q28), `path_del` dropping a two-level parent it emptied (Q29), and no
+`write()` on an empty uninstall plan (Q33); `uninstall` pointed at that `claude.sh`. All eight
+fixed legs pass there and all fail against the unpatched reference. The scratch copies are not
+committed. T-STATUS-10's main leg was checked the same way against a mutant statusline whose
+background push keeps stdout open (`push_anthropic_usage 2>/dev/null &`): it fails as intended.
+
+### SPEC rows — code behaviour asserted, spec corrected in rev 5
+
+| Case | Review | Asserted |
+|---|---|---|
+| T-INST-31 | SPEC: Appendix B listed 31 under Q29 but the case body had no Split/Marker line; the Q29 assertion sat unmarked in the main leg | pair `_31_parity_uninstall_leaves_emptied_permissions` (`{"disableWorkflows": false, "permissions": {}}`) / `_31_fixed_uninstall_drops_emptied_permissions` (`{"disableWorkflows": false}`); main leg excludes `permissions` |
+| T-INST-35 | SPEC: (1) the Q28 fixed leg was gated `tmux ≥ 3.6` although a `list-sessions` probe works on any version; (2) the "no tmux server" edge aimed at the kit's own (live) socket and passed only because of the Q28 bug on 3.4 | fixed legs `_35_fixed_*_on_any_tmux` / `_36_fixed_*_on_any_tmux` are ungated; the shared hook-applied legs stay gated to the 3.6 floor; the Q28 PARITY legs (`_35_parity_…`, `_36_parity_…`: live server on the socket, yet `no tmux server — will apply on next start`, hook and stash file untouched) are gated BELOW 3.6 — the only place the quirk is observable; the no-server edge aims at `txkit-dead-<hex>` (claude.sh's `-L $TX_TMUX_SOCKET` follows the PATH wrapper's `-L <kit>` and wins) and asserts the kit server's hook unchanged and no server started on the dead name |
+
+### Other rows, by class
+
+- WEAK — T-INST-01 (stub `tx` now logs argv to `<root>/tx-stub.log`; `Installer.stub_calls()`),
+  T-INST-18 (fixed leg: no `.bak`, no `backup:` line, inode + `mtime_ns` unchanged; parity twin
+  pins the one needless `.bak` == the file's bytes), T-INST-36 (ungated fixed copies), T-INST-38
+  (both dry runs now run with `TX_TMUX_SOCKET` set and a hook planted on the kit server; the hook
+  and the stash file must be untouched — the `live-only (skipped here)` lines are still printed
+  because DRY_RUN short-circuits before the socket check), T-STATUS-03 (linked-worktree edge uses
+  `<linked>/src`, where `basename $cwd` and the main checkout's toplevel both give the wrong answer),
+  T-NVIM-01 (`--tag TAG` must stand outside `[…]`; new `_01_env_is_repeatable`: `--env A=1 --env B=2`
+  → record `env` and the fake's env carry both), T-NVIM-09 (the `$HOME/.tx-ide` ghost now has a
+  live session carrying its `@tx_id`; `tx ls` names == `tx ls --json` names both ways), T-NVIM-14
+  (top-level edge starts on L via `select-pane`, so a wrapping nav would show), T-NVIM-20 (socket
+  file planted before `tx kill`, `<HOME>/nvim/` asserted a dir, real-nvim leg gains the kill).
+- WRONG — T-INST-31, T-INST-33 (see the pairs above), T-INST-35 (dead socket).
+- FRAGILE — T-NVIM-03/05/06/20 renamed to `non_hex_name()` names (`dx1`, `edx1`, `ex1`, …);
+  T-NVIM-06 edge legs assert `(type, msg)`; T-NVIM-10's `delivered()` waits until the joined
+  chunks == envelope + `\r` (a count of 2 returned early when the envelope split across reads) and
+  the Enter gap is `≥ 0.25 s`; the unset-`TX_SESSION_ID` leg runs inside a spawned view's pane
+  (`#S` == `view1`) and asserts the view name never reaches the target; T-NVIM-16 spawns with
+  `--env XDG_RUNTIME_DIR=<root>/xdg-runtime` (the socket lands there, never in the operator's
+  `/run/user/<uid>`), picks the pane child whose comm is `nvim` rather than `pgrep -P | head -1`,
+  and kills it at cleanup (`nvim_pid_of`, shared with T-NVIM-20's real leg).
+- T-STATUS-10 (FRAGILE + WEAK) — replaces the rev-4 row above. Main leg: `Popen` + `communicate`;
+  at stdout EOF either no request has been recorded yet or a `curl … 127.0.0.1:<port>/api/anthropic-usage`
+  process is still alive (`/proc` cmdline scan) — a script that held stdout until curl gave up hands
+  over EOF only after the request is recorded AND curl is gone; `accepted == 1` (the listener now
+  counts every accepted connection in `verify_request`, so a GET or a bare connect is no longer
+  invisible); after `release()` the curl disappears (positive control on the /proc probe). The
+  no-connection edges use a fresh listener per subtest, assert `accepted == 0` and no live curl
+  after 0.5 s, and end with a positive-control subtest that DOES see the connection. The hang edge
+  waits for the curl to time out on its own.
+- Minor rows counted OK in the review but cheap: T-INST-15 `.bak` mtime check gets 1 s of slack;
+  T-STATUS-05 also covers the `effort` key absent entirely; T-NVIM-08's error legs assert no log
+  line was added; H8 spawn log lines added to T-NVIM-02/03/04/13/20 and to T-NVIM-10's unknown /
+  dead-target legs (no line added).
+
+### Left as is (needs a spec decision, not a test edit)
+
+- Cross-cutting 7: shims and the tmux hook are byte-compared against the reference's
+  `PYTHONPATH="<LIB>" "python3.14" -m tx hook …` line. The INST preamble lets a port substitute its
+  own binary, but nothing says what the port's line IS; until it does, the exact-text assertions
+  stand (they are what the reference writes) and INST implicitly needs `python3.14`.
+- The H9 note that a scalar entry point "may carry arguments" (`TX_INSTALLER="tx install"`): the kit
+  resolves each variable as ONE path (`_entry_point`), so a port wraps such a command in a script,
+  as the README says.
