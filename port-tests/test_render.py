@@ -126,8 +126,8 @@ class TestRender(TxCase):
             "  n                        exited       -   0c   /r\n"
             "  z                        exited       -   0c   /r\n"
         )
-        self.assertEqual(result.out, expected)
-        self.assert_golden("render/01", result.out)
+        self.assertEqual(result.raw_out, expected)
+        self.assert_golden_raw("render/01", result.raw_out)
 
     # ----- T-RENDER-02 ---------------------------------------------------------------------
 
@@ -164,8 +164,8 @@ class TestRender(TxCase):
         expected = "PROCESSES\n" + "".join(
             f"  {name:<24} {'alive':<8} {cell:<25} {'—':<6}\n" for name, cell in zip(names, cells)
         )
-        self.assertEqual(result.out, expected)
-        self.assert_golden("render/02", result.out)
+        self.assertEqual(result.raw_out, expected)
+        self.assert_golden_raw("render/02", result.raw_out)
 
         show = json.loads(self.tx(["show", "loc-three"]).out)
         self.assertEqual(len(show["attached_to"]), 3)
@@ -194,21 +194,21 @@ class TestRender(TxCase):
         result = self.tx(["ls"])
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(
-            result.out,
+            result.raw_out,
             "PROCESSES\n"
             "  worker-1                 waiting  —                         1m     [docs]\n"
             "  ed                       alive    —                         —     \n",
         )
-        self.assert_golden("render/03", result.out)
+        self.assert_golden_raw("render/03", result.raw_out)
 
     def test_t_render_03_long_name_not_truncated_and_empty(self):
-        self.assertEqual(self.tx(["ls"]).out, "PROCESSES\n")
+        self.assertEqual(self.tx(["ls"]).raw_out, "PROCESSES\n")
         name = "n" * 30
         self.records.other(id="long", name=name, role="shell", state="alive", tags=(),
                            created_at=self.now - 5400)
         self.live("long")
         result = self.tx(["ls"])
-        self.assertEqual(result.out, f"PROCESSES\n  {name} alive    —                         —     \n")
+        self.assertEqual(result.raw_out, f"PROCESSES\n  {name} alive    —                         —     \n")
 
     # ----- T-RENDER-04 ---------------------------------------------------------------------
 
@@ -221,9 +221,20 @@ class TestRender(TxCase):
         expected = [12, 53, 53, 53, 60, 59, 12, 12, 12, 60, 60]
         seen = []
         for index, (cols, longest) in enumerate(pairs):
-            self.records.patch("nv", name="x" * longest)
+            name = "x" * longest
+            self.records.patch("nv", name=name)
             dump = self.attach_dump(cols, self.root / f"fzf-run-{index}")
-            seen.append(int(dump["env"]["NAMEW"]))
+            namew = int(dump["env"]["NAMEW"])
+            seen.append(namew)
+            # The initial paint fzf reads on stdin is `tx _list` (the reload child) rendered at
+            # that exported $NAMEW: field 1 the full name, field 5 the visual name `_trunc`ed and
+            # padded to namew, then the 3-space gutter and the LOCATION cell.
+            rows = [row.split("\t") for row in dump["stdin"].rstrip("\n").split("\n")]
+            self.assertEqual([row[0] for row in rows], [name], dump["stdin"])
+            visual_name = name if longest <= namew else name[: namew - 1] + "…"
+            self.assertTrue(
+                rows[0][4].startswith(f"{visual_name:<{namew}}   —"), (namew, rows[0][4])
+            )
         self.assertEqual(seen, expected)
         text = "".join(f"NAMEW={value}\n" for value in seen)
         self.assert_golden("render/04", text)
@@ -307,15 +318,15 @@ class TestRender(TxCase):
         result = self.tx(["history"])
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(
-            result.out,
+            result.raw_out,
             "HISTORY\n"
             "  ed                       archived    1m   0c   /repo\n"
             "  xxxxxxxxxxxxxxxxxxxxxxx… exited     10m   2c  [a] [b]  /r\n",
         )
-        self.assert_golden("render/09", result.out)
+        self.assert_golden_raw("render/09", result.raw_out)
 
     def test_t_render_09_no_terminal_records(self):
-        self.assertEqual(self.tx(["history"]).out, "HISTORY\n  (no exited or archived sessions)\n")
+        self.assertEqual(self.tx(["history"]).raw_out, "HISTORY\n  (no exited or archived sessions)\n")
 
     # ----- T-RENDER-10 ---------------------------------------------------------------------
 
@@ -324,21 +335,21 @@ class TestRender(TxCase):
         result = self.tx(["chat", "ls", "ex"])
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(
-            result.out,
+            result.raw_out,
             "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx — 2 chat(s)\n"
             "  abcdef01  original  spawn               15m ago   —\n"
             "  pending   fork      fork←01234567       13m ago   /h/b\n",
         )
-        self.assert_golden("render/10", result.out)
+        self.assert_golden_raw("render/10", result.raw_out)
 
     def test_t_render_10_no_chats_and_unknown(self):
         self.history_fixture()
         result = self.tx(["chat", "ls", "ar"])
         self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(result.out, "ed — 0 chat(s)\n  (none)\n")
+        self.assertEqual(result.raw_out, "ed — 0 chat(s)\n  (none)\n")
         missing = self.tx(["chat", "ls", "x"])
         self.assertEqual(missing.code, 1)
-        self.assertEqual(missing.out, "")
+        self.assertEqual(missing.raw_out, "")
         self.assertEqual(missing.err, "tx chat ls: session 'x' not found\n")
 
     # ----- T-RENDER-11 ---------------------------------------------------------------------
@@ -378,15 +389,15 @@ class TestRender(TxCase):
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(result.err, "")
         self.assertEqual(
-            result.out,
+            result.raw_out,
             "ARTIFACTS\n"
             "  abcdef01    3r     1m  Rust port plan               [worker-1] [user]\n"
             "  ffffffff    1r    15m  a-very-long-file-name-that-… [gone-123]\n",
         )
-        self.assert_golden("render/12", result.out)
+        self.assert_golden_raw("render/12", result.raw_out)
 
     def test_t_render_12_no_artifacts(self):
-        self.assertEqual(self.tx(["artifact", "ls"]).out, "ARTIFACTS\n  (none)\n")
+        self.assertEqual(self.tx(["artifact", "ls"]).raw_out, "ARTIFACTS\n  (none)\n")
 
     # ----- T-RENDER-13 ---------------------------------------------------------------------
 
@@ -407,15 +418,15 @@ class TestRender(TxCase):
             "    rev 1      5m ago  user                  typo fix\n"
             "    rev 2      1m ago  worker-1            \n"
         )
-        self.assertEqual(result.out, expected)
-        self.assert_golden("render/13", result.out)
+        self.assertEqual(result.raw_out, expected)
+        self.assert_golden_raw("render/13", result.raw_out)
 
     def test_t_render_13_explicit_group_clean_and_prefix(self):
         a, b = self.artifacts_fixture()
         result = self.tx(["artifact", "show", b])
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(
-            result.out,
+            result.raw_out,
             f"a-very-long-file-name-that-overflows.txt  ({b})\n"
             "  filename:   a-very-long-file-name-that-overflows.txt\n"
             "  created:    15m ago\n"
@@ -428,7 +439,7 @@ class TestRender(TxCase):
         )
         by_prefix = self.tx(["artifact", "show", "abcdef01"])
         self.assertEqual(by_prefix.code, 0, by_prefix.err)
-        self.assertTrue(by_prefix.out.startswith(f"Rust port plan  ({a})\n"))
+        self.assertTrue(by_prefix.raw_out.startswith(f"Rust port plan  ({a})\n"))
 
     # ----- T-RENDER-14 ---------------------------------------------------------------------
 
