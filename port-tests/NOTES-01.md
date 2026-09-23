@@ -97,3 +97,53 @@ No other RENDER disagreement: every other literal in T-RENDER-02..17 matched `bi
 ## MIGR
 
 No case in T-MIGR-01..10 disagreed with `bin/tx`: every Then (stdout lines, re-saved key order, `@tx_view` stamping, skip reasons, idempotence) matched the reference verbatim. T-MIGR-11 is DROPPED (no test).
+
+## Review pass (Phase 5b, review `dd2ed85f…`, branch `feat/port-tests-fix-01`)
+
+Every non-OK row of the section-01 review applied; the entries below record the two SPEC rows
+(asserted to the code, spec corrected in rev 5) and the fixes whose shape a later reader may
+question.
+
+### T-MODEL-14 — skip-line order (SPEC)
+Spec rev 4 listed the `miss_*` lines before `l.json` while calling the order "filename order".
+Code: `SessionStore.all` iterates `sorted(glob("*.json"))`, and `l` < `miss_` < `s`.
+Asserted (unchanged): `l.json` first, then `miss_<key>.json` in key order, then `s.json`. Rev 5
+amends the spec to this order.
+
+### T-EVENTS-06 — delegated verbs (SPEC)
+Spec rev 4 said "each verb runs once" but `fork`, `rollover(-finish)`, `handover(-finish)`,
+`send-message` and `capture-skip` need CHAT/MSG/HOOK fixtures. Rev 5 delegates them to
+T-CHAT-02/08/11/12/16, T-MSG-01/02 and T-HOOK-19; the test carries that pointer. Rev 5 also
+splits the `artifact open` actors: `spawn` and `bind-artifact` take `EventLog.append`'s default
+(`$TX_SESSION_ID` verbatim, `""` when unset) while only `artifact-open` resolves to `user`. The
+test now runs `open` twice — under `TX_SESSION_ID=sess-x` (all three `sess-x`) and from a plain
+env on a second artifact (`""`, `""`, `user`); the same artifact cannot be opened twice because
+the view name `art-<id8>` is then taken.
+
+### T-EVENTS-04 — the `<=` boundary is observed, not tolerated
+The old edge sized one record for an 18-char `ts` and branched on the width it got, so the
+"513 → cut by one" leg could never run (`repr(time.time())` is never 19 chars) and the
+"exactly 512, intact" leg ran only when `ts` happened to be 18 chars. Now two records (sized for
+512 and 513 at width 18) are re-tried with fresh ids until BOTH natural lengths have been seen
+(bounded at 40 rounds; width 18 occurs about three runs in four).
+
+### T-HOME-05 (b) — threshold 60 s, sessions booted before the timestamps
+The spec's (b) config is `5` with a 1 s turn; the record write → `tx ls` gap includes three
+`new-session` calls and tx startup, which left ~4 s of slack. The sessions are now booted first
+and the timestamps taken after; leg (b) uses `60`. The Then is unchanged
+(`working, idle, idle`: only the 500 s and 700 s turns are over the threshold, and the config
+value is still shown to beat the 600 s default).
+
+### T-MODEL-07 — origin cells only
+The full `tx chat ls` row (age `15m`, padding) was over-specified for this case; the test now
+asserts the header and the id / origin cells per row. The row layout stays pinned by T-RENDER-10.
+
+### T-MIGR-04 — bystander named `Gone-2`
+The bystander session is now `Gone-2` (prefixed by the dead view's name) and asserted to carry
+no `@tx_view`, so a port that stamps through a bare `-t Gone` (Q27 prefix match) fails.
+
+### RENDER 01 02 03 09 10 12 13, MIGR-06 — raw output
+Every "stdout exactly" literal and golden in these cases compared `Result.out`, which is
+ANSI-stripped, so colour a port adds was invisible. They now compare `raw_out` and use
+`assert_golden_raw`. The goldens are unchanged: the reference emits no escape codes on these
+paths, so the raw bytes equal the stripped text.
