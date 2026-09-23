@@ -302,11 +302,16 @@ def snapshot(root: Path) -> dict[str, bytes]:
     return tree
 
 
-# claude.sh's server-liveness probe is `tmux info`; on tmux 3.4 `show-messages` lacks
+# claude.sh's server-liveness probe is `tmux info` (Q28); on tmux 3.4 `show-messages` lacks
 # CMD_CLIENT_CANFAIL, so from an unattached client it always fails with `no current client` and the
 # hook step degrades to `no tmux server — will apply on next start`. tmux ≥ 3.5 adds the flag (the
-# CI floor is 3.6, D13), so the hook-applied cases are version-gated like Q21.
+# CI floor is 3.6, D13). The hook-applied legs shared by both implementations are gated to the
+# floor; the Q28 FIXED legs (`list-sessions` probe) run on any version; the Q28 PARITY legs — a
+# live server the reference still reports as absent — are observable only below 3.6.
 hook_step_reachable = requires_tmux(min="3.6")
+hook_step_unreachable = unittest.skipUnless(
+    tmux_version() is not None and tmux_version() < (3, 6), "Q28 is observable only below tmux 3.6"
+)
 
 CODEX_BLOCK = (
     "# === BEGIN tx-ide (codex) ===\n"
@@ -1772,21 +1777,23 @@ class TestInst(TxCase):
 
     # ----- T-INST-35 ---------------------------------------------------------------------------
 
-    @hook_step_reachable
-    def test_t_inst_35_tmux_hook_set_and_foreign_stash(self) -> None:
+    FOREIGN_HOOK = 'run-shell "echo user"'
+    HOOK_NOT_APPLIED = engines_status_line("tmux global session-closed", "no tmux server — will apply on next start")
+
+    def engines_assert_hook_set_and_foreign_stashed(self) -> None:
         self.tmux.new_session("keep", "sleep 300")
-        self.tmux.run("set-hook", "-g", "session-closed", 'run-shell "echo user"', check=True)
+        self.tmux.run("set-hook", "-g", "session-closed", self.FOREIGN_HOOK, check=True)
         copy = self.engines_copy({})
         result = self.installer.claude_sh("install", "--settings", str(copy), env=self.engines_socket_env())
         self.assertEqual(0, result.code)
-        self.assertEqual('run-shell "echo user"', self.engines_prev_hook_file().read_text())
+        self.assertTrue(self.engines_prev_hook_file().is_file(), result.out)
+        self.assertEqual(self.FOREIGN_HOOK, self.engines_prev_hook_file().read_text())
         self.assertEqual(self.installer.tmux_session_closed(), self.engines_session_closed_hook())
         stashed = engines_status_line("tmux global session-closed", "stashed an existing hook (restored on uninstall)")
         applied = engines_status_line("tmux global session-closed", "set (→ reconcile)")
         self.assertLess(result.out.index(stashed), result.out.index(applied))
 
-    @hook_step_reachable
-    def test_t_inst_35_own_hook_not_stashed(self) -> None:
+    def engines_assert_own_hook_not_stashed(self) -> None:
         self.tmux.new_session("keep", "sleep 300")
         prior = 'run-shell "env TX_IDE_HOME=/elsewhere python3.14 -m tx hook session-closed"'
         self.tmux.run("set-hook", "-g", "session-closed", prior, check=True)
@@ -1796,31 +1803,62 @@ class TestInst(TxCase):
         self.assertNotIn("stashed an existing hook", result.out)
         self.assertEqual(self.installer.tmux_session_closed(), self.engines_session_closed_hook())
 
-    def test_t_inst_35_no_tmux_server(self) -> None:
+    @hook_step_reachable
+    def test_t_inst_35_tmux_hook_set_and_foreign_stash(self) -> None:
+        self.engines_assert_hook_set_and_foreign_stashed()
+
+    @expected_failure_on_python
+    def test_t_inst_35_fixed_hook_set_and_foreign_stash_on_any_tmux(self) -> None:
+        # Q28 fixed: a `list-sessions` probe sees the live server on 3.4 and 3.6 alike — ungated.
+        self.engines_assert_hook_set_and_foreign_stashed()
+
+    @hook_step_reachable
+    def test_t_inst_35_own_hook_not_stashed(self) -> None:
+        self.engines_assert_own_hook_not_stashed()
+
+    @expected_failure_on_python
+    def test_t_inst_35_fixed_own_hook_not_stashed_on_any_tmux(self) -> None:
+        self.engines_assert_own_hook_not_stashed()
+
+    @python_reference_only
+    @hook_step_unreachable
+    def test_t_inst_35_parity_info_probe_misses_live_server_below_3_6(self) -> None:
+        # Q28 (reference): the server is alive on the socket, yet `tmux_cmd info` fails from an
+        # unattached client, so the step degrades to "no tmux server" and nothing is set or stashed.
+        self.tmux.new_session("keep", "sleep 300")
+        self.tmux.run("set-hook", "-g", "session-closed", self.FOREIGN_HOOK, check=True)
         result = self.installer.claude_sh("install", "--settings", str(self.engines_copy({})), env=self.engines_socket_env())
         self.assertEqual(0, result.code)
-        self.assertIn(
-            engines_status_line("tmux global session-closed", "no tmux server — will apply on next start"), result.out
-        )
-        self.assertEqual([], self.tmux.sessions())
+        self.assertIn(self.HOOK_NOT_APPLIED, result.out)
+        self.assertEqual(self.FOREIGN_HOOK, self.engines_session_closed_hook())
+        self.assertFalse(self.engines_prev_hook_file().exists())
+
+    def test_t_inst_35_no_tmux_server(self) -> None:
+        # A socket NOTHING ever started (the kit's own is alive: `exit-empty off`). claude.sh's
+        # `-L $TX_TMUX_SOCKET` follows the PATH wrapper's `-L <kit>` and wins.
+        dead = f"txkit-dead-{uuid.uuid4().hex[:8]}"
+        result = self.installer.claude_sh("install", "--settings", str(self.engines_copy({})), env={"TX_TMUX_SOCKET": dead})
+        self.assertEqual(0, result.code)
+        self.assertIn(self.HOOK_NOT_APPLIED, result.out)
+        self.assertFalse((self.tmux.socket_path.parent / dead).exists())
+        self.assertEqual("", self.engines_session_closed_hook())
+        self.assertFalse(self.engines_prev_hook_file().exists())
 
     # ----- T-INST-36 ---------------------------------------------------------------------------
 
-    @hook_step_reachable
-    def test_t_inst_36_uninstall_restores_stashed_hook(self) -> None:
+    def engines_assert_uninstall_restores_stashed_hook(self) -> None:
         self.tmux.new_session("keep", "sleep 300")
-        self.tmux.run("set-hook", "-g", "session-closed", 'run-shell "echo user"', check=True)
+        self.tmux.run("set-hook", "-g", "session-closed", self.FOREIGN_HOOK, check=True)
         copy = self.engines_copy({})
         self.assertEqual(0, self.installer.claude_sh("install", "--settings", str(copy), env=self.engines_socket_env()).code)
         self.assertTrue(self.engines_prev_hook_file().exists())
         result = self.installer.claude_sh("uninstall", "--settings", str(copy), env=self.engines_socket_env())
         self.assertEqual(0, result.code)
-        self.assertEqual('run-shell "echo user"', self.engines_session_closed_hook())
+        self.assertEqual(self.FOREIGN_HOOK, self.engines_session_closed_hook())
         self.assertFalse(self.engines_prev_hook_file().exists())
         self.assertIn(engines_status_line("tmux global session-closed", "restored prior hook"), result.out)
 
-    @hook_step_reachable
-    def test_t_inst_36_uninstall_unsets_without_stash(self) -> None:
+    def engines_assert_uninstall_unsets_without_stash(self) -> None:
         self.tmux.new_session("keep", "sleep 300")
         copy = self.engines_copy({})
         self.assertEqual(0, self.installer.claude_sh("install", "--settings", str(copy), env=self.engines_socket_env()).code)
@@ -1830,6 +1868,39 @@ class TestInst(TxCase):
         self.assertEqual(0, result.code)
         self.assertEqual("", self.engines_session_closed_hook())
         self.assertIn(engines_status_line("tmux global session-closed", "unset"), result.out)
+
+    @hook_step_reachable
+    def test_t_inst_36_uninstall_restores_stashed_hook(self) -> None:
+        self.engines_assert_uninstall_restores_stashed_hook()
+
+    @expected_failure_on_python
+    def test_t_inst_36_fixed_uninstall_restores_stashed_hook_on_any_tmux(self) -> None:
+        self.engines_assert_uninstall_restores_stashed_hook()
+
+    @hook_step_reachable
+    def test_t_inst_36_uninstall_unsets_without_stash(self) -> None:
+        self.engines_assert_uninstall_unsets_without_stash()
+
+    @expected_failure_on_python
+    def test_t_inst_36_fixed_uninstall_unsets_without_stash_on_any_tmux(self) -> None:
+        self.engines_assert_uninstall_unsets_without_stash()
+
+    @python_reference_only
+    @hook_step_unreachable
+    def test_t_inst_36_parity_info_probe_misses_live_server_below_3_6(self) -> None:
+        # Q28 (reference): with a stash file present and the hook live, uninstall still reports
+        # "no tmux server" — the hook stays, the stash file stays.
+        self.tmux.new_session("keep", "sleep 300")
+        self.tmux.run("set-hook", "-g", "session-closed", self.installer.tmux_session_closed(), check=True)
+        prev = self.engines_prev_hook_file()
+        prev.parent.mkdir(parents=True, exist_ok=True)
+        prev.write_text(self.FOREIGN_HOOK)
+        copy = self.engines_installed_copy({})
+        result = self.installer.claude_sh("uninstall", "--settings", str(copy), env=self.engines_socket_env())
+        self.assertEqual(0, result.code)
+        self.assertIn(self.HOOK_NOT_APPLIED, result.out)
+        self.assertEqual(self.installer.tmux_session_closed(), self.engines_session_closed_hook())
+        self.assertEqual(self.FOREIGN_HOOK, prev.read_text())
 
     # ----- T-INST-37 ---------------------------------------------------------------------------
 
@@ -1859,10 +1930,15 @@ class TestInst(TxCase):
     def test_t_inst_38_dry_run_install_changes_nothing(self) -> None:
         peon = {"matcher": "", "hooks": [{"type": "command", "command": "peon-ping"}]}
         copy = self.engines_copy({"hooks": {"Stop": [peon]}})
+        # With the socket set a real install would stash + replace this hook; a dry run must not.
+        self.tmux.new_session("keep", "sleep 300")
+        self.tmux.run("set-hook", "-g", "session-closed", self.FOREIGN_HOOK, check=True)
         before = snapshot(self.root)
-        result = self.installer.claude_sh("install", "--dry-run", "--settings", str(copy))
+        result = self.installer.claude_sh("install", "--dry-run", "--settings", str(copy), env=self.engines_socket_env())
         self.assertEqual(0, result.code)
         self.assertEqual(before, snapshot(self.root))
+        self.assertEqual(self.FOREIGN_HOOK, self.engines_session_closed_hook())
+        self.assertFalse(self.engines_prev_hook_file().exists())
         self.assertEqual(6, result.out.count("  would generate shim "))
         for shim, (event, _) in CLAUDE_SHIMS.items():
             self.assertIn(
@@ -1876,10 +1952,14 @@ class TestInst(TxCase):
 
     def test_t_inst_38_dry_run_uninstall_changes_nothing(self) -> None:
         copy = self.engines_installed_copy({"hooks": {"Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "peon-ping"}]}]}})
+        # A real uninstall with the socket set would unset this hook; a dry run must not.
+        self.tmux.new_session("keep", "sleep 300")
+        self.tmux.run("set-hook", "-g", "session-closed", self.installer.tmux_session_closed(), check=True)
         before = snapshot(self.root)
-        result = self.installer.claude_sh("uninstall", "--dry-run", "--settings", str(copy))
+        result = self.installer.claude_sh("uninstall", "--dry-run", "--settings", str(copy), env=self.engines_socket_env())
         self.assertEqual(0, result.code)
         self.assertEqual(before, snapshot(self.root))
+        self.assertEqual(self.installer.tmux_session_closed(), self.engines_session_closed_hook())
         self.assertEqual(6, result.out.count("  would remove shim "))
         for shim in CLAUDE_SHIMS:
             self.assertIn(f"  would remove shim {self.installer.claude_shim(shim)}", result.out)
