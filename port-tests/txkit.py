@@ -12,6 +12,7 @@ Fixtures (each usable on its own; `TxCase` wires the standard set):
   FakeBins    argv+env recorders for claude / codex / agy / nvim / fzf / bwrap / brew
   GitFixture  repo with one commit; `with_origin_main()`, `as_linked_worktree()`
   Records     crafted schema-6 session records and artifact-v2 records with explicit timestamps (D8)
+  PtyProcess  a process on its own pty (a real `tmux attach` client, `tx attach`, the curses form)
 
 Runner: `run_tx(...)` / `TxCase.tx(...)` execute `TX_BIN` under a scrubbed environment and return a
 `Result` with ANSI-stripped and raw output. Goldens: `assert_golden(...)` compares against
@@ -21,15 +22,20 @@ from the Python reference, commit the files).
 
 from __future__ import annotations
 
+import fcntl
 import functools
 import json
 import os
 import platform
 import re
+import select
+import shlex
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 import unittest
 import uuid
@@ -65,6 +71,9 @@ CODEX_HOOK_EVENTS = {
 }
 
 FAKE_NAMES = ("claude", "codex", "agy", "nvim", "fzf", "bwrap", "brew", "zsh")
+# `REPO/bin/*` helpers (`tmux-*`, `tx-assistant`, …) exposed on PATH beside a `tx` → TX_BIN link, so an
+# in-pane `tx`, a pane-border `tmux-pane-session-name` and the tmux fragment's helpers resolve.
+HELPER_BINS = tuple(sorted(path.name for path in (REPO / "bin").iterdir() if path.name != "tx"))
 # Long-running fakes stay alive so their tmux session (and the record's liveness) persists until
 # teardown; the short ones return at once.
 FAKE_DEFAULT_SLEEP = {"claude": 600, "codex": 600, "agy": 600, "nvim": 600, "zsh": 600}
@@ -86,6 +95,18 @@ SESSION_RECORD_CMD = "claude --model opus --effort high --dangerously-skip-permi
 
 def strip_ansi(text: str) -> str:
     return ANSI.sub("", text)
+
+
+def wait_until(predicate: Callable[[], object], timeout: float = 10.0, interval: float = 0.05, what: str = ""):
+    """Poll `predicate` until truthy and return its value; `AssertionError` after `timeout` seconds."""
+    deadline = time.monotonic() + timeout
+    while True:
+        value = predicate()
+        if value:
+            return value
+        if time.monotonic() > deadline:
+            raise AssertionError(f"condition not met within {timeout}s{': ' + what if what else ''}")
+        time.sleep(interval)
 
 
 def munge(path: str) -> str:
@@ -317,11 +338,154 @@ class TmuxServer:
     def kill_session(self, name: str) -> None:
         self.run("kill-session", "-t", f"={name}")
 
+    def send_keys(self, target: str, *keys: str, literal: bool = False) -> None:
+        """`send-keys -t target [-l] -- keys…` (raw driving of a pane; `literal` types verbatim)."""
+        flags = ["-l"] if literal else []
+        self.run("send-keys", "-t", target, *flags, "--", *keys, check=True)
+
+    def type_line(self, target: str, line: str) -> None:
+        """Type `line` verbatim into a pane's shell, then press Enter."""
+        self.send_keys(target, line, literal=True)
+        self.send_keys(target, "Enter")
+
+    def clients(self) -> list[dict[str, str]]:
+        """`list-clients` rows: `client_tty`, `client_session`, `client_activity`, `client_name`."""
+        result = self.run("list-clients", "-F", "#{client_tty}\t#{client_session}\t#{client_activity}\t#{client_name}")
+        rows = []
+        for line in result.stdout.splitlines():
+            tty, session, activity, name = line.split("\t")
+            rows.append({"client_tty": tty, "client_session": session, "client_activity": activity, "client_name": name})
+        return rows
+
+    def panes(self, target: str | None = None) -> list[dict[str, str]]:
+        """`list-panes` rows (`-a` server-wide, or `-s -t target` for one session): `pane_id`, `pane_tty`,
+        `session_name`, `window_index`, `window_name`, `pane_index`, `pane_current_command`, `pane_pid`."""
+        scope = ["-a"] if target is None else ["-s", "-t", target]
+        fields = ("pane_id", "pane_tty", "session_name", "window_index", "window_name", "pane_index",
+                  "pane_current_command", "pane_pid")
+        result = self.run("list-panes", *scope, "-F", "\t".join("#{" + field + "}" for field in fields))
+        return [dict(zip(fields, line.split("\t"))) for line in result.stdout.splitlines() if line]
+
+    def pane_id(self, target: str) -> str:
+        """The `%n` id of a pane target (e.g. `Views:0.0` or a session name = its active pane)."""
+        return self.display(target, "#{pane_id}")
+
+    def pane_tty(self, pane_id: str) -> str:
+        return self.display(pane_id, "#{pane_tty}")
+
+    def attach_client(self, session: str, *, env: dict[str, str], rows: int = 50, cols: int = 200,
+                      timeout: float = 10.0) -> PtyProcess:
+        """A real outer client: `tmux attach -t session` on a fresh pty (H2), returned once
+        `list-clients` shows it. `TMUX` is dropped from `env`; the caller closes it."""
+        client_env = {key: value for key, value in env.items() if key != "TMUX"}
+        client_env.setdefault("TERM", "xterm-256color")
+        client = PtyProcess([REAL_TMUX, "-L", self.socket, "attach", "-t", session], env=client_env, rows=rows, cols=cols)
+        wait_until(lambda: any(row["client_tty"] == client.tty for row in self.clients()), timeout,
+                   what=f"client on {client.tty} attached to {session}")
+        return client
+
+    def nest_attach(self, pane_id: str, session: str, timeout: float = 10.0) -> None:
+        """Nest `session` inside a shell pane the way `tx attach` does (`TMUX= tmux attach -t …`
+        typed into the pane), then wait until a client's `client_tty` == that pane's `pane_tty`."""
+        tty = self.pane_tty(pane_id)
+        self.type_line(pane_id, f"TMUX= tmux attach -t {shlex.quote(session)}")
+        wait_until(lambda: any(row["client_tty"] == tty and row["client_session"] == session for row in self.clients()),
+                   timeout, what=f"{session} nested in {pane_id}")
+
     def close(self) -> None:
         """Kill the private server and drop its socket file (tmux leaves it behind)."""
         self.run("kill-server")
         socket_dir = Path(os.environ.get("TMUX_TMPDIR") or "/tmp") / f"tmux-{os.getuid()}"
         (socket_dir / self.socket).unlink(missing_ok=True)
+
+
+# ----- PtyProcess ------------------------------------------------------------------------------
+
+
+class PtyProcess:
+    """A child on its own pty (H2): a real `tmux attach` client, a `tx attach` picker outside tmux,
+    or the curses form. `write` feeds keystrokes; `read`/`expect` drain what the child wrote; `tty`
+    is the slave path (what tmux reports as `client_tty`). Close it (or `wait`) when done."""
+
+    def __init__(self, argv: list[str], *, env: dict[str, str], cwd: str | Path | None = None,
+                 rows: int = 24, cols: int = 80):
+        self.master, slave = os.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        self.tty = os.ttyname(slave)
+        self.output = ""
+        self.process = subprocess.Popen(
+            argv,
+            env=env,
+            cwd=str(cwd) if cwd is not None else None,
+            pass_fds=(slave,),
+            preexec_fn=lambda: os.login_tty(slave),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        os.close(slave)
+
+    @property
+    def pid(self) -> int:
+        return self.process.pid
+
+    def write(self, text: str) -> None:
+        os.write(self.master, text.encode())
+
+    def read(self, timeout: float = 0.5) -> str:
+        """Drain whatever the child wrote within `timeout` seconds; returns the new text (also
+        appended to `output`)."""
+        deadline = time.monotonic() + timeout
+        chunks: list[bytes] = []
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            ready, _, _ = select.select([self.master], [], [], remaining)
+            if not ready:
+                break
+            try:
+                chunk = os.read(self.master, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+        text = b"".join(chunks).decode("utf-8", "replace")
+        self.output += text
+        return text
+
+    def expect(self, text: str, timeout: float = 10.0) -> str:
+        """Read until `text` appears in the accumulated (ANSI-stripped) output; returns that output."""
+        deadline = time.monotonic() + timeout
+        while text not in strip_ansi(self.output):
+            if time.monotonic() > deadline:
+                raise AssertionError(f"{text!r} not seen on the pty within {timeout}s; got {strip_ansi(self.output)!r}")
+            self.read(0.2)
+        return strip_ansi(self.output)
+
+    def wait(self, timeout: float = 10.0) -> int:
+        """Drain output until the child exits; returns its exit code (fails after `timeout`)."""
+        deadline = time.monotonic() + timeout
+        while self.process.poll() is None:
+            if time.monotonic() > deadline:
+                raise AssertionError(f"pty process {self.process.args} still running after {timeout}s")
+            self.read(0.1)
+        self.read(0.1)
+        return self.process.returncode
+
+    def close(self) -> None:
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
+        try:
+            os.close(self.master)
+        except OSError:
+            pass
 
 
 # ----- FakeBins --------------------------------------------------------------------------------
@@ -338,6 +502,13 @@ DEFAULT_OUT = "__OUT__"
 DEFAULT_SLEEP = __SLEEP__
 
 knobs = json.load(open(KNOBS)) if os.path.exists(KNOBS) else {}
+if knobs.get("sequence"):
+    # Per-invocation knobs: the n-th run takes sequence[n] (the last entry repeats).
+    counter = KNOBS + ".count"
+    run_index = int(open(counter).read()) if os.path.exists(counter) else 0
+    with open(counter, "w") as handle:
+        handle.write(str(run_index + 1))
+    knobs = {**knobs, **knobs["sequence"][min(run_index, len(knobs["sequence"]) - 1)]}
 out_dir = os.environ.get("FAKE_OUT", DEFAULT_OUT)
 os.makedirs(out_dir, exist_ok=True)
 key = os.environ.get("TX_SESSION_ID") or str(os.getpid())
@@ -389,7 +560,13 @@ class FakeBins:
     Knobs (per basename, set before the run): `sleep` seconds, `exit_code`, `transcript` (write a
     fake transcript at this path; `transcript_text` for its body), `prompt_glyph` (echo `❯ ` to
     stdout), `stdout` (extra text), `read_stdin` (default only for `fzf`), `passthrough` (bwrap:
-    exec the command after `--`, default on).
+    exec the command after `--`, default on), `sequence` (a list of per-invocation knob dicts —
+    the n-th run merges sequence[n], the last entry repeats; e.g. fzf printing a row once, then 130).
+
+    `helpers_dir` (after the fakes on PATH) links `tx` → `TX_BIN` and every `REPO/bin/*` helper, so
+    an in-pane `tx`, the pane-border `tmux-pane-session-name`, `tx-assistant` etc. resolve.
+    `add(name)` writes a recorder for a new basename (e.g. `ssh`); `write_script(name, body)`
+    installs a hand-written executable instead.
     """
 
     def __init__(self, root: Path, names: tuple[str, ...] = FAKE_NAMES):
@@ -401,6 +578,22 @@ class FakeBins:
         self.names = names
         for name in names:
             self._write(name)
+        self.helpers_dir = root / "helper-bin"
+        self.helpers_dir.mkdir(parents=True, exist_ok=True)
+        (self.helpers_dir / "tx").symlink_to(TX_BIN)
+        for helper in HELPER_BINS:
+            (self.helpers_dir / helper).symlink_to(REPO / "bin" / helper)
+
+    def add(self, name: str) -> None:
+        """Install the standard recorder under a new basename (short-lived unless `sleep` is set)."""
+        self._write(name)
+
+    def write_script(self, name: str, body: str) -> Path:
+        """Install a hand-written executable (`#!` line included) as `name` on the fakes PATH."""
+        path = self.bin_dir / name
+        path.write_text(body)
+        path.chmod(0o755)
+        return path
 
     def _write(self, name: str) -> None:
         script = (
@@ -736,7 +929,8 @@ def scrubbed_env(
     extra: dict[str, str | None] | None = None,
 ) -> dict[str, str]:
     """The environment `tx` runs under: inherited env minus `TX_*`, `TMUX`, `TMUX_PANE`, `NAMEW`,
-    `FZF_*`; plus the home's vars, `FAKE_OUT`, and PATH with the tmux wrapper then the fakes first.
+    `FZF_*`; plus the home's vars, `FAKE_OUT`, and PATH with the tmux wrapper, the fakes, then the
+    `tx` + `bin/` helper links first.
     `extra` overrides; a `None` value unsets."""
     env = {
         key: value
@@ -750,6 +944,7 @@ def scrubbed_env(
         env[TMUX_SOCKET_ENV] = tmux.socket
     if fakes is not None:
         path_dirs.append(str(fakes.bin_dir))
+        path_dirs.append(str(fakes.helpers_dir))
         env.update(fakes.env())
     env["PATH"] = os.pathsep.join([*path_dirs, os.environ.get("PATH", "")])
     for key, value in (extra or {}).items():
@@ -951,6 +1146,59 @@ class TxCase(unittest.TestCase):
             cwd=cwd if cwd is not None else self.root,
         )
 
+    def env(self, extra: dict[str, str | None] | None = None) -> dict[str, str]:
+        """The scrubbed environment `self.tx` runs under (for pty clients / hand-run helpers)."""
+        return scrubbed_env(self.home, self.tmux, self.fakes, extra)
+
+    def tx_pty(self, argv: list[str], *, env: dict[str, str | None] | None = None,
+               cwd: str | Path | None = None, rows: int = 50, cols: int = 200) -> PtyProcess:
+        """Run `TX_BIN argv` on its own pty (the picker / curses cases); closed at teardown."""
+        process = PtyProcess([TX_BIN, *argv], env=self.env(env), cwd=cwd if cwd is not None else self.root,
+                             rows=rows, cols=cols)
+        self.addCleanup(process.close)
+        return process
+
+    def attach_client(self, session: str, *, rows: int = 50, cols: int = 200) -> PtyProcess:
+        """An outer pty client on `session` (see `TmuxServer.attach_client`); closed at teardown."""
+        client = self.tmux.attach_client(session, env=self.env(), rows=rows, cols=cols)
+        self.addCleanup(client.close)
+        return client
+
+    def run_in_pane(self, target: str, command: str, timeout: float = 30.0) -> Result:
+        """Type `command` into a shell pane (redirected to files under the temp root) and wait for
+        its exit code — how a case runs `tx` INSIDE tmux (`$TMUX`, `#S`, `$TX_SESSION_ID` set)."""
+        directory = self.root / "pane-runs" / uuid.uuid4().hex[:8]
+        directory.mkdir(parents=True)
+        out, err, code = directory / "out", directory / "err", directory / "code"
+        self.tmux.type_line(
+            target,
+            f"{command} >{shlex.quote(str(out))} 2>{shlex.quote(str(err))}; echo $? >{shlex.quote(str(code))}",
+        )
+        wait_until(lambda: code.exists() and code.read_text().strip() != "", timeout, what=f"{command} in {target}")
+        return Result(
+            code=int(code.read_text().strip()),
+            out=strip_ansi(out.read_text()),
+            err=strip_ansi(err.read_text()),
+            raw_out=out.read_text(),
+            raw_err=err.read_text(),
+        )
+
+    def spawn_process(self, name: str, *, cmd: str = "sleep 300", tag: str = "t",
+                      cwd: str | Path | None = None, extra: tuple[str, ...] = ()) -> dict:
+        """`tx spawn name --tag tag --cwd cwd --cmd cmd …` (a direct, non-worker spawn) → the record."""
+        result = self.tx(["spawn", name, "--tag", tag, "--cwd", str(cwd if cwd is not None else self.root),
+                          "--cmd", cmd, *extra])
+        self.assertEqual(result.code, 0, result.err)
+        return json.loads(self.tx(["show", name]).out)
+
+    def spawn_view(self, name: str, *, cwd: str | Path | None = None, cmd: str | None = None) -> None:
+        """`tx spawn-view name --cwd cwd [--cmd cmd]` (default cmd: `$SHELL` = /bin/bash)."""
+        argv = ["spawn-view", name, "--cwd", str(cwd if cwd is not None else self.root)]
+        if cmd is not None:
+            argv += ["--cmd", cmd]
+        result = self.tx(argv)
+        self.assertEqual(result.code, 0, result.err)
+
     def log_lines(self) -> list[dict]:
         return log_lines(self.home)
 
@@ -962,11 +1210,7 @@ class TxCase(unittest.TestCase):
 
     def wait_until(self, predicate: Callable[[], object], timeout: float = 10.0, interval: float = 0.05):
         """Poll `predicate` until truthy; returns its value. Fails after `timeout` seconds."""
-        deadline = time.monotonic() + timeout
-        while True:
-            value = predicate()
-            if value:
-                return value
-            if time.monotonic() > deadline:
-                self.fail(f"condition not met within {timeout}s")
-            time.sleep(interval)
+        try:
+            return wait_until(predicate, timeout, interval)
+        except AssertionError as error:
+            self.fail(str(error))
