@@ -237,6 +237,16 @@ class TmuxServer:
         wrapper = self.bin_dir / "tmux"
         wrapper.write_text(f'#!/bin/sh\nexec "{REAL_TMUX}" -L "{self.socket}" "$@"\n')
         wrapper.chmod(0o755)
+        self._boot()
+
+    def _boot(self) -> None:
+        """Start the server WITHOUT the operator's `~/.tmux.conf` (which may set `base-index` /
+        `pane-base-index`, source the live tx-ide config and its hooks, …). `-f` only counts for the
+        command that starts the server (`start-server` does not honour it on 3.4), so boot a throwaway
+        session config-free, keep the empty server alive, and drop the session."""
+        self.run("-f", "/dev/null", "new-session", "-d", "-s", "__boot", "sleep 5", check=True)
+        self.run("set-option", "-g", "exit-empty", "off", check=True)
+        self.run("kill-session", "-t", "__boot", check=True)
 
     def run(self, *args: str, check: bool = False) -> subprocess.CompletedProcess:
         return subprocess.run(
