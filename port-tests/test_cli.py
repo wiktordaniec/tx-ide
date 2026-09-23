@@ -25,6 +25,7 @@ from txkit import (
     platform_only,
     python_reference_only,
     strip_ansi,
+    tmux_version,
 )
 
 W1_ID = "11111111-1111-4111-8111-111111111111"
@@ -178,11 +179,21 @@ class TestCli(TxCase):
         self.assertEqual([line for line in self.log_lines() if line["type"] == "spawn-view"], [])
 
     def test_t_cli_02_missing_cwd_is_not_a_tmux_error(self):
-        # Q21 (PARITY, tmux-version gated): tmux 3.4 tolerates a nonexistent `-c` dir.
+        # Q21 (PARITY, tmux-version gated): tmux < 3.6 tolerates a nonexistent `-c` dir, so the
+        # spawn succeeds and the record keeps the cwd. On the 3.6 floor the tolerance is unverified
+        # here: the port must then match the reference — either the same tolerant spawn, or the
+        # error-boundary shape `tx spawn: tmux new-session … failed: …` with nothing created.
         result = self.tx(["spawn", "x", "--tag", "t", "--cwd", "/nonexistent"])
-        self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(result.out, "Spawned 'x' (cwd=/nonexistent, tag=t)\n")
-        self.assertEqual(self._show("x")["cwd"], "/nonexistent")
+        if tmux_version() < (3, 6) or result.code == 0:
+            self.assertEqual(result.code, 0, result.err)
+            self.assertEqual(result.out, "Spawned 'x' (cwd=/nonexistent, tag=t)\n")
+            self.assertEqual(self._show("x")["cwd"], "/nonexistent")
+        else:
+            self.assertEqual((result.code, result.out), (1, ""))
+            self.assertTrue(result.err.startswith("tx spawn: tmux new-session "), result.err)
+            self.assertIn(" failed: ", result.err)
+            self.assertEqual(self._record_files(), [])
+            self.assertEqual(self.tmux.sessions(), [])
 
     # ----- T-CLI-03 ---------------------------------------------------------------------------
 
