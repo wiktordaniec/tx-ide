@@ -793,8 +793,8 @@ class TestArt(TxCase):
         now = time.time()
         self.write_p(now)
         self.records.llm(id="s1", name="alice", tags=("feat-x",))
-        result = self.tx(["artifact", "show", "aaaaaaaa"])
-        self.assertEqual((result.code, result.err), (0, ""))
+        first = self.tx(["artifact", "show", "aaaaaaaa"])
+        self.assertEqual((first.code, first.err), (0, ""))
         expected = (
             "Plan  (aaaaaaaa-0000-4000-8000-000000000001)\n"
             "  filename:   plan.md\n"
@@ -807,7 +807,7 @@ class TestArt(TxCase):
             "    rev 0      5m ago  alice               \n"
             "    rev 1      1m ago  user                  tweak\n"
         )
-        self.assertEqual(result.out, expected)
+        self.assertEqual(first.out, expected)
 
         self.write_p(now, group="g", dirty=False)
         result = self.tx(["artifact", "show", "aaaaaaaa"])
@@ -820,7 +820,7 @@ class TestArt(TxCase):
         self.assertIn("\n  group:      derived: ungrouped\n", result.out)
         self.assertIn("\n    rev 0      5m ago  s1                  \n", result.out)
 
-        self.assert_golden("art/25", expected)
+        self.assert_golden("art/25", first.out)
 
     @expected_failure_on_python
     def test_t_art_25_fixed_missing_current(self):
