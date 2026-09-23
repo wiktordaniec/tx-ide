@@ -1,0 +1,2 @@
+["claude", "--resume", "c0", "--fork-session", "--model", "opus", "--effort", "high", "--no-chrome", "--dangerously-skip-permissions"]
+["claude", "--resume", "c1", "--fork-session", "--model", "opus", "--dangerously-skip-permissions"]
