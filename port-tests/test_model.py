@@ -60,19 +60,6 @@ class TestModel(TxCase):
         self.home.sessions_dir.mkdir(parents=True, exist_ok=True)
         (self.home.sessions_dir / f"{name}.json").write_text(json.dumps(data, indent=2))
 
-    def patch(self, session_id: str, **changes) -> None:
-        """Load a kit-written record, apply key changes (a `...` value deletes the key), rewrite."""
-        data = self.records.load(session_id)
-        for key, value in changes.items():
-            if value is ...:
-                del data[key]
-            else:
-                data[key] = value
-        self.write_raw(session_id, data)
-
-    def live(self, session_id: str) -> None:
-        self.tmux.new_session(session_id, "sleep 1000", tx_id=session_id)
-
     def model_09_file(self) -> None:
         reversed_record = dict(reversed(list(MODEL_09_RECORD.items())))
         del reversed_record["turn_started_at"]
@@ -333,11 +320,11 @@ class TestModel(TxCase):
 
     def model_13_files(self) -> None:
         self.records.llm(id="c", name="c")
-        self.patch("c", schema_version=5)
+        self.records.patch("c", schema_version=5)
         self.records.llm(id="i", name="i")
-        self.patch("i", schema_version=...)
+        self.records.patch("i", schema_version=...)
         self.records.llm(id="j", name="j")
-        self.patch("j", schema_version="6")
+        self.records.patch("j", schema_version="6")
         self.write_raw("k", {})
 
     MODEL_13_STDERR = (
@@ -442,7 +429,7 @@ class TestModel(TxCase):
     def test_t_model_17_activity_at_fallback_chain(self):
         self.records.llm(id="a", name="a", state="exited", created_at=5.0, last_activity=None)
         self.records.llm(id="b", name="b", state="exited", last_activity=None)
-        self.patch("b", created_at=None)
+        self.records.patch("b", created_at=None)
         self.records.llm(id="c", name="c", state="exited", created_at=5.0, last_activity=9.0)
         self.records.other(id="d", name="d", role="shell", state="exited", created_at=3.0)
         self.records.llm(id="e", name="e", state="exited", created_at=5.0, last_activity=0.0)
