@@ -849,6 +849,51 @@ class TestTmuxconfNoHooks(TmuxconfCase):
         self.assertGreaterEqual(elapsed, 9)
         self.assertEqual(list(self.home.sessions_dir.iterdir()), [])
 
+    # ----- T-TMUXCONF-19 (rev 6, D11: `tx _relabel` replaces bin/tmux-session-relabel) -------------
+
+    def _record_files(self) -> dict[str, tuple[bytes, int]]:
+        return {path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in self.home.sessions_dir.iterdir()}
+
+    @expected_failure_on_python
+    def test_t_tmuxconf_19_relabel_verb_mirrors_names_and_tags_read_only(self):
+        self.spawn_view("Views")
+        tagged = self.spawn_process("w", tag="a,b")
+        untagged = self.spawn_process("x")
+        self.tx(["tag", "x", ""])
+        gone = self.records.other(name="gone", state="exited")
+        records_before, log_before = self._record_files(), len(self.log_lines())
+
+        result = self.tx(["_relabel"])
+
+        self.assertEqual((result.code, result.out, result.err), (0, "", ""))
+        self.assertEqual(self.tmux.option(f"={tagged['id']}:", "@tx_name"), "w [a,b]")
+        self.assertEqual(self.tmux.option(f"={untagged['id']}:", "@tx_name"), "x")
+        self.assertIsNone(self.tmux.option("=Views:", "@tx_name"))
+        self.assertNotIn(gone, self.tmux.sessions())
+        # A read-only display mirror: no record rewritten, no log line.
+        self.assertEqual(self._record_files(), records_before)
+        self.assertEqual(len(self.log_lines()), log_before)
+        # (The Edge "session vanishes between the scan and its set-option → exit 0" is a race the
+        # black-box cannot stage deterministically; the gone record above covers the skip path.)
+
+    @expected_failure_on_python
+    def test_t_tmuxconf_19_no_server_is_a_no_op(self):
+        self.records.other(name="w", state="exited")
+        self.tmux.run("kill-server")
+        log_before = len(self.log_lines())
+        result = self.tx(["_relabel"])
+        self.assertEqual((result.code, result.out, result.err), (0, "", ""))
+        self.assertEqual(self.tmux.sessions(), [])
+        self.assertEqual(len(self.log_lines()), log_before)
+
+    @expected_failure_on_python
+    def test_t_tmuxconf_19_names_with_comma_or_space_are_verbatim(self):
+        odd = self.records.other(name="ab, c d", tags=("t1", "t2"))
+        self.live(odd)
+        result = self.tx(["_relabel"])
+        self.assertEqual((result.code, result.out, result.err), (0, "", ""))
+        self.assertEqual(self.tmux.option(f"={odd}:", "@tx_name"), "ab, c d [t1,t2]")
+
 
 if __name__ == "__main__":
     unittest.main()

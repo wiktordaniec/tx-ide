@@ -83,3 +83,10 @@ All five branch from `c7056fa`, touch disjoint test files and no kit file; the m
   `Installer.run(command: list[str], *args)`, the uninstaller-source read via `Path(UNINSTALL[0])`;
   `test_status.py` runs `[*TX_STATUSLINE]` (the reference script has a shebang and is executable; a
   port's `tx statusline` is an argv prefix). No assertion changed.
+- **T-TMUXCONF-19 added (spec rev 6, D11 `tx _relabel`).** Three legs under
+  `@expected_failure_on_python` in `test_tmuxconf.py`: the read-only mirror (`@tx_name` ==
+  `<name> [<tags>]` per live record, nothing on the view or the gone session, no record rewritten,
+  no log line), the no-server edge, and the comma/space name edge. The "session vanishes between
+  the scan and its set-option" race is not stageable black-box (noted in the test). Forced with
+  `TX_IMPL=rust` all three fail at the `_relabel` call on the reference (unknown command).
+  Coverage 433/433.

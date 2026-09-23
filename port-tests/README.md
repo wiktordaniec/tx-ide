@@ -1,7 +1,7 @@
 # port-tests — the black-box acceptance suite for the Rust `tx`
 
 Spec: artifact `15681067-0027-4677-9ffd-c618378aa890` (*tx-ide Rust port — test-suite specification*),
-rev 4: 432 cases across 27 areas (Appendix A). The suite is stdlib `unittest` (D7), never imports `lib/tx`
+rev 6: 433 cases across 27 areas (Appendix A). The suite is stdlib `unittest` (D7), never imports `lib/tx`
 (D1), and drives whatever binary `TX_BIN` names through the observable surfaces of Appendix B3:
 stdout/stderr/exit code, files under `$TX_IDE_HOME`, tmux state on a private server, fake-binary
 argv/env dumps, and the git fixture.
