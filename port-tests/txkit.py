@@ -237,12 +237,19 @@ class TmuxServer:
         wrapper.write_text(f'#!/bin/sh\nexec "{REAL_TMUX}" -L "{self.socket}" "$@"\n')
         wrapper.chmod(0o755)
 
-    def run(self, *args: str, check: bool = False) -> subprocess.CompletedProcess:
+    def run(
+        self, *args: str, check: bool = False, env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess:
+        """Run a tmux command against the private server. `env` is the CLIENT environment: on
+        tmux 3.4 a new or respawned pane inherits the environment of the client that issued
+        `new-session` / `respawn-pane` (not the server's global environment), so a crafted live
+        session that must find the fakes is created with `env=scrubbed_env(home, tmux, fakes)`."""
         return subprocess.run(
             [REAL_TMUX, "-L", self.socket, *args],
             capture_output=True,
             text=True,
             check=check,
+            env=env,
         )
 
     def sessions(self) -> list[str]:
@@ -287,16 +294,18 @@ class TmuxServer:
         *,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
+        client_env: dict[str, str] | None = None,
     ) -> None:
         """A raw live session (the RECON/RENDER "live record" recipe): `new-session -d -s name cmd`
-        then `set-option @tx_id` when `tx_id` is given."""
+        then `set-option @tx_id` when `tx_id` is given. `env` goes on the session (`-e`);
+        `client_env` is the issuing client's environment, which the pane inherits (see `run`)."""
         args = ["new-session", "-d", "-s", name]
         if cwd is not None:
             args += ["-c", cwd]
         for key, value in (env or {}).items():
             args += ["-e", f"{key}={value}"]
         args.append(cmd)
-        self.run(*args, check=True)
+        self.run(*args, check=True, env=client_env)
         if tx_id is not None:
             self.run("set-option", "-t", name, "@tx_id", tx_id, check=True)
 
@@ -918,6 +927,11 @@ class TxCase(unittest.TestCase):
             stdin=stdin,
             cwd=cwd if cwd is not None else self.root,
         )
+
+    def tx_env(self, extra: dict[str, str | None] | None = None) -> dict[str, str]:
+        """The environment `self.tx` runs under — for a crafted live session whose pane must see
+        the fakes (`self.tmux.new_session(..., client_env=self.tx_env())`) or a hand-run child."""
+        return scrubbed_env(self.home, self.tmux, self.fakes, extra)
 
     def log_lines(self) -> list[dict]:
         return log_lines(self.home)
