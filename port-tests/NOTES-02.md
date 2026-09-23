@@ -117,6 +117,40 @@ Linux). Each entry: what the spec said, what the code does (verified in `lib/tx/
   `a,bComma-separated`; asserted label→value adjacency (`Tags:\s+a,b`), the border cell count
   (80 / 44 / 80), the title, and no writes.
 
+## ATTACH
+
+- **T-ATTACH-07 LOCATION.** Spec: `Views:<win>.<pane>`; `location_text` renders
+  `<window_name>[<pane_index>]` (and the window auto-renames to `tmux` once nested). Asserted the
+  rendered form with the window name read from tmux.
+- **T-ATTACH-07 respawn command.** Spec: `bash -c '…; exec \${SHELL:-zsh}'`; tmux 3.4 renders
+  `"bash -c '…; exec \\${SHELL:-zsh}'"` (outer double quotes, `$` and `"` backslash-escaped).
+  The test undoes tmux's rendering and compares the raw command exactly.
+- **T-ATTACH-07 untracked `a b`.** Spec: "contains `tmux attach -t 'a b'`"; the wrapper is itself
+  shlex-quoted for `bash -c`, so the text is `tmux attach -t '"'"'a b'"'"'`. Asserted
+  `bash -c ` + `shlex.quote(wrapper)` exactly.
+- **T-ATTACH-07 "TMUX unset" precondition.** Spec says it falls through to switch-client;
+  `_switch_or_attach` takes the FOREGROUND attach when `TMUX` is unset. Asserted a new client on
+  `U2` on the popup's own pty, `%3` untouched, the Views client unchanged, popup closes on detach.
+- **T-ATTACH-07 "%3 running nvim/claude".** Uses the fake `nvim` (its `pane_current_command` reads
+  `python3.14`); the predicate under test is "not in SHELL_COMMANDS".
+- **T-ATTACH-09 current session in a popup (reference behaviour).** A popup has no `TMUX_PANE`, so
+  `current_session_name()` resolves `#S` through tmux's most-recently-active client; with nested
+  clients newer than the launching client, `#S` was the nested one's session (== target) and
+  `--jump` returned "already there". The fixture attaches the launching client last (what a real
+  prefix+t keypress guarantees); the "popup on the nested client itself" leg first sends a keystroke
+  into it. A port resolving the current session the same way inherits this.
+- **T-ATTACH-09 "switch fails" edge.** The spec's `setsid` + `TMUX=<sock>,1,0` recipe never fails
+  when the server's best session is `U2` itself (`#S` → `U2`). Asserted the failure by driving the
+  picker in a pane of a detached view (no client): stderr `tx: could not jump to or switch to
+  session U2`, a second fzf run, exit 0, pane untouched. (T-ATTACH-08's setsid edge behaves as spec'd.)
+- **T-ATTACH-01/04 feed.** fzf's stdin has no trailing newline (`subprocess.run(input=…)`) while
+  `tx _list` prints one; compared as line lists with STARTED/IDLE masked.
+  `reload-sync(<bin>/tx _list)` is `_repo_root()/bin/tx`, asserted against the resolved `TX_BIN`.
+- **T-ATTACH-02 "arm file exists during the run".** The kit fake dumps env only; existence during
+  the run is asserted in T-ATTACH-05 with a hand-written `fzf`.
+- **T-ATTACH-03 `ctrl-t`.** The middle bakes `PYTHONPATH=<repo>/lib <python> -m tx`;
+  prefix / suffix / tail asserted as the spec instructs.
+
 ## EDITOR
 
 - No spec/code disagreement. Harness note: with a nested client on the server,
@@ -124,3 +158,22 @@ Linux). Each entry: what the spec said, what the code does (verified in `lib/tx/
   `window-size manual` makes tmux 3.4 abort the server for a second small session; the test
   creates `Ed` at 20×5 BEFORE nesting and gates the form start on a trigger file, then asserts
   `#{pane_width}x#{pane_height}` = `20x5`.
+
+## Harness notes (section 02)
+
+- **Private server boot.** `TxCase.setUp` boots the private server config-free from the scrubbed
+  env (`TmuxServer.start`, `exit-empty off`) after `tmux.env` is set. The order matters: a boot run
+  from the test process's own environment seeds the server's global environment with the
+  operator's PATH/HOME; an in-pane `TMUX= tmux attach` or a popup's `tx` then reaches the
+  operator's tmux binary and home. That is how one throwaway probe on 2026-09-23 reconciled the
+  live store's records to exited (restored the same afternoon from the log's last `state` lines);
+  the kit guards (`TXKIT_TMUX_SOCKET`-gated wrapper, `KitSafetyError`) plus the env-carrying
+  direct calls close it.
+- **Prefix-match decision: FIX.** `test_t_tmux_07_fixed_short_hex_name_never_prefix_matches`
+  pins it (`@expected_failure_on_python`; forced with `TX_IMPL=rust` it fails on the reference).
+- **`display-popup -E` blocks** the invoking `tmux` until the popup closes; a foreground attach
+  inside it would hang `self.tmux.run`. ATTACH runs popups through `subprocess.Popen` with cleanup.
+- **Login shells drop the kit PATH.** A command-less `split-window`/`new-window` starts a login
+  shell whose `/etc/profile` resets PATH; use `TmuxServer.split_window` / `new_window` (explicit
+  non-login `/bin/bash`).
+- **Runtime.** Whole section ≈ 4 min sequential on this host (one private server per test).
