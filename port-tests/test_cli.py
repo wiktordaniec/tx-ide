@@ -2,7 +2,7 @@
 
 Every case drives `TX_BIN` and asserts stdout / stderr / exit code, the record files, tmux state on
 the private server, fake-binary dumps, and the `log.jsonl` tail. Spec/code disagreements are in
-`NOTES-04-cli.md`.
+`NOTES-04.md`.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from txkit import (
     TxCase,
     expected_failure_on_python,
     platform_only,
+    python_reference_only,
     strip_ansi,
 )
 
@@ -776,17 +777,6 @@ class TestCli(TxCase):
             f"pane-index='0' pane-title='I' pane-cmd='sleep' pane-path='{os.path.realpath(inner_dir)}' "
             "session-kind='process' session-tag='a,b'/>",
         )
-        # Edge: an `@remote-session` pane — remote marker, no inner-kind join. The reference reads
-        # the option WITHOUT `-p` (session scope of the pane's session), so that is where it is set
-        # here; a pane-scoped write (what `tx attach --host` does) is invisible to it — see NOTES.
-        self.tmux.run("set-option", "-t", "Views", "@remote-session", "host", check=True)
-        remote = self.tx(["focus-envelope", pane])
-        self.assertEqual(
-            remote.out,
-            f"<tx-command-prompt session-name='Views' window-index='0' window-name='main' pane-id='{pane}' "
-            f"pane-index='0' pane-title='T&amp;&apos;&lt;&gt;' pane-cmd='tmux' pane-path='{path}' "
-            "inner-remote='1' inner-session-name='host' session-kind='view'/>",
-        )
         # Edge: an untracked outer session carries no session-kind.
         self.tmux.new_session("raw", "sleep 1000", cwd=str(pane_dir))
         raw_pane = self.tmux.display("raw:0.0", "#{pane_id}")
@@ -800,16 +790,16 @@ class TestCli(TxCase):
         )
 
     def test_t_cli_21_pane_gone(self):
-        # tmux's `display-message -p -t %999` expands with empty fields (exit 0), so the envelope is
-        # emitted with empty values rather than nothing (see NOTES-04-cli.md).
+        # Q37 PARITY (tmux-version dependent): only exit 0, no trailing newline and the ABSENCE of
+        # the record-join attrs are the contract. tmux 3.4 expands `display-message -p -t %999`
+        # with empty fields (exit 0) so the reference prints an all-empty envelope; a port may
+        # print nothing (see NOTES-04.md).
         self.tmux.new_session("raw", "sleep 1000")
         result = self.tx(["focus-envelope", "%999"])
-        self.assertEqual((result.code, result.err), (0, ""))
-        self.assertEqual(
-            result.out,
-            "<tx-command-prompt session-name='' window-index='' window-name='' pane-id='%999' pane-index='' "
-            "pane-title='' pane-cmd='' pane-path=''/>",
-        )
+        self.assertEqual(result.code, 0, result.err)
+        self.assertFalse(result.raw_out.endswith("\n"), result.raw_out)
+        self.assertNotIn("session-kind", result.out)
+        self.assertNotIn("inner-", result.out)
 
     # ----- T-CLI-23 ---------------------------------------------------------------------------
 
@@ -822,6 +812,51 @@ class TestCli(TxCase):
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0]["type"], "selfcheck")
         self.assertRegex(lines[0]["msg"], r"^created s1a-selfcheck \([0-9a-f-]{36}\)$")
+
+    def _remote_fixture(self) -> tuple[str, str, str]:
+        """The T-CLI-21 topology (`Views` pane nest-attached to process `i1`); returns the nested
+        pane's id, its realpath and the envelope's pure-tmux prefix up to `pane-path`."""
+        self.records.llm(id="i1", name="w1", tags=("a", "b"))
+        pane_dir = self.root / "p"
+        pane_dir.mkdir()
+        self._live("i1", cwd=str(self.root))
+        self._view(cwd=str(pane_dir), command=self._attach_command("i1"))
+        self.wait_until(lambda: "i1" in self._clients())
+        pane = self.tmux.display("Views:main.0", "#{pane_id}")
+        self.tmux.run("select-pane", "-t", pane, "-T", "T", check=True)
+        path = os.path.realpath(pane_dir)
+        prefix = (
+            f"<tx-command-prompt session-name='Views' window-index='0' window-name='main' pane-id='{pane}' "
+            f"pane-index='0' pane-title='T' pane-cmd='tmux' pane-path='{path}' "
+        )
+        return pane, path, prefix
+
+    @expected_failure_on_python
+    def test_t_cli_21_fixed_remote_pane_scope(self):
+        # Q30 FIX: `@remote-session` at PANE scope (`set-option -p`, what `tx attach --host` writes)
+        # → the remote marker replaces the nested join (no inner-kind / inner-tag).
+        pane, _, prefix = self._remote_fixture()
+        self.tmux.run("set-option", "-p", "-t", pane, "@remote-session", "host", check=True)
+        remote = self.tx(["focus-envelope", pane])
+        self.assertEqual((remote.code, remote.err), (0, ""))
+        self.assertEqual(remote.out, prefix + "inner-remote='1' inner-session-name='host' session-kind='view'/>")
+
+    @python_reference_only
+    def test_t_cli_21_parity_remote_session_scope(self):
+        # Q30 PARITY (reference-only, D17): `focus_attrs` reads `show-options -vqt <pane>` WITHOUT
+        # `-p`, so the pane-scoped stamp is invisible (plain nested join) and the same option at
+        # SESSION scope on `Views` yields the remote shape. A Q30-fixed port reads pane scope only.
+        pane, _, prefix = self._remote_fixture()
+        nested = "inner-session-name='i1' session-kind='view' inner-session-kind='process' inner-session-tag='a,b'/>"
+        self.tmux.run("set-option", "-p", "-t", pane, "@remote-session", "host", check=True)
+        pane_scoped = self.tx(["focus-envelope", pane])
+        self.assertEqual((pane_scoped.code, pane_scoped.err), (0, ""))
+        self.assertEqual(pane_scoped.out, prefix + nested)
+        self.tmux.run("set-option", "-p", "-u", "-t", pane, "@remote-session", check=True)
+        self.tmux.run("set-option", "-t", "Views", "@remote-session", "host", check=True)
+        session_scoped = self.tx(["focus-envelope", pane])
+        self.assertEqual((session_scoped.code, session_scoped.err), (0, ""))
+        self.assertEqual(session_scoped.out, prefix + "inner-remote='1' inner-session-name='host' session-kind='view'/>")
 
     # ----- T-CLI-24 ---------------------------------------------------------------------------
 
