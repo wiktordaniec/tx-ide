@@ -1,0 +1,3 @@
+--color=fg:#a9b1d6,pointer:#7aa2f7,fg+:#a9b1d6:regular,bg+:236:regular,hl:#7aa2f7,hl+:#7aa2f7,header:#a9b1d6,footer:#a9b1d6,prompt:#a9b1d6,query:#c0caf5
+--bind=focus:transform-header(printf '[38;2;122;162;247m[1m%s[0m [38;2;192;202;245m[1m%s[0m\n%s' {1} {2} 'NAME                                                    LOCATION                  STARTED IDLE   ROLE  TAGS')+execute-silent(: >"$TX_ARM_FILE")+unbind(y,n)
+--bind=ctrl-d:execute-silent(printf '%s' {1} >"$TX_ARM_FILE")+transform-header(printf '[38;2;224;175;104m[1m ⚠  Kill "%s"? [y/N][0m\n%s' {1} 'NAME                                                    LOCATION                  STARTED IDLE   ROLE  TAGS')+rebind(y,n)

@@ -1,0 +1,3 @@
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx — 2 chat(s)
+  abcdef01  original  spawn               15m ago   —
+  pending   fork      fork←01234567       13m ago   /h/b

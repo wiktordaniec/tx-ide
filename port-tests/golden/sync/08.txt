@@ -1,0 +1,7 @@
+Local corpus (<home>):
+  records:        2
+  history files:  3
+  log.jsonl:      present
+  config.json:    missing
+  total keys:     6
+Remote (<arch>): 6 key(s) to push, 1 key(s) to pull.

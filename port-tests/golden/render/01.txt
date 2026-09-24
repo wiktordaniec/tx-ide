@@ -1,0 +1,7 @@
+HISTORY
+  f                        exited      0s   0c   /r
+  m                        exited      1m   0c   /r
+  h                        exited      1h   0c   /r
+  d                        exited      3d   0c   /r
+  n                        exited       -   0c   /r
+  z                        exited       -   0c   /r

@@ -1,0 +1,4 @@
+r-llm	 [worker] [docs]	L	r-llm	r-llm          —                         1h      [38;2;224;175;104m1m    [39m [38;5;167mllm  [39m [38;5;140m[worker][39m [38;5;140m[docs][39m
+r-nvim		L	r-nvim	r-nvim         —                         1h      [38;2;224;175;104m—     [39m [38;5;80mnvim [39m
+r-shell		L	r-shell	r-shell        —                         1h      [38;2;224;175;104m—     [39m [38;5;38mshell[39m
+r-other		L	r-other	r-other        —                         1h      [38;2;224;175;104m—     [39m [38;5;210mother[39m

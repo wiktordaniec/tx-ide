@@ -1,0 +1,3 @@
+ARTIFACTS
+  abcdef01    3r     1m  Rust port plan               [worker-1] [user]
+  ffffffff    1r    15m  a-very-long-file-name-that-… [gone-123]

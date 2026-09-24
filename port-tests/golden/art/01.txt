@@ -1,0 +1,22 @@
+{
+  "artifact_schema_version": 2,
+  "id": "a",
+  "title": null,
+  "filename": "plan.md",
+  "created_at": 1.5,
+  "group": null,
+  "history": [
+    {
+      "session_id": "s1",
+      "at": 1.5,
+      "rev": 0,
+      "changes": null
+    },
+    {
+      "session_id": "user",
+      "at": 2.0,
+      "rev": 1,
+      "changes": "tweak"
+    }
+  ]
+}
